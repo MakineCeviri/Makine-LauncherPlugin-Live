@@ -14,59 +14,29 @@ namespace fs = std::filesystem;
 namespace live {
 
 // PowerShell script for Windows OCR — embedded as string
-static const char* kOcrScript = R"ps1(
-param([string]$ImagePath, [string]$Language = "tr")
+// Python OCR script using winocr (Windows OCR via WinRT Python bindings)
+static const char* kOcrScript = R"py(
+import sys, asyncio
+from winocr import recognize_pil
+from PIL import Image
 
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
+async def main():
+    img = Image.open(sys.argv[1])
+    lang = sys.argv[2] if len(sys.argv) > 2 else 'tr'
+    result = await recognize_pil(img, lang)
+    for line in result.lines:
+        print(line.text)
 
-# Helper to await WinRT async operations from PowerShell
-$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() |
-    Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
-    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
-
-Function Await($WinRtTask, $ResultType) {
-    $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
-    $netTask = $asTask.Invoke($null, @($WinRtTask))
-    $netTask.Wait(-1) | Out-Null
-    $netTask.Result
-}
-
-# Load image as SoftwareBitmap
-$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($ImagePath)) ([Windows.Storage.StorageFile])
-$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
-$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
-$bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
-
-# Create OCR engine
-$lang = New-Object Windows.Globalization.Language($Language)
-$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang)
-if (-not $engine) {
-    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-}
-if (-not $engine) {
-    Write-Error "OCR engine not available"
-    exit 1
-}
-
-# Recognize
-$result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-
-# Output text (one line per OCR line, with bounding box)
-foreach ($line in $result.Lines) {
-    $words = ($line.Words | ForEach-Object { $_.Text }) -join " "
-    Write-Output $words
-}
-
-$stream.Dispose()
-)ps1";
+asyncio.run(main())
+)py";
 
 bool WindowsOcrEngine::init(const std::string& dataPath)
 {
     m_dataPath = dataPath;
 
-    // Write the PowerShell OCR script to data directory
+    // Write the Python OCR script to data directory
     fs::create_directories(dataPath);
-    m_scriptPath = dataPath + "/ocr_helper.ps1";
+    m_scriptPath = dataPath + "/ocr_helper.py";
 
     std::ofstream ofs(m_scriptPath);
     if (!ofs) {
@@ -170,9 +140,15 @@ bool WindowsOcrEngine::saveBmp(const uint8_t* pixels, int w, int h, const std::s
 std::string WindowsOcrEngine::runOcrScript(const std::string& imagePath)
 {
 #ifdef _WIN32
-    // Build PowerShell command
-    std::string cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" +
-                      m_scriptPath + "\" -ImagePath \"" + imagePath + "\" -Language tr";
+    // Normalize paths to backslash for Windows
+    auto toWinPath = [](std::string p) {
+        for (auto& c : p) if (c == '/') c = '\\';
+        return p;
+    };
+
+    std::string cmd = "cmd.exe /c python -X utf8 \"" +
+                      toWinPath(m_scriptPath) + "\" \"" +
+                      toWinPath(imagePath) + "\" tr";
 
     // Create process and capture stdout
     SECURITY_ATTRIBUTES sa = {};
