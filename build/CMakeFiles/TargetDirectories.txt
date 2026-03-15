@@ -1,0 +1,3 @@
+C:/Users/Administrator/AppData/Local/Temp/makineai-plugin-live/build/CMakeFiles/makineai-live.dir
+C:/Users/Administrator/AppData/Local/Temp/makineai-plugin-live/build/CMakeFiles/edit_cache.dir
+C:/Users/Administrator/AppData/Local/Temp/makineai-plugin-live/build/CMakeFiles/rebuild_cache.dir
