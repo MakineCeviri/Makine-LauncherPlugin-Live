@@ -1,6 +1,7 @@
 # ninja log v6
-3	58	7953165397516942	CMakeFiles/makineai-live.dir/src/plugin.cpp.obj	1892fd596388f6b2
-6	638	7953165397546957	CMakeFiles/makineai-live.dir/src/live_core.cpp.obj	b5557779e1b562a0
-8	1402	7953165397567043	CMakeFiles/makineai-live.dir/src/capture.cpp.obj	1f346aaa19e38449
-1404	1499	7953165412405491	release/makineai-live.dll	4624cd158e01763b
-1404	1499	7953165412405491	libmakineai-live.dll.a	4624cd158e01763b
+2	416	7953178869293414	CMakeFiles/makineai-live.dir/src/plugin.cpp.obj	1892fd596388f6b2
+5	730	7953178869323409	CMakeFiles/makineai-live.dir/src/live_core.cpp.obj	b5557779e1b562a0
+8	1507	7953178869343141	CMakeFiles/makineai-live.dir/src/capture.cpp.obj	1f346aaa19e38449
+11	1992	7953178869374464	CMakeFiles/makineai-live.dir/src/ocr_windows.cpp.obj	5dc6c38922b26ee0
+1992	2107	7953178890254301	release/makineai-live.dll	8c6846d228801f53
+1992	2107	7953178890254301	libmakineai-live.dll.a	8c6846d228801f53

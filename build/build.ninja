@@ -74,6 +74,16 @@ build CMakeFiles/makineai-live.dir/src/capture.cpp.obj: CXX_COMPILER__makineai-l
   TARGET_COMPILE_PDB = CMakeFiles\makineai-live.dir\
   TARGET_PDB = release\makineai-live.pdb
 
+build CMakeFiles/makineai-live.dir/src/ocr_windows.cpp.obj: CXX_COMPILER__makineai-live_unscanned_ C$:/Users/Administrator/AppData/Local/Temp/makineai-plugin-live/src/ocr_windows.cpp || cmake_object_order_depends_target_makineai-live
+  DEFINES = -Dmakineai_live_EXPORTS
+  DEP_FILE = CMakeFiles\makineai-live.dir\src\ocr_windows.cpp.obj.d
+  FLAGS = -std=gnu++23
+  INCLUDES = -IC:/Users/Administrator/AppData/Local/Temp/makineai-plugin-live/include -IC:/Users/Administrator/AppData/Local/Temp/makineai-plugin-live/src
+  OBJECT_DIR = CMakeFiles\makineai-live.dir
+  OBJECT_FILE_DIR = CMakeFiles\makineai-live.dir\src
+  TARGET_COMPILE_PDB = CMakeFiles\makineai-live.dir\
+  TARGET_PDB = release\makineai-live.pdb
+
 
 # =============================================================================
 # Link build statements for SHARED_LIBRARY target makineai-live
@@ -82,7 +92,7 @@ build CMakeFiles/makineai-live.dir/src/capture.cpp.obj: CXX_COMPILER__makineai-l
 #############################################
 # Link the shared library release\makineai-live.dll
 
-build release/makineai-live.dll libmakineai-live.dll.a: CXX_SHARED_LIBRARY_LINKER__makineai-live_ CMakeFiles/makineai-live.dir/src/plugin.cpp.obj CMakeFiles/makineai-live.dir/src/live_core.cpp.obj CMakeFiles/makineai-live.dir/src/capture.cpp.obj
+build release/makineai-live.dll libmakineai-live.dll.a: CXX_SHARED_LIBRARY_LINKER__makineai-live_ CMakeFiles/makineai-live.dir/src/plugin.cpp.obj CMakeFiles/makineai-live.dir/src/live_core.cpp.obj CMakeFiles/makineai-live.dir/src/capture.cpp.obj CMakeFiles/makineai-live.dir/src/ocr_windows.cpp.obj
   LINK_LIBRARIES = -lgdi32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\makineai-live.dir
   POST_BUILD = cd .
