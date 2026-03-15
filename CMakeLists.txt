@@ -8,6 +8,7 @@ add_library(makineai-live SHARED
     src/live_core.cpp
     src/capture.cpp
     src/ocr_rapid.cpp
+    src/translator.cpp
 )
 
 target_include_directories(makineai-live PRIVATE
@@ -16,7 +17,7 @@ target_include_directories(makineai-live PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(makineai-live PRIVATE gdi32)
+    target_link_libraries(makineai-live PRIVATE gdi32 winhttp)
 endif()
 
 set_target_properties(makineai-live PROPERTIES

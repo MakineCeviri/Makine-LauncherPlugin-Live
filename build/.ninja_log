@@ -1,10 +1,8 @@
 # ninja log v6
-3	379	7953197090393927	CMakeFiles/makineai-live.dir/src/plugin.cpp.obj	1892fd596388f6b2
-8	1477	7953197090451753	CMakeFiles/makineai-live.dir/src/capture.cpp.obj	1f346aaa19e38449
-6	1731	7953197090422032	CMakeFiles/makineai-live.dir/src/live_core.cpp.obj	b5557779e1b562a0
-11	2019	7953197090475541	CMakeFiles/makineai-live.dir/src/ocr_rapid.cpp.obj	b5d9589f1c1d9c90
-2019	2157	7953197111855086	release/makineai-live.dll	ca1b89120bc06e35
-2019	2157	7953197111855086	libmakineai-live.dll.a	ca1b89120bc06e35
-5	1821	7953197764750739	CMakeFiles/makineai-live.dir/src/ocr_rapid.cpp.obj	b5d9589f1c1d9c90
-1821	1932	7953197783945128	release/makineai-live.dll	ca1b89120bc06e35
-1821	1932	7953197783945128	libmakineai-live.dll.a	ca1b89120bc06e35
+2	399	7953206257850107	CMakeFiles/makineai-live.dir/src/plugin.cpp.obj	1892fd596388f6b2
+8	1586	7953206257895455	CMakeFiles/makineai-live.dir/src/capture.cpp.obj	1f346aaa19e38449
+13	1784	7953206257960544	CMakeFiles/makineai-live.dir/src/translator.cpp.obj	6ff180f9fccbf677
+10	2116	7953206257930545	CMakeFiles/makineai-live.dir/src/ocr_rapid.cpp.obj	b5d9589f1c1d9c90
+5	2164	7953206257875442	CMakeFiles/makineai-live.dir/src/live_core.cpp.obj	b5557779e1b562a0
+2164	2332	7953206281067478	release/makineai-live.dll	3f0c23cea7359889
+2164	2332	7953206281067478	libmakineai-live.dll.a	3f0c23cea7359889

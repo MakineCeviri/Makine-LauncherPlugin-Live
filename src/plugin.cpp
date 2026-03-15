@@ -1,20 +1,24 @@
 /**
- * MakineAI Live Plugin — Entry point
+ * MakineAI Live Plugin — Entry point + C ABI exports
  *
- * Provides real-time screen OCR + translation + overlay pipeline.
- * Pipeline: Screen Capture → OCR → Translation → Overlay Display
+ * Exports:
+ *   Base: get_info, initialize, shutdown, is_ready, get_last_error
+ *   OCR:  capture_and_ocr, capture_ocr_translate
+ *   Settings: get_setting, set_setting
  */
 
 #include <makineai/plugin/plugin_api.h>
 #include <cstring>
 #include <string>
 
-// Forward declarations
 namespace live {
     bool init(const char* dataPath);
     void shutdown();
     bool ready();
     std::string captureAndRecognize(void* windowHandle, int x, int y, int w, int h);
+    std::string captureOcrAndTranslate(void* windowHandle, int x, int y, int w, int h);
+    const char* getSetting(const char* key);
+    void setSetting(const char* key, const char* value);
 }
 
 static bool s_initialized = false;
@@ -36,18 +40,13 @@ MakineAiPluginInfo makineai_get_info(void)
 extern "C" __declspec(dllexport)
 MakineAiError makineai_initialize(const char* dataPath)
 {
-    if (s_initialized)
-        return MAKINEAI_OK;
-
+    if (s_initialized) return MAKINEAI_OK;
     if (!dataPath) {
         std::strncpy(s_error, "dataPath is null", sizeof(s_error) - 1);
         return MAKINEAI_ERR_INVALID_PARAM;
     }
-
-    if (!live::init(dataPath)) {
+    if (!live::init(dataPath))
         return MAKINEAI_ERR_INIT_FAILED;
-    }
-
     s_initialized = true;
     return MAKINEAI_OK;
 }
@@ -55,10 +54,7 @@ MakineAiError makineai_initialize(const char* dataPath)
 extern "C" __declspec(dllexport)
 void makineai_shutdown(void)
 {
-    if (s_initialized) {
-        live::shutdown();
-        s_initialized = false;
-    }
+    if (s_initialized) { live::shutdown(); s_initialized = false; }
 }
 
 extern "C" __declspec(dllexport)
@@ -73,21 +69,39 @@ const char* makineai_get_last_error(void)
     return s_error;
 }
 
-// ── Live-specific exports ──
+// ── OCR Exports ──
 
-// Capture a screen region and run OCR, returns recognized text
-// windowHandle: HWND of the target window (or nullptr for desktop)
-// x, y, w, h: capture region in window coordinates
-static std::string s_lastResult;
+static std::string s_lastOcr;
+static std::string s_lastTranslation;
 
 extern "C" __declspec(dllexport)
 const char* makineai_capture_and_ocr(void* windowHandle, int x, int y, int w, int h)
 {
-    if (!s_initialized) {
-        std::strncpy(s_error, "Plugin not initialized", sizeof(s_error) - 1);
-        return "";
-    }
+    if (!s_initialized) return "";
+    s_lastOcr = live::captureAndRecognize(windowHandle, x, y, w, h);
+    return s_lastOcr.c_str();
+}
 
-    s_lastResult = live::captureAndRecognize(windowHandle, x, y, w, h);
-    return s_lastResult.c_str();
+extern "C" __declspec(dllexport)
+const char* makineai_capture_ocr_translate(void* windowHandle, int x, int y, int w, int h)
+{
+    if (!s_initialized) return "";
+    s_lastTranslation = live::captureOcrAndTranslate(windowHandle, x, y, w, h);
+    return s_lastTranslation.c_str();
+}
+
+// ── Settings Exports ──
+
+extern "C" __declspec(dllexport)
+const char* makineai_get_setting(const char* key)
+{
+    if (!s_initialized) return "";
+    return live::getSetting(key);
+}
+
+extern "C" __declspec(dllexport)
+void makineai_set_setting(const char* key, const char* value)
+{
+    if (!s_initialized) return;
+    live::setSetting(key, value);
 }
