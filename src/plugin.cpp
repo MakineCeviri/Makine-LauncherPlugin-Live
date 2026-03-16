@@ -1,5 +1,5 @@
 /**
- * MakineAI OCR Plugin — Entry point + C ABI exports
+ * MakineAI Live Plugin — Entry point + C ABI exports
  *
  * Exports:
  *   Base: get_info, initialize, shutdown, is_ready, get_last_error
@@ -32,7 +32,7 @@ MakineAiPluginInfo makineai_get_info(void)
 {
     return {
         "com.makineceviri.live",
-        "MakineAI OCR",
+        "MakineAI Live",
         "0.1.0",
         MAKINEAI_PLUGIN_API_VERSION
     };

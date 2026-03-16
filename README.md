@@ -1,4 +1,4 @@
-# MakineAI OCR
+# MakineAI Live
 
 > Gerçek zamanlı ekran OCR ve çeviri overlay eklentisi — MakineAI Launcher için.
 
@@ -28,7 +28,7 @@ Ekran → [DXGI/GDI] → [Frame Hash] → [RapidOCR] → [Cache?] → [GPT/DeepL
 ## Kurulum
 
 ### MakineAI Launcher üzerinden (önerilen)
-1. Ayarlar → Eklentiler → **MakineAI OCR** → **Kur**
+1. Ayarlar → Eklentiler → **MakineAI Live** → **Kur**
 2. Eklentiyi etkinleştir
 3. API anahtarını gir (GPT, DeepL veya Google)
 4. Bölge seç → OCR Başlat
@@ -66,7 +66,7 @@ cmake --build .
 
 ### Paketleme
 ```bash
-python makine-pack.py build/release -o makineai-ocr.makine
+python makine-pack.py build/release -o makineai-live.makine
 ```
 
 `makine-pack.py` aracını [MakineAI-Plugin-Template](https://github.com/MakineCeviri/MakineAI-Plugin-Template) deposundan edinebilirsiniz.
