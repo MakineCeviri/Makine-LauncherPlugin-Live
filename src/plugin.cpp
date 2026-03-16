@@ -1,5 +1,5 @@
 /**
- * MakineAI Live Plugin — Entry point + C ABI exports
+ * MakineAI OCR Plugin — Entry point + C ABI exports
  *
  * Exports:
  *   Base: get_info, initialize, shutdown, is_ready, get_last_error
@@ -19,6 +19,7 @@ namespace live {
     std::string captureOcrAndTranslate(void* windowHandle, int x, int y, int w, int h);
     const char* getSetting(const char* key);
     void setSetting(const char* key, const char* value);
+    const char* getLastOcrText();
 }
 
 static bool s_initialized = false;
@@ -31,8 +32,8 @@ MakineAiPluginInfo makineai_get_info(void)
 {
     return {
         "com.makineceviri.live",
-        "MakineAI Live",
-        "0.1.0",
+        "MakineAI OCR",
+        "0.3.0",
         MAKINEAI_PLUGIN_API_VERSION
     };
 }
@@ -104,4 +105,14 @@ void makineai_set_setting(const char* key, const char* value)
 {
     if (!s_initialized) return;
     live::setSetting(key, value);
+}
+
+// ── Dual-Phase Display Export ──
+// Returns raw OCR text from the last capture (before translation)
+
+extern "C" __declspec(dllexport)
+const char* makineai_get_last_ocr_text(void)
+{
+    if (!s_initialized) return "";
+    return live::getLastOcrText();
 }

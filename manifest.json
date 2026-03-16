@@ -1,25 +1,32 @@
 {
     "id": "com.makineceviri.live",
-    "name": "MakineAI Live",
-    "version": "0.2.0",
+    "name": "MakineAI OCR",
+    "version": "0.3.0",
     "apiVersion": 1,
     "category": "translation",
-    "description": "Real-time screen OCR and translation overlay",
+    "description": "Real-time screen OCR and translation overlay with DXGI capture and multi-engine translation",
     "author": "MakineAI Team",
     "license": "GPL-3.0",
-    "homepage": "https://github.com/MakineCeviri/MakineAI-Plugin-OCR",
+    "homepage": "https://github.com/MakineCeviri/makineai-plugin-live",
     "entry": "makineai-live.dll",
     "dependencies": [],
-    "capabilities": ["network", "screen_capture"],
+    "capabilities": ["network", "screen_capture", "overlay"],
     "features": [
-        "Screen capture (GDI/DXGI)",
-        "OCR (RapidOCR/PaddleOCR)",
-        "Translation (GPT, DeepL)",
-        "Configurable language pair"
+        "Screen capture (DXGI Desktop Duplication / GDI fallback)",
+        "OCR text recognition (RapidOCR)",
+        "Translation engines (Google, DeepL, ChatGPT)",
+        "Transparent overlay window",
+        "Frame change detection for efficient OCR"
     ],
     "platforms": ["win64"],
     "minLauncherVersion": "0.2.0",
     "settings": [
+        {
+            "key": "ocrEnabled",
+            "type": "toggle",
+            "label": "OCR Aktif",
+            "default": "false"
+        },
         {
             "key": "sourceLang",
             "type": "select",
@@ -31,28 +38,42 @@
             "key": "targetLang",
             "type": "select",
             "label": "Hedef Dil",
-            "options": ["tr", "en", "de", "fr", "es"],
+            "options": ["tr", "en", "de", "fr", "es", "ru"],
             "default": "tr"
         },
         {
             "key": "translatorEngine",
             "type": "select",
-            "label": "Çeviri Motoru",
-            "options": ["gpt", "deepl"],
+            "label": "Ceviri Motoru",
+            "options": ["gpt", "deepl", "google"],
             "default": "gpt"
         },
         {
             "key": "apiKey",
-            "type": "password",
-            "label": "API Anahtarı",
+            "type": "text",
+            "label": "API Anahtari",
             "default": ""
         },
         {
             "key": "gptModel",
             "type": "select",
-            "label": "GPT Modeli",
-            "options": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1-nano"],
+            "label": "GPT Model",
+            "options": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"],
             "default": "gpt-4o-mini"
+        },
+        {
+            "key": "captureMethod",
+            "type": "select",
+            "label": "Yakalama Yontemi",
+            "options": ["auto", "dxgi", "gdi"],
+            "default": "auto"
+        },
+        {
+            "key": "ocrInterval",
+            "type": "select",
+            "label": "OCR Araligi (ms)",
+            "options": ["500", "1000", "2000", "3000", "5000"],
+            "default": "2000"
         }
     ]
 }

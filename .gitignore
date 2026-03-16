@@ -1,2 +1,6 @@
 build/
-*.makine
+*.obj
+*.dll
+*.exe
+*.bmp
+*.log

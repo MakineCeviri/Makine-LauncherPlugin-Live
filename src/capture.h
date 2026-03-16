@@ -4,6 +4,13 @@
 #include <vector>
 #include <string>
 
+#ifdef _WIN32
+// Forward declarations for DXGI Desktop Duplication
+struct ID3D11Device;
+struct ID3D11DeviceContext;
+struct IDXGIOutputDuplication;
+#endif
+
 namespace live {
 
 struct CapturedFrame {
@@ -40,10 +47,17 @@ private:
     bool initGDI();
     bool captureDXGI(void* hwnd, CaptureRegion region, CapturedFrame& out);
     bool captureGDI(void* hwnd, CaptureRegion region, CapturedFrame& out);
+    void shutdownDXGI();
 
     CaptureMethod m_method = CaptureMethod::Auto;
     bool m_initialized = false;
     std::string m_error;
+
+#ifdef _WIN32
+    ID3D11Device* m_d3dDevice = nullptr;
+    ID3D11DeviceContext* m_d3dContext = nullptr;
+    IDXGIOutputDuplication* m_dxgiDup = nullptr;
+#endif
 };
 
 } // namespace live

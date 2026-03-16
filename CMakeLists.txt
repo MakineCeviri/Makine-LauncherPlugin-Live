@@ -17,7 +17,7 @@ target_include_directories(makineai-live PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(makineai-live PRIVATE gdi32 winhttp)
+    target_link_libraries(makineai-live PRIVATE gdi32 winhttp d3d11 dxgi)
 endif()
 
 set_target_properties(makineai-live PROPERTIES
