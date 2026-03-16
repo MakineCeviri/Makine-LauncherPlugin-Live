@@ -18,13 +18,33 @@ bool RapidOcrEngine::init(const std::string& dataPath)
     std::string dllDir = dataPath;
     for (auto& c : dllDir) if (c == '/') c = '\\';
 
-    // Load RapidOcrOnnx.dll from plugin directory
-    std::string dllPath = dllDir + "\\RapidOcrOnnx.dll";
-    m_hDll = LoadLibraryA(dllPath.c_str());
-    if (!m_hDll) {
-        // Try from same directory as plugin DLL
-        m_hDll = LoadLibraryA("RapidOcrOnnx.dll");
+    // Find plugin's own directory (where .makine was extracted)
+    // RapidOcrOnnx.dll lives next to the plugin DLL, not in dataPath
+    static const char s_anchor = 0; // address anchor for GetModuleHandleEx
+    std::string pluginDir;
+    {
+        char modulePath[MAX_PATH]{};
+        HMODULE hSelf = nullptr;
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            &s_anchor,
+            &hSelf);
+        if (hSelf) {
+            GetModuleFileNameA(hSelf, modulePath, MAX_PATH);
+            pluginDir = modulePath;
+            auto sep = pluginDir.find_last_of("\\/");
+            if (sep != std::string::npos) pluginDir = pluginDir.substr(0, sep);
+        }
     }
+
+    // Search order: plugin dir → data dir → system DLL search path
+    m_hDll = nullptr;
+    if (!pluginDir.empty())
+        m_hDll = LoadLibraryA((pluginDir + "\\RapidOcrOnnx.dll").c_str());
+    if (!m_hDll)
+        m_hDll = LoadLibraryA((dllDir + "\\RapidOcrOnnx.dll").c_str());
+    if (!m_hDll)
+        m_hDll = LoadLibraryA("RapidOcrOnnx.dll");
     if (!m_hDll) {
         m_error = "Cannot load RapidOcrOnnx.dll (error " + std::to_string(GetLastError()) + ")";
         return false;
@@ -45,7 +65,14 @@ bool RapidOcrEngine::init(const std::string& dataPath)
     }
 
     // Initialize OCR with model paths
+    // Search: plugin dir/models → data dir/models
     std::string modelsDir = dllDir + "\\models";
+    if (!pluginDir.empty()) {
+        std::string tryDir = pluginDir + "\\models";
+        DWORD attr = GetFileAttributesA(tryDir.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
+            modelsDir = tryDir;
+    }
     std::string detModel = modelsDir + "\\ch_PP-OCRv3_det_infer.onnx";
     std::string clsModel = modelsDir + "\\ch_ppocr_mobile_v2.0_cls_infer.onnx";
     std::string recModel = modelsDir + "\\ch_PP-OCRv3_rec_infer.onnx";
