@@ -1,8 +1,10 @@
 # Makine Live
 
-> Gercek zamanli ekran OCR ve ceviri overlay eklentisi -- Makine Launcher icin.
+> Gerçek zamanlı ekran OCR ve çeviri overlay eklentisi — Makine Launcher için.
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](LICENSE)
+
+Bu eklenti, açık kaynak kodlu **[Makine Launcher](https://github.com/MakineCeviri/Makine-Launcher)** uygulamasının resmi eklentisidir. Makine Launcher, Türkçe oyun çeviri paketlerini yöneten ücretsiz bir masaüstü uygulamasıdır.
 
 ## Ozellikler
 
