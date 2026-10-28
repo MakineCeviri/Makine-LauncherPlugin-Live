@@ -12,7 +12,7 @@ Makine **0.2.0** ya da daha yenisi gerekir.
 
 1. Makine → **Ayarlar → Eklentiler → Makine Live → Kur**
 2. Kurulumda istenen izinleri onayla (aşağıda).
-3. Eklenti ayarlarından çeviri servisini seç ve API anahtarını gir.
+3. Eklenti ayarlarından çeviri servisini seç. Bulut servislerinde API anahtarı gerekir; yerel Ollama/LM Studio HTTP sunucularında anahtar boş bırakılabilir.
 
 Kendi derlediğin bir `.mkplugin` dosyasını **Ayarlar → Eklentiler → Geliştirici modu → Dosyadan yükle** ile kurabilirsin; bu kurulum *Doğrulanmamış* olarak işaretlenir.
 
@@ -31,18 +31,29 @@ Kendi derlediğin bir `.mkplugin` dosyasını **Ayarlar → Eklentiler → Geli�
 
 ## Ayarlar
 
-| Ayar | Tür | Varsayılan | Açıklama |
-|------|-----|------------|----------|
-| Çeviri servisi | Seçim | OpenAI | OpenAI, DeepL ya da Google Cloud Translation |
-| API anahtarı | Gizli | — | Seçili servisin anahtarı. Windows'ta şifreli (DPAPI) saklanır, bir daha gösterilmez. |
-| OpenAI modeli | Metin | `gpt-4.1-mini` | Yalnız OpenAI için. Hesabında açık olan herhangi bir sohbet modeli. |
-| Kaynak dil | Seçim | İngilizce | OCR modeli şimdilik yalnız İngilizce okur. |
-| Hedef dil | Seçim | Türkçe | Türkçe, İngilizce, Almanca, Fransızca, İspanyolca, Rusça |
-| Okuma aralığı (ms) | Sayı | 1000 | 250–10000. Görüntüsü değişmeyen bölge yeniden okunmaz. |
-| Özgün metni de göster | Aç/kapa | Kapalı | Çevirinin yanında okunan İngilizce metni de gösterir. |
-| Oyun açılınca başlat | Aç/kapa | Kapalı | Kayıtlı bölge varsa oyun başlayınca okumaya başlar. |
+| Ayar | Tür | Açıklama |
+|------|-----|----------|
+| Çeviri servisi | Seçim | OpenAI, Groq, OpenRouter, Ollama (yerel), LM Studio (yerel), özel OpenAI-uyumlu servis, DeepL veya Google Cloud Translation |
+| API anahtarı | Gizli | Bulut servislerinin anahtarı. Yerel Ollama/LM Studio HTTP sunucularında boş bırakılabilir. Windows'ta DPAPI ile şifreli saklanır. |
+| Model / model ID | Metin | Seçili servisin model adı. Groq için boş bırakılırsa `openai/gpt-oss-20b`, Ollama için `llama3.2`, OpenAI için `gpt-4.1-mini` kullanılır. OpenRouter, LM Studio ve özel sunucularda model ID girilmelidir. |
+| Custom endpoint base URL | Metin | Yalnız Özel OpenAI-uyumlu servis için. Ör. `https://api.example.com/v1` veya `http://127.0.0.1:1234/v1`. Uzak adresler HTTPS kullanmalıdır. |
+| Kaynak dil | Seçim | İngilizce. OCR modeli şimdilik yalnız İngilizce okur. |
+| Hedef dil | Seçim | Türkçe, İngilizce, Almanca, Fransızca, İspanyolca, Rusça |
+| Okuma aralığı (ms) | Sayı | 1000 (250–10000). Değişmeyen ekran yeniden okunmaz. |
+| Özgün metni de göster | Aç/kapa | Kapalı. Çevirinin yanında okunan İngilizce metni gösterir. |
+| Oyun açılınca başlat | Aç/kapa | Kapalı. Kayıtlı bölge varsa oyun başlayınca başlar. |
 
-DeepL'in ücretsiz anahtarları (`:fx` ile biten) `api-free.deepl.com`'a, diğerleri `api.deepl.com`'a gider.
+### OpenAI-uyumlu servisler
+
+OpenAI, Groq, OpenRouter, Ollama ve LM Studio aynı Chat Completions istek biçiminin uyumlu alt kümesini kullandığından ortak kod yolundan çalışır:
+
+- **Groq:** `https://api.groq.com/openai/v1`; güncel model ID'leri sağlayıcının model listesinden alınır. Model alanı boşsa `openai/gpt-oss-20b` varsayılanı kullanılır.
+- **OpenRouter:** `https://openrouter.ai/api/v1`; Model / model ID alanına OpenRouter'da kullanılabilen model kimliğini girin.
+- **Ollama:** yerel sunucu için `http://127.0.0.1:11434/v1`; bilgisayarınızda bulunan modelin adını seçin. Model alanı boşsa `llama3.2` denenir.
+- **LM Studio:** yerel sunucu için `http://127.0.0.1:1234/v1`; LM Studio'da Local Server etkin olmalı ve Model alanına sunucunun model kimliğini girin.
+- **Özel OpenAI-uyumlu servis:** `Custom OpenAI-compatible` seçin; Base URL alanına adresi ve Model alanına sunucunun desteklediği model kimliğini girin.
+
+Güvenlik için şifresiz HTTP yalnız `localhost`, `127.0.0.1` veya `::1` gibi loopback adreslerinde kabul edilir; uzak servis adresleri HTTPS kullanmalıdır. Yerel model kullanımında metin bilgisayarınızda kalabilir, ancak seçilen bulut sağlayıcıya gönderilen metin o sağlayıcının hizmet ve gizlilik koşullarına tabidir. DeepL'in ücretsiz anahtarları (`:fx` ile biten) `api-free.deepl.com`'a, diğerleri `api.deepl.com`'a gider.
 
 ## İzinler ve gizlilik
 
@@ -101,7 +112,7 @@ src/plugin.cpp             ABI girişi: initialize / invoke / onEvent / shutdown
 src/worker.h/.cpp          yakalama → OCR → çeviri → kaplama döngüsü; tek iş parçacığı
 src/capture.h/.cpp         DXGI Desktop Duplication, yedek olarak GDI BitBlt
 src/ocr_rapid.h/.cpp       RapidOcrOnnx.dll sarmalayıcısı
-src/translator.h/.cpp      OpenAI / DeepL / Google, WinHTTP
+src/translator.h/.cpp      OpenAI-uyumlu servisler / DeepL / Google, WinHTTP
 include/makine/plugin/     ABI başlıkları (Makine-Launcher'dan birebir kopya)
 tools/fetch_ocr.py         OCR motoru ve modellerini indirir, doğrular
 tools/plugin_dev.py        eklentiyi Makine olmadan çalıştırır (launcher'dan kopya)

@@ -9,6 +9,7 @@
 
 #include <cctype>
 #include <exception>
+#include <cwchar>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -100,6 +101,45 @@ std::string httpError(const std::string& service, DWORD status, const std::strin
     return message;
 }
 
+bool isLoopbackHost(const std::wstring& host)
+{
+    return _wcsicmp(host.c_str(), L"localhost") == 0
+        || _wcsicmp(host.c_str(), L"127.0.0.1") == 0
+        || _wcsicmp(host.c_str(), L"::1") == 0
+        || _wcsicmp(host.c_str(), L"[::1]") == 0;
+}
+
+bool isLoopbackHttpUrl(const std::string& rawUrl)
+{
+    const std::wstring url = widen(rawUrl);
+    URL_COMPONENTS parts{};
+    parts.dwStructSize = sizeof parts;
+    parts.dwSchemeLength = static_cast<DWORD>(-1);
+    parts.dwHostNameLength = static_cast<DWORD>(-1);
+    parts.dwUrlPathLength = static_cast<DWORD>(-1);
+    parts.dwExtraInfoLength = static_cast<DWORD>(-1);
+    if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &parts)) return false;
+    if (parts.nScheme != INTERNET_SCHEME_HTTP || parts.dwHostNameLength == 0) return false;
+    return isLoopbackHost(std::wstring(parts.lpszHostName, parts.dwHostNameLength));
+}
+
+std::string withoutTrailingSlashes(std::string url)
+{
+    url = trimmed(url);
+    while (!url.empty() && url.back() == '/') url.pop_back();
+    return url;
+}
+
+std::string effectiveModel(const Config& cfg)
+{
+    const std::string selected = trimmed(cfg.model);
+    if (!selected.empty()) return selected;
+    if (cfg.provider == "openai") return "gpt-4.1-mini";
+    if (cfg.provider == "groq") return "openai/gpt-oss-20b";
+    if (cfg.provider == "ollama") return "llama3.2";
+    return {}; // OpenRouter, LM Studio and custom endpoints need the user's model ID.
+}
+
 } // namespace
 
 Translator::Translator()
@@ -134,17 +174,45 @@ void Translator::cancel()
     m_request = nullptr;
 }
 
-std::optional<Translator::Response> Translator::post(const wchar_t* host, const wchar_t* path,
-                                                     const std::wstring& headers, const std::string& body,
-                                                     std::string& error)
+std::optional<Translator::Response> Translator::post(const std::wstring& url, const std::wstring& headers,
+                                                     const std::string& body, std::string& error)
 {
     if (!m_session) {
         error = "WinHTTP açılamadı";
         return std::nullopt;
     }
-    const HINTERNET connect = WinHttpConnect(m_session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
-    HINTERNET request = connect ? WinHttpOpenRequest(connect, L"POST", path, nullptr, WINHTTP_NO_REFERER,
-                                                     WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
+
+    URL_COMPONENTS parts{};
+    parts.dwStructSize = sizeof parts;
+    parts.dwSchemeLength = static_cast<DWORD>(-1);
+    parts.dwHostNameLength = static_cast<DWORD>(-1);
+    parts.dwUserNameLength = static_cast<DWORD>(-1);
+    parts.dwPasswordLength = static_cast<DWORD>(-1);
+    parts.dwUrlPathLength = static_cast<DWORD>(-1);
+    parts.dwExtraInfoLength = static_cast<DWORD>(-1);
+    if (url.empty() || !WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &parts)
+        || parts.dwHostNameLength == 0 || parts.dwUserNameLength != 0 || parts.dwPasswordLength != 0) {
+        error = "Geçersiz servis adresi; URL'yi https:// ile başlayacak şekilde kontrol edin.";
+        return std::nullopt;
+    }
+
+    const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
+    const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
+    if (!secure && (parts.nScheme != INTERNET_SCHEME_HTTP || !isLoopbackHost(host))) {
+        error = "Güvenlik nedeniyle HTTP yalnız localhost/127.0.0.1/::1 adreslerinde kullanılabilir. Uzak servis için HTTPS kullanın.";
+        return std::nullopt;
+    }
+
+    std::wstring path = parts.dwUrlPathLength
+        ? std::wstring(parts.lpszUrlPath, parts.dwUrlPathLength) : L"/";
+    if (parts.dwExtraInfoLength)
+        path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
+
+    const HINTERNET connect = WinHttpConnect(m_session, host.c_str(), parts.nPort, 0);
+    const DWORD requestFlags = secure ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET request = connect ? WinHttpOpenRequest(connect, L"POST", path.c_str(), nullptr,
+                                                     WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                     requestFlags)
                                 : nullptr;
     DWORD failure = request ? 0 : GetLastError();
     {
@@ -177,7 +245,7 @@ std::optional<Translator::Response> Translator::post(const wchar_t* host, const 
     }
     {
         std::lock_guard lock(m_mutex);
-        if (m_request) WinHttpCloseHandle(m_request);   // already closed if cancel() ran
+        if (m_request) WinHttpCloseHandle(m_request);
         m_request = nullptr;
     }
     if (connect) WinHttpCloseHandle(connect);
@@ -189,21 +257,19 @@ std::optional<std::string> Translator::translate(const Config& cfg, const std::s
                                                  const History& history, std::string& error)
 {
     const std::string key = trimmed(cfg.apiKey);
-    if (key.empty()) {
-        error = "API anahtarı girilmedi; eklenti ayarlarından ekleyin.";
-        return std::nullopt;
-    }
 
     std::string service;
-    const wchar_t* host = nullptr;
-    const wchar_t* path = nullptr;
+    std::wstring url;
     std::wstring headers = L"Content-Type: application/json\r\n";
     json body;
     json::json_pointer answer;
     if (cfg.provider == "deepl") {
         service = "DeepL";
-        host = key.ends_with(":fx") ? L"api-free.deepl.com" : L"api.deepl.com";   // free keys end in :fx
-        path = L"/v2/translate";
+        if (key.empty()) {
+            error = "DeepL API anahtarı girilmedi; eklenti ayarlarından ekleyin.";
+            return std::nullopt;
+        }
+        url = key.ends_with(":fx") ? L"https://api-free.deepl.com/v2/translate" : L"https://api.deepl.com/v2/translate";
         headers += L"Authorization: DeepL-Auth-Key " + widen(key) + L"\r\n";
         // English needs a variant as a target.
         body = {{"text", json::array({text})},
@@ -212,37 +278,79 @@ std::optional<std::string> Translator::translate(const Config& cfg, const std::s
         answer = json::json_pointer("/translations/0/text");
     } else if (cfg.provider == "google") {
         service = "Google";
-        host = L"translation.googleapis.com";
-        path = L"/language/translate/v2";
+        if (key.empty()) {
+            error = "Google Cloud Translation API anahtarı girilmedi; eklenti ayarlarından ekleyin.";
+            return std::nullopt;
+        }
+        url = L"https://translation.googleapis.com/language/translate/v2";
         headers += L"X-goog-api-key: " + widen(key) + L"\r\n";   // a header, never the URL
         body = {{"q", text}, {"source", cfg.sourceLang}, {"target", cfg.targetLang}, {"format", "text"}};
         answer = json::json_pointer("/data/translations/0/translatedText");
     } else {
-        service = "OpenAI";
-        host = L"api.openai.com";
-        path = L"/v1/chat/completions";
-        headers += L"Authorization: Bearer " + widen(key) + L"\r\n";
+        std::string baseUrl;
+        if (cfg.provider == "openai") {
+            service = "OpenAI";
+            baseUrl = "https://api.openai.com/v1";
+        } else if (cfg.provider == "groq") {
+            service = "Groq";
+            baseUrl = "https://api.groq.com/openai/v1";
+        } else if (cfg.provider == "openrouter") {
+            service = "OpenRouter";
+            baseUrl = "https://openrouter.ai/api/v1";
+        } else if (cfg.provider == "ollama") {
+            service = "Ollama";
+            baseUrl = "http://127.0.0.1:11434/v1";
+        } else if (cfg.provider == "lmstudio") {
+            service = "LM Studio";
+            baseUrl = "http://127.0.0.1:1234/v1";
+        } else if (cfg.provider == "compatible") {
+            service = "Özel OpenAI-uyumlu servis";
+            baseUrl = trimmed(cfg.baseUrl);
+        } else {
+            error = "Bilinmeyen çeviri servisi: " + cfg.provider;
+            return std::nullopt;
+        }
+        baseUrl = withoutTrailingSlashes(baseUrl);
+        if (baseUrl.empty()) {
+            error = "Özel servis seçildi; Base URL alanına https://.../v1 veya yerel sunucu adresini girin.";
+            return std::nullopt;
+        }
+        if (baseUrl.find('?') != std::string::npos || baseUrl.find('#') != std::string::npos) {
+            error = service + ": Base URL sorgu (?...) veya parça (#...) içermemeli; yalnızca temel API adresini girin.";
+            return std::nullopt;
+        }
+
+        const bool localHttp = isLoopbackHttpUrl(baseUrl);
+        if (key.empty() && !localHttp) {
+            error = service + ": API anahtarı girilmedi; yerel Ollama/LM Studio HTTP sunucuları dışında anahtar gerekir.";
+            return std::nullopt;
+        }
+        url = widen(baseUrl + "/chat/completions");
+        if (!key.empty()) headers += L"Authorization: Bearer " + widen(key) + L"\r\n";
+
         json messages = json::array();
         messages.push_back({{"role", "system"},
                             {"content", "You translate text from a video game from " + languageName(cfg.sourceLang)
                                             + " to " + languageName(cfg.targetLang)
                                             + ". Reply with the translation only: no quotes, notes or "
                                               "explanations. Keep line breaks, names, numbers and placeholders."}});
-        // Earlier lines keep names and terms consistent.
         for (const auto& [source, translation] : history) {
             messages.push_back({{"role", "user"}, {"content", source}});
             messages.push_back({{"role", "assistant"}, {"content", translation}});
         }
         messages.push_back({{"role", "user"}, {"content", text}});
-        const std::string model = trimmed(cfg.model);
-        // No temperature and max_completion_tokens: accepted by every current chat model.
-        body = {{"model", model.empty() ? Config{}.model : model},
-                {"messages", messages},
-                {"max_completion_tokens", 1000}};
+        const std::string model = effectiveModel(cfg);
+        if (model.empty()) {
+            error = service + ": Model ID alanını doldurun (servisin sunduğu model adını aynen kullanın).";
+            return std::nullopt;
+        }
+        body = {{"model", model}, {"messages", messages}};
+        if (localHttp) body["max_tokens"] = 1000;
+        else body["max_completion_tokens"] = 1000;
         answer = json::json_pointer("/choices/0/message/content");
     }
 
-    const auto response = post(host, path, headers, dump(body), error);
+    const auto response = post(url, headers, dump(body), error);
     if (!response) {
         error = service + ": " + error;
         return std::nullopt;

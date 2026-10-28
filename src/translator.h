@@ -19,8 +19,8 @@ namespace live {
 /// Earlier (source, translation) pairs, oldest first; OpenAI gets them as context.
 using History = std::deque<std::pair<std::string, std::string>>;
 
-/// OpenAI, DeepL and Google Cloud Translation over WinHTTP. translate() runs on
-/// the worker thread; cancel() may be called from any thread.
+/// OpenAI-compatible providers, DeepL and Google Cloud Translation over WinHTTP.
+/// translate() runs on the worker thread; cancel() may be called from any thread.
 class Translator {
 public:
     Translator();
@@ -40,7 +40,7 @@ private:
         DWORD status = 0;
         std::string body;
     };
-    std::optional<Response> post(const wchar_t* host, const wchar_t* path, const std::wstring& headers,
+    std::optional<Response> post(const std::wstring& url, const std::wstring& headers,
                                  const std::string& body, std::string& error);
 
     HINTERNET m_session = nullptr;

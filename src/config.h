@@ -19,9 +19,11 @@ struct Region {
 /// The plugin's settings (manifest.json "contributes.settings"). The worker reads
 /// an immutable snapshot; a change swaps in a new one.
 struct Config {
-    std::string provider = "openai";   // openai | deepl | google
+    // openai | groq | openrouter | ollama | lmstudio | compatible | deepl | google
+    std::string provider = "openai";
     std::string apiKey;
-    std::string model = "gpt-4.1-mini";
+    std::string model;
+    std::string baseUrl;          // Custom OpenAI-compatible endpoint; blank by default.
     std::string sourceLang = "en";
     std::string targetLang = "tr";
     int intervalMs = 1000;
@@ -32,7 +34,7 @@ struct Config {
     bool sameTranslation(const Config& o) const
     {
         return provider == o.provider && apiKey == o.apiKey && model == o.model
-               && sourceLang == o.sourceLang && targetLang == o.targetLang;
+               && baseUrl == o.baseUrl && sourceLang == o.sourceLang && targetLang == o.targetLang;
     }
 };
 

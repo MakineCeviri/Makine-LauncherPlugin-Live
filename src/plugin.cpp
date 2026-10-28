@@ -36,11 +36,14 @@ void applySetting(live::Config& c, const std::string& key, const json& v)
 {
     if (key == "provider" && v.is_string()) {
         const std::string p = v.get<std::string>();
-        if (p == "openai" || p == "deepl" || p == "google") c.provider = p;
+        if (p == "openai" || p == "groq" || p == "openrouter" || p == "ollama"
+            || p == "lmstudio" || p == "compatible" || p == "deepl" || p == "google") c.provider = p;
     } else if (key == "apiKey" && v.is_string()) {
         c.apiKey = v.get<std::string>();
     } else if (key == "model" && v.is_string()) {
         c.model = v.get<std::string>();
+    } else if (key == "baseUrl" && v.is_string()) {
+        c.baseUrl = v.get<std::string>();
     } else if (key == "sourceLang" && v.is_string()) {
         c.sourceLang = v.get<std::string>();
     } else if (key == "targetLang" && v.is_string()) {

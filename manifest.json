@@ -11,50 +11,174 @@
   "minLauncher": "0.2.0",
   "entry": "bin/makine-live.dll",
   "capabilities": [
-    { "id": "screen-capture", "reason": "Seçtiğin ekran bölgesini okur. Görüntü bilgisayarından çıkmaz; yalnız içinden okunan metin kullanılır." },
-    { "id": "network", "reason": "Okunan metni seçtiğin çeviri servisine (OpenAI, DeepL ya da Google) gönderir." },
-    { "id": "overlay", "reason": "Çeviriyi oyunun üstünde gösterir ve okunacak bölgeyi seçtirir." }
+    {
+      "id": "screen-capture",
+      "reason": "Seçtiğin ekran bölgesini okur. Görüntü bilgisayarından çıkmaz; yalnız içinden okunan metin kullanılır."
+    },
+    {
+      "id": "network",
+      "reason": "Sends recognized text only to the selected translation provider (OpenAI, Groq, OpenRouter, Ollama, LM Studio/local endpoint, DeepL, Google, or a custom OpenAI-compatible service)."
+    },
+    {
+      "id": "overlay",
+      "reason": "Çeviriyi oyunun üstünde gösterir ve okunacak bölgeyi seçtirir."
+    }
   ],
   "contributes": {
     "settings": [
-      { "key": "provider", "type": "select", "label": "Çeviri servisi",
+      {
+        "key": "provider",
+        "type": "select",
+        "label": "Çeviri servisi",
         "options": [
-          { "value": "openai", "label": "OpenAI" },
-          { "value": "deepl", "label": "DeepL" },
-          { "value": "google", "label": "Google Cloud Translation" }
+          {
+            "value": "openai",
+            "label": "OpenAI"
+          },
+          {
+            "value": "groq",
+            "label": "Groq"
+          },
+          {
+            "value": "openrouter",
+            "label": "OpenRouter"
+          },
+          {
+            "value": "ollama",
+            "label": "Ollama (local)"
+          },
+          {
+            "value": "lmstudio",
+            "label": "LM Studio (local)"
+          },
+          {
+            "value": "compatible",
+            "label": "Custom OpenAI-compatible"
+          },
+          {
+            "value": "deepl",
+            "label": "DeepL"
+          },
+          {
+            "value": "google",
+            "label": "Google Cloud Translation"
+          }
         ],
-        "default": "openai" },
-      { "key": "apiKey", "type": "secret", "label": "API anahtarı",
-        "description": "Seçili servisin anahtarı. Windows'ta şifreli saklanır." },
-      { "key": "model", "type": "text", "label": "OpenAI modeli",
-        "description": "Yalnız OpenAI için.", "default": "gpt-4.1-mini" },
-      { "key": "sourceLang", "type": "select", "label": "Kaynak dil",
+        "default": "openai"
+      },
+      {
+        "key": "apiKey",
+        "type": "secret",
+        "label": "API anahtarı",
+        "description": "Cloud providers need an API key. For a local Ollama/LM Studio endpoint, the key can be empty. Windows stores this value encrypted."
+      },
+      {
+        "key": "model",
+        "type": "text",
+        "label": "Model / model ID",
+        "description": "OpenAI-compatible providers need the model ID supported by that provider. Blank uses a default where available.",
+        "default": ""
+      },
+      {
+        "key": "baseUrl",
+        "type": "text",
+        "label": "Custom endpoint base URL",
+        "description": "Used only by Custom OpenAI-compatible. Example: https://api.example.com/v1 or http://127.0.0.1:1234/v1. HTTP is restricted to loopback addresses.",
+        "default": ""
+      },
+      {
+        "key": "sourceLang",
+        "type": "select",
+        "label": "Kaynak dil",
         "description": "OCR modeli şimdilik yalnız İngilizce metni okur.",
-        "options": [ { "value": "en", "label": "İngilizce" } ],
-        "default": "en" },
-      { "key": "targetLang", "type": "select", "label": "Hedef dil",
         "options": [
-          { "value": "tr", "label": "Türkçe" },
-          { "value": "en", "label": "İngilizce" },
-          { "value": "de", "label": "Almanca" },
-          { "value": "fr", "label": "Fransızca" },
-          { "value": "es", "label": "İspanyolca" },
-          { "value": "ru", "label": "Rusça" }
+          {
+            "value": "en",
+            "label": "İngilizce"
+          }
         ],
-        "default": "tr" },
-      { "key": "interval", "type": "number", "label": "Okuma aralığı (ms)",
+        "default": "en"
+      },
+      {
+        "key": "targetLang",
+        "type": "select",
+        "label": "Hedef dil",
+        "options": [
+          {
+            "value": "tr",
+            "label": "Türkçe"
+          },
+          {
+            "value": "en",
+            "label": "İngilizce"
+          },
+          {
+            "value": "de",
+            "label": "Almanca"
+          },
+          {
+            "value": "fr",
+            "label": "Fransızca"
+          },
+          {
+            "value": "es",
+            "label": "İspanyolca"
+          },
+          {
+            "value": "ru",
+            "label": "Rusça"
+          }
+        ],
+        "default": "tr"
+      },
+      {
+        "key": "interval",
+        "type": "number",
+        "label": "Okuma aralığı (ms)",
         "description": "Ekran ne sıklıkla okunsun. Değişmeyen ekran yeniden okunmaz.",
-        "min": 250, "max": 10000, "default": 1000 },
-      { "key": "showSource", "type": "toggle", "label": "Özgün metni de göster", "default": false },
-      { "key": "autoStart", "type": "toggle", "label": "Oyun açılınca başlat",
-        "description": "Kayıtlı bir bölge varsa oyun başlayınca okumaya başlar.", "default": false }
+        "min": 250,
+        "max": 10000,
+        "default": 1000
+      },
+      {
+        "key": "showSource",
+        "type": "toggle",
+        "label": "Özgün metni de göster",
+        "default": false
+      },
+      {
+        "key": "autoStart",
+        "type": "toggle",
+        "label": "Oyun açılınca başlat",
+        "description": "Kayıtlı bir bölge varsa oyun başlayınca okumaya başlar.",
+        "default": false
+      }
     ],
     "actions": [
-      { "id": "pickRegion", "label": "Bölge seç", "description": "Ekranda okunacak alanı seçer" },
-      { "id": "start", "label": "Başlat", "description": "Seçili bölgeyi okuyup çevirmeye başlar" },
-      { "id": "stop", "label": "Durdur" },
-      { "id": "readOnce", "label": "Bölgeyi oku (test)", "description": "Bölgedeki metni çevirmeden bir kez okur" }
+      {
+        "id": "pickRegion",
+        "label": "Bölge seç",
+        "description": "Ekranda okunacak alanı seçer"
+      },
+      {
+        "id": "start",
+        "label": "Başlat",
+        "description": "Seçili bölgeyi okuyup çevirmeye başlar"
+      },
+      {
+        "id": "stop",
+        "label": "Durdur"
+      },
+      {
+        "id": "readOnce",
+        "label": "Bölgeyi oku (test)",
+        "description": "Bölgedeki metni çevirmeden bir kez okur"
+      }
     ],
-    "events": [ "game.started", "game.stopped", "settings.changed" ]
+    "events": [
+      "game.started",
+      "game.stopped",
+      "settings.changed"
+    ]
   }
 }
