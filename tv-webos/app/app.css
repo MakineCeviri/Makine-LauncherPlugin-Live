@@ -1,0 +1,134 @@
+/* Makine TV (LG webOS) — spec/design_tokens.json "altyazı stüdyosu": koyu, tek vurgu rengi altyazı sarısı.
+   1920×1080 sayfa, 3 metreden okunur. Zemin saydam: HDMI görüntüsü donanım katmanında, sayfanın arkasında çizilir.
+   CSS değişkeni, inset, gap, max() KULLANILMAZ: webOS 3.x tarayıcısı Chromium 38'dir; renkler doğrudan yazılır.
+   Renkler: zemin #0f1012 · yüzey #16171a · yükseltilmiş #24262b · çizgi #2a2c31 · metin #ecebe6 / #a9a8a2 / #86868b
+   · vurgu #f2c230 · onaylı #3fae72 · uyarı #e2674a */
+
+html, body {
+  margin: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: transparent;
+  color: #ecebe6;
+  font-family: "LG Smart UI", "Museo Sans", Roboto, "Segoe UI", sans-serif;
+}
+
+#hdmi, #hdmi video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1920px;
+  height: 1080px;
+}
+
+/* ── Altyazı şeridi (overlay_render.py / SubtitleView.kt ile aynı ölçüler) ── */
+
+.sub {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 220ms cubic-bezier(.2, .7, .2, 1);
+  z-index: 2;
+}
+.sub.show { opacity: 1; transition-duration: 160ms; }
+.sub.alt { bottom: 8%; }
+.sub.ust { top: 6%; }
+
+.band {
+  position: relative;
+  max-width: 62%;
+  padding: .46em .85em;
+  border-radius: .38em;
+  background: rgba(15, 16, 18, .78);
+  text-align: center;
+  font-size: 44px;
+  font-weight: 600;
+  line-height: 1.24;
+}
+.band .text {
+  color: #fff;
+  text-shadow: 0 0 .06em #000, 0 0 .06em #000, 0 0 .06em #000;
+  white-space: pre-wrap;
+}
+.band .bar {
+  position: absolute;
+  left: 0;
+  top: .38em;
+  bottom: .38em;
+  width: 4px;
+  background: transparent;
+}
+.band.verified .bar { background: #3fae72; }
+.band.pending .bar { background: #f2c230; }
+
+/* ── Panel ── */
+
+.panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 96px;
+  background: transparent;
+  z-index: 3;
+  opacity: 1;
+  transition: opacity 200ms cubic-bezier(.2, .7, .2, 1);
+}
+.panel.hidden { opacity: 0; pointer-events: none; }
+.panel.solo { background: #0f1012; }    /* henüz görüntü yokken: tam koyu */
+
+.card {
+  width: 660px;
+  padding: 34px 44px 32px;
+  background: #16171a;
+  border: 2px solid #2a2c31;
+  border-radius: 20px;
+}
+
+.brand { display: flex; align-items: center; margin-bottom: 22px; }
+.brand img { margin-right: 22px; }
+.brand img { width: 64px; height: 64px; }
+.brand h1 { margin: 0; font-size: 40px; font-weight: 600; }
+.brand p { margin: 4px 0 0; font-size: 24px; color: #a9a8a2; }
+
+.label { font-size: 20px; letter-spacing: .12em; color: #86868b; font-weight: 600; margin: 0 0 12px 4px; }
+
+.pair { padding: 20px 28px; background: #0f1012; border: 2px solid #2a2c31; border-radius: 14px; margin-bottom: 18px; }
+.code { font: 700 92px/1.05 "Cascadia Mono", "Consolas", monospace; letter-spacing: .28em; color: #f2c230; margin: 2px 0 8px; }
+.status { display: flex; align-items: center; font-size: 28px; }
+.status .dot { margin-right: 14px; }
+.dot { width: 16px; height: 16px; border-radius: 50%; background: #f2c230; }
+.dot.on { background: #3fae72; }
+
+.steps { margin: 0 0 16px; padding-left: 34px; font-size: 22px; color: #a9a8a2; line-height: 1.5; }
+.steps b { color: #ecebe6; font-weight: 600; }
+
+.note { margin: -6px 0 22px; padding: 16px 20px; border: 2px solid #e2674a; border-radius: 12px; font-size: 21px; color: #a9a8a2; }
+
+.rows { display: flex; flex-direction: column; }
+.row + .row { margin-top: 8px; }
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 24px;
+  background: #16171a;
+  border: 2px solid #2a2c31;
+  border-radius: 12px;
+  color: #ecebe6;
+  font: inherit;
+  font-size: 24px;
+  text-align: left;
+  outline: none;
+}
+.row b { color: #f2c230; font-weight: 600; }
+.row.focus { background: #24262b; border-color: #f2c230; color: #fff; }

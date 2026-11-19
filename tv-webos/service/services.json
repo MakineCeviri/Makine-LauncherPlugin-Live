@@ -1,0 +1,15 @@
+{
+  "id": "org.makineceviri.tv.service",
+  "description": "Makine TV altyazı bağlantısı",
+  "services": [
+    {
+      "name": "org.makineceviri.tv.service",
+      "description": "PC'deki Makine Live ile bağlantı (keşif, eşleşme kodu, altyazı satırları)",
+      "commands": [
+        { "name": "start", "description": "Bağlantıyı başlatır; abonelere olay gönderir (state, line, clear, style)", "public": false },
+        { "name": "newCode", "description": "Yeni eşleşme kodu üretir, bağlı PC'yi düşürür", "public": false },
+        { "name": "state", "description": "Anlık durum", "public": false }
+      ]
+    }
+  ]
+}

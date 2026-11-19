@@ -1,0 +1,15 @@
+{
+  "id": "org.makineceviri.tv",
+  "version": "0.3.0",
+  "vendor": "Makine Çeviri",
+  "type": "web",
+  "main": "index.html",
+  "title": "Makine TV",
+  "appDescription": "Konsol oyunları için Türkçe altyazı",
+  "icon": "img/icon-80.png",
+  "largeIcon": "img/icon-130.png",
+  "bgColor": "#0f1012",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "handlesRelaunch": true
+}

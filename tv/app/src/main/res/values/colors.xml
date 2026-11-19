@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- spec/design_tokens.json → color.dark -->
+    <color name="bg">#0f1012</color>
+    <color name="accent">#f2c230</color>
+</resources>

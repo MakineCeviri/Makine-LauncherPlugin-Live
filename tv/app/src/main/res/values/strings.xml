@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Makine TV</string>
+    <string name="channel_name">Altyazı katmanı</string>
+    <string name="notif_title">Makine TV çalışıyor</string>
+    <string name="notif_text">Konsol oyunlarının Türkçe altyazısı ekranda gösteriliyor</string>
+</resources>

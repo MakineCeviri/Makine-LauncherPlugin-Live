@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <title>Makine TV</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- PS5 / Xbox HDMI görüntüsü (webOS dış giriş). Altyazı ve panel bunun üstünde çizilir. -->
+  <div id="hdmi"></div>
+
+  <div id="sub" class="sub" aria-live="polite"><div class="band"><span class="bar"></span><span class="text"></span></div></div>
+
+  <div id="panel" class="panel">
+    <div class="card">
+      <div class="brand"><img src="img/logo.png" alt=""><div><h1>Makine TV</h1><p>Konsol oyunları için Türkçe altyazı</p></div></div>
+
+      <div class="pair">
+        <div class="label">EŞLEŞME KODU</div>
+        <div id="code" class="code">····</div>
+        <div class="status"><span id="dot" class="dot"></span><span id="status">Başlatılıyor…</span></div>
+      </div>
+
+      <ol class="steps">
+        <li>Bilgisayarda Makine Live › <b>Konsol</b> sekmesi › <b>TV bul</b>.</li>
+        <li>Bu TV'yi seçip yukarıdaki kodu girin.</li>
+        <li>Altyazılar oyunun üstünde belirir. Menü: <b>OK</b> · Çıkış: <b>Geri</b></li>
+      </ol>
+
+      <div id="note" class="note" hidden></div>
+
+      <div class="label">AYARLAR</div>
+      <div id="rows" class="rows">
+        <button class="row" data-key="input"><span>Konsolun girişi</span><b></b></button>
+        <button class="row" data-key="size"><span>Yazı boyutu</span><b></b></button>
+        <button class="row" data-key="pos"><span>Konum</span><b></b></button>
+        <button class="row" data-key="opacity"><span>Arka plan</span><b></b></button>
+        <button class="row" data-key="sample"><span>Örnek altyazı göster</span><b></b></button>
+        <button class="row" data-key="code"><span>Yeni kod üret</span><b></b></button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
