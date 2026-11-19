@@ -31,11 +31,18 @@ public:
         const uint8_t* pixels, int width, int height) override;
 
     std::string name() const override { return "RapidOCR"; }
+
+    // Recognition model: "ch" (default; robust on game fonts) or "en" (English PP-OCRv3 model, used only when
+    // models/en_PP-OCRv3_rec_infer.onnx + en_dict.txt exist). Measured on stylised subtitles the English model
+    // occasionally produced garbage lines, so it is opt-in via the `ocrModel` setting. Call before init().
+    void setLanguage(const std::string& model) { m_lang = model; }
+    const std::string& language() const { return m_lang; }
+    const std::string& activeModel() const { return m_activeModel; }
     std::string lastError() const override { return m_error; }
 
 private:
-    bool saveBmp(const uint8_t* bgra, int w, int h, const std::string& path);
-    std::string parseOcrResult(const std::string& jsonResult);
+    bool saveBmp(const uint8_t* bgra, int w, int h);
+    bool prepareTempDir();
 
     // RapidOcrOnnx C API types
     using OcrInitFn    = void* (*)(const char*, const char*, const char*, const char*, int);
@@ -56,6 +63,13 @@ private:
     bool m_ready = false;
     std::string m_error;
     std::string m_dataPath;
+    std::string m_lang = "ch";
+    std::string m_activeModel;
+
+    // Scratch image handed to OcrDetect (RapidOcrOnnx only reads from files).
+    // Narrow-char API → ANSI path; created once with FILE_ATTRIBUTE_TEMPORARY so it stays in cache.
+    std::wstring m_tempDirW;
+    std::string m_tempDirAnsi;   // with trailing backslash, as OcrDetect expects
 };
 
 } // namespace live

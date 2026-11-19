@@ -8,15 +8,20 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "dxgi.lib")
 #endif
 
 namespace live {
 
+template <typename T>
+static void safeRelease(T*& p)
+{
+    if (p) { p->Release(); p = nullptr; }
+}
+
 bool ScreenCapture::init(CaptureMethod method)
 {
     if (m_initialized) return true;
+    m_requested = method;
 
     if (method == CaptureMethod::Auto || method == CaptureMethod::DXGI) {
         if (initDXGI()) {
@@ -26,15 +31,14 @@ bool ScreenCapture::init(CaptureMethod method)
         }
     }
 
+    // GDI is always available on Windows
     if (method == CaptureMethod::Auto || method == CaptureMethod::GDI) {
-        if (initGDI()) {
-            m_method = CaptureMethod::GDI;
-            m_initialized = true;
-            return true;
-        }
+        m_method = CaptureMethod::GDI;
+        m_initialized = true;
+        return true;
     }
 
-    m_error = "No capture method available";
+    // DXGI explicitly requested but unavailable: keep m_error from initDXGI
     return false;
 }
 
@@ -46,20 +50,23 @@ void ScreenCapture::shutdown()
 
 bool ScreenCapture::captureRegion(void* windowHandle, CaptureRegion region, CapturedFrame& out)
 {
-    if (!m_initialized) return false;
+    if (!m_initialized) { m_error = "Capture not initialized"; return false; }
+    if (region.width <= 0 || region.height <= 0) { m_error = "Invalid region dimensions"; return false; }
 
-    switch (m_method) {
-        case CaptureMethod::DXGI:  return captureDXGI(windowHandle, region, out);
-        case CaptureMethod::GDI:   return captureGDI(windowHandle, region, out);
-        default: return false;
-    }
+    // Desktop Duplication works on screen coordinates only; window-relative capture uses GDI.
+    if (m_method == CaptureMethod::DXGI && !windowHandle)
+        return captureDXGI(region, out);
+    return captureGDI(windowHandle, region, out);
 }
 
 bool ScreenCapture::captureFullWindow(void* windowHandle, CapturedFrame& out)
 {
 #ifdef _WIN32
     HWND hWnd = static_cast<HWND>(windowHandle);
-    if (!hWnd) hWnd = GetDesktopWindow();
+    if (!hWnd) {
+        return captureRegion(nullptr, {GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+                                       GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)}, out);
+    }
     RECT rect;
     if (!GetClientRect(hWnd, &rect))
         return false;
@@ -75,19 +82,16 @@ bool ScreenCapture::captureFullWindow(void* windowHandle, CapturedFrame& out)
 bool ScreenCapture::initDXGI()
 {
 #ifdef _WIN32
-    // Create D3D11 device
     D3D_FEATURE_LEVEL featureLevel;
     HRESULT hr = D3D11CreateDevice(
         nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
         nullptr, 0, D3D11_SDK_VERSION,
         &m_d3dDevice, &featureLevel, &m_d3dContext);
-
     if (FAILED(hr)) {
         m_error = "D3D11CreateDevice failed";
         return false;
     }
 
-    // Get DXGI device
     IDXGIDevice* dxgiDevice = nullptr;
     hr = m_d3dDevice->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice));
     if (FAILED(hr)) {
@@ -96,7 +100,6 @@ bool ScreenCapture::initDXGI()
         return false;
     }
 
-    // Get adapter
     IDXGIAdapter* adapter = nullptr;
     hr = dxgiDevice->GetParent(__uuidof(IDXGIAdapter), reinterpret_cast<void**>(&adapter));
     dxgiDevice->Release();
@@ -106,7 +109,7 @@ bool ScreenCapture::initDXGI()
         return false;
     }
 
-    // Get primary output
+    // Primary output only; regions outside it are captured with GDI.
     IDXGIOutput* output = nullptr;
     hr = adapter->EnumOutputs(0, &output);
     adapter->Release();
@@ -116,9 +119,14 @@ bool ScreenCapture::initDXGI()
         return false;
     }
 
-    // Get IDXGIOutput1 for DuplicateOutput
-    IDXGIOutput1* output1 = nullptr;
-    hr = output->QueryInterface(__uuidof(IDXGIOutput1), reinterpret_cast<void**>(&output1));
+    DXGI_OUTPUT_DESC outDesc;
+    output->GetDesc(&outDesc);
+    m_outLeft = outDesc.DesktopCoordinates.left;
+    m_outTop = outDesc.DesktopCoordinates.top;
+    m_outRight = outDesc.DesktopCoordinates.right;
+    m_outBottom = outDesc.DesktopCoordinates.bottom;
+
+    hr = output->QueryInterface(__uuidof(IDXGIOutput1), reinterpret_cast<void**>(&m_output));
     output->Release();
     if (FAILED(hr)) {
         m_error = "QueryInterface IDXGIOutput1 failed";
@@ -126,94 +134,143 @@ bool ScreenCapture::initDXGI()
         return false;
     }
 
-    // Create desktop duplication
-    hr = output1->DuplicateOutput(m_d3dDevice, &m_dxgiDup);
-    output1->Release();
-    if (FAILED(hr)) {
-        m_error = "DuplicateOutput failed (hr=" + std::to_string(hr) + ")";
+    if (!createDuplication()) {
         shutdownDXGI();
         return false;
     }
-
     return true;
 #else
     return false;
 #endif
 }
 
-bool ScreenCapture::captureDXGI(void* /*hwnd*/, CaptureRegion region, CapturedFrame& out)
+bool ScreenCapture::createDuplication()
 {
 #ifdef _WIN32
-    if (!m_dxgiDup || !m_d3dDevice || !m_d3dContext) return false;
+    HRESULT hr = m_output->DuplicateOutput(m_d3dDevice, &m_dxgiDup);
+    if (FAILED(hr)) {
+        m_dxgiDup = nullptr;
+        m_error = "DuplicateOutput failed (hr=" + std::to_string(hr) + ")";
+        return false;
+    }
+    m_hasLastFrame = false;
+    return true;
+#else
+    return false;
+#endif
+}
 
-    // Acquire next frame
+void ScreenCapture::releaseDuplication()
+{
+#ifdef _WIN32
+    safeRelease(m_dxgiDup);
+    m_hasLastFrame = false;
+#endif
+}
+
+bool ScreenCapture::captureDXGI(CaptureRegion region, CapturedFrame& out)
+{
+#ifdef _WIN32
+    // Region must lie entirely on the duplicated (primary) output.
+    if (region.x < m_outLeft || region.y < m_outTop
+        || region.x + region.width > m_outRight || region.y + region.height > m_outBottom)
+        return captureGDI(nullptr, region, out);
+
+    // Duplication is lost on mode changes, fullscreen switches, UAC/secure desktop.
+    // Recreate it, throttled so a persistent failure doesn't cost time every frame.
+    if (!m_dxgiDup) {
+        uint64_t now = GetTickCount64();
+        if (now < m_nextDupRetryMs || !createDuplication()) {
+            m_nextDupRetryMs = now + 500;
+            return captureGDI(nullptr, region, out);
+        }
+    }
+
+    // Don't block when we already have an image: a timeout just means "nothing changed".
     IDXGIResource* resource = nullptr;
-    DXGI_OUTDUPL_FRAME_INFO frameInfo;
-    HRESULT hr = m_dxgiDup->AcquireNextFrame(100, &frameInfo, &resource);
+    DXGI_OUTDUPL_FRAME_INFO frameInfo{};
+    HRESULT hr = m_dxgiDup->AcquireNextFrame(m_hasLastFrame ? 0 : 100, &frameInfo, &resource);
 
+    if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) {
+        releaseDuplication();
+        m_nextDupRetryMs = 0;
+        return captureGDI(nullptr, region, out);
+    }
     if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
-        // No new frame available
-        return false;
-    }
-    if (FAILED(hr)) {
+        if (!m_hasLastFrame)
+            return captureGDI(nullptr, region, out);
+    } else if (FAILED(hr)) {
         m_error = "AcquireNextFrame failed (hr=" + std::to_string(hr) + ")";
-        return false;
-    }
-
-    // Get the desktop texture
-    ID3D11Texture2D* desktopTex = nullptr;
-    hr = resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&desktopTex));
-    resource->Release();
-    if (FAILED(hr)) {
+        return captureGDI(nullptr, region, out);
+    } else {
+        // New frame (or pointer-only update). Keep a GPU copy of the desktop image.
+        ID3D11Texture2D* desktopTex = nullptr;
+        hr = resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&desktopTex));
+        resource->Release();
+        if (SUCCEEDED(hr)) {
+            bool imageUpdated = frameInfo.LastPresentTime.QuadPart != 0 || !m_hasLastFrame;
+            if (imageUpdated) {
+                D3D11_TEXTURE2D_DESC desc;
+                desktopTex->GetDesc(&desc);
+                if (m_lastDesktop) {
+                    D3D11_TEXTURE2D_DESC have;
+                    m_lastDesktop->GetDesc(&have);
+                    if (have.Width != desc.Width || have.Height != desc.Height || have.Format != desc.Format)
+                        safeRelease(m_lastDesktop);
+                }
+                if (!m_lastDesktop) {
+                    desc.Usage = D3D11_USAGE_DEFAULT;
+                    desc.BindFlags = 0;
+                    desc.CPUAccessFlags = 0;
+                    desc.MiscFlags = 0;
+                    desc.MipLevels = 1;
+                    desc.ArraySize = 1;
+                    if (FAILED(m_d3dDevice->CreateTexture2D(&desc, nullptr, &m_lastDesktop)))
+                        m_lastDesktop = nullptr;
+                }
+                if (m_lastDesktop) {
+                    m_d3dContext->CopyResource(m_lastDesktop, desktopTex);
+                    m_hasLastFrame = true;
+                }
+            }
+            desktopTex->Release();
+        }
         m_dxgiDup->ReleaseFrame();
-        m_error = "QueryInterface ID3D11Texture2D failed";
-        return false;
+        if (!m_hasLastFrame) {
+            m_error = "Could not cache desktop frame";
+            return captureGDI(nullptr, region, out);
+        }
     }
 
-    // Get desktop texture description for bounds checking
+    // Region in output-local coordinates
+    const int rx = region.x - m_outLeft;
+    const int ry = region.y - m_outTop;
+    const int rw = region.width;
+    const int rh = region.height;
+
     D3D11_TEXTURE2D_DESC deskDesc;
-    desktopTex->GetDesc(&deskDesc);
+    m_lastDesktop->GetDesc(&deskDesc);
 
-    // Clamp region to desktop bounds
-    int rx = region.x;
-    int ry = region.y;
-    int rw = region.width;
-    int rh = region.height;
-    if (rx < 0) rx = 0;
-    if (ry < 0) ry = 0;
-    if (rx + rw > static_cast<int>(deskDesc.Width))
-        rw = static_cast<int>(deskDesc.Width) - rx;
-    if (ry + rh > static_cast<int>(deskDesc.Height))
-        rh = static_cast<int>(deskDesc.Height) - ry;
-
-    if (rw <= 0 || rh <= 0) {
-        desktopTex->Release();
-        m_dxgiDup->ReleaseFrame();
-        m_error = "Invalid capture region after clamping";
-        return false;
+    if (!m_staging || m_stagingW != rw || m_stagingH != rh) {
+        safeRelease(m_staging);
+        D3D11_TEXTURE2D_DESC stagingDesc = {};
+        stagingDesc.Width = static_cast<UINT>(rw);
+        stagingDesc.Height = static_cast<UINT>(rh);
+        stagingDesc.MipLevels = 1;
+        stagingDesc.ArraySize = 1;
+        stagingDesc.Format = deskDesc.Format;
+        stagingDesc.SampleDesc.Count = 1;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(m_d3dDevice->CreateTexture2D(&stagingDesc, nullptr, &m_staging))) {
+            m_staging = nullptr;
+            m_error = "CreateTexture2D staging failed";
+            return false;
+        }
+        m_stagingW = rw;
+        m_stagingH = rh;
     }
 
-    // Create staging texture for CPU read
-    D3D11_TEXTURE2D_DESC stagingDesc = {};
-    stagingDesc.Width = static_cast<UINT>(rw);
-    stagingDesc.Height = static_cast<UINT>(rh);
-    stagingDesc.MipLevels = 1;
-    stagingDesc.ArraySize = 1;
-    stagingDesc.Format = deskDesc.Format;
-    stagingDesc.SampleDesc.Count = 1;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-
-    ID3D11Texture2D* stagingTex = nullptr;
-    hr = m_d3dDevice->CreateTexture2D(&stagingDesc, nullptr, &stagingTex);
-    if (FAILED(hr)) {
-        desktopTex->Release();
-        m_dxgiDup->ReleaseFrame();
-        m_error = "CreateTexture2D staging failed";
-        return false;
-    }
-
-    // Copy the requested region
     D3D11_BOX box;
     box.left = static_cast<UINT>(rx);
     box.top = static_cast<UINT>(ry);
@@ -221,37 +278,28 @@ bool ScreenCapture::captureDXGI(void* /*hwnd*/, CaptureRegion region, CapturedFr
     box.right = static_cast<UINT>(rx + rw);
     box.bottom = static_cast<UINT>(ry + rh);
     box.back = 1;
+    m_d3dContext->CopySubresourceRegion(m_staging, 0, 0, 0, 0, m_lastDesktop, 0, &box);
 
-    m_d3dContext->CopySubresourceRegion(stagingTex, 0, 0, 0, 0, desktopTex, 0, &box);
-    desktopTex->Release();
-
-    // Map staging texture and copy pixels
     D3D11_MAPPED_SUBRESOURCE mapped;
-    hr = m_d3dContext->Map(stagingTex, 0, D3D11_MAP_READ, 0, &mapped);
+    hr = m_d3dContext->Map(m_staging, 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(hr)) {
-        stagingTex->Release();
-        m_dxgiDup->ReleaseFrame();
         m_error = "Map staging texture failed";
         return false;
     }
 
     out.width = rw;
     out.height = rh;
-    out.pixels.resize(static_cast<size_t>(rw * rh * 4));
+    out.pixels.resize(static_cast<size_t>(rw) * rh * 4);
     out.timestamp = GetTickCount64();
 
     // Copy row-by-row (RowPitch may differ from rw*4)
     const uint8_t* src = static_cast<const uint8_t*>(mapped.pData);
     uint8_t* dst = out.pixels.data();
-    size_t rowBytes = static_cast<size_t>(rw) * 4;
-    for (int y = 0; y < rh; ++y) {
-        std::memcpy(dst + y * rowBytes, src + y * mapped.RowPitch, rowBytes);
-    }
+    const size_t rowBytes = static_cast<size_t>(rw) * 4;
+    for (int y = 0; y < rh; ++y)
+        std::memcpy(dst + y * rowBytes, src + static_cast<size_t>(y) * mapped.RowPitch, rowBytes);
 
-    m_d3dContext->Unmap(stagingTex, 0);
-    stagingTex->Release();
-    m_dxgiDup->ReleaseFrame();
-
+    m_d3dContext->Unmap(m_staging, 0);
     return true;
 #else
     (void)region; (void)out;
@@ -262,48 +310,118 @@ bool ScreenCapture::captureDXGI(void* /*hwnd*/, CaptureRegion region, CapturedFr
 void ScreenCapture::shutdownDXGI()
 {
 #ifdef _WIN32
-    if (m_dxgiDup) { m_dxgiDup->Release(); m_dxgiDup = nullptr; }
-    if (m_d3dContext) { m_d3dContext->Release(); m_d3dContext = nullptr; }
-    if (m_d3dDevice) { m_d3dDevice->Release(); m_d3dDevice = nullptr; }
+    releaseDuplication();
+    safeRelease(m_staging);
+    safeRelease(m_lastDesktop);
+    safeRelease(m_output);
+    safeRelease(m_d3dContext);
+    safeRelease(m_d3dDevice);
+    m_stagingW = m_stagingH = 0;
+#endif
+}
+
+// -- Window content (PrintWindow) --
+
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
+
+bool ScreenCapture::captureWindow(void* hwnd, CaptureRegion region, CapturedFrame& out)
+{
+#ifdef _WIN32
+    // The window renders itself into our bitmap, so covering windows never appear in the image and
+    // DirectComposition / flip-model content (video, games, Remote Play) is included.
+    HWND hWnd = static_cast<HWND>(hwnd);
+    RECT rc{};
+    if (!GetClientRect(hWnd, &rc) || IsIconic(hWnd))
+        return false;
+    const int cw = rc.right, ch = rc.bottom;
+    const int w = region.width, h = region.height;
+    if (cw <= 0 || ch <= 0 || region.x < 0 || region.y < 0 || region.x + w > cw || region.y + h > ch)
+        return false;
+
+    HDC wndDC = GetDC(hWnd);
+    if (!wndDC)
+        return false;
+    HDC memDC = CreateCompatibleDC(wndDC);
+    HBITMAP bitmap = memDC ? CreateCompatibleBitmap(wndDC, cw, ch) : nullptr;
+    if (!bitmap) {
+        if (memDC) DeleteDC(memDC);
+        ReleaseDC(hWnd, wndDC);
+        return false;
+    }
+    HGDIOBJ oldBitmap = SelectObject(memDC, bitmap);
+    const BOOL printed = PrintWindow(hWnd, memDC, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
+    SelectObject(memDC, oldBitmap);
+
+    BITMAPINFOHEADER bi = {};
+    bi.biSize = sizeof(bi);
+    bi.biWidth = cw;
+    bi.biHeight = -ch;  // top-down
+    bi.biPlanes = 1;
+    bi.biBitCount = 32;
+    bi.biCompression = BI_RGB;
+    std::vector<uint8_t> full(static_cast<size_t>(cw) * ch * 4);
+    const int lines = printed ? GetDIBits(memDC, bitmap, 0, static_cast<UINT>(ch), full.data(),
+                                          reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS)
+                              : 0;
+    DeleteObject(bitmap);
+    DeleteDC(memDC);
+    ReleaseDC(hWnd, wndDC);
+    if (lines != ch)
+        return false;
+
+    out.width = w;
+    out.height = h;
+    out.pixels.resize(static_cast<size_t>(w) * h * 4);
+    out.timestamp = GetTickCount64();
+    const size_t rowBytes = static_cast<size_t>(w) * 4;
+    bool anyLight = false;
+    for (int y = 0; y < h; ++y) {
+        const uint8_t* src = full.data() + (static_cast<size_t>(region.y + y) * cw + region.x) * 4;
+        uint8_t* dst = out.pixels.data() + y * rowBytes;
+        std::memcpy(dst, src, rowBytes);
+        if (!anyLight)
+            for (size_t i = 0; i < rowBytes; i += 4)
+                if (src[i] | src[i + 1] | src[i + 2]) { anyLight = true; break; }
+    }
+    // Entirely black: the window refused to render (protected content / old app). Let the caller fall back.
+    return anyLight;
+#else
+    (void)hwnd; (void)region; (void)out;
+    return false;
 #endif
 }
 
 // -- GDI BitBlt --
 
-bool ScreenCapture::initGDI()
-{
-    // GDI always available on Windows
-    return true;
-}
-
 bool ScreenCapture::captureGDI(void* hwnd, CaptureRegion region, CapturedFrame& out)
 {
 #ifdef _WIN32
+    if (hwnd && captureWindow(hwnd, region, out))
+        return true;
+    // null → whole virtual screen DC (screen coordinates, all monitors)
     HWND hWnd = static_cast<HWND>(hwnd);
-    if (!hWnd) hWnd = GetDesktopWindow();
-
-    HDC hWndDC = GetDC(hWnd);
-    if (!hWndDC) {
+    HDC srcDC = GetDC(hWnd);
+    if (!srcDC) {
         m_error = "GetDC failed";
         return false;
     }
 
-    // DPI-aware dimensions
-    int w = region.width;
-    int h = region.height;
-    if (w <= 0 || h <= 0) {
-        ReleaseDC(hWnd, hWndDC);
-        m_error = "Invalid region dimensions";
+    const int w = region.width;
+    const int h = region.height;
+    HDC memDC = CreateCompatibleDC(srcDC);
+    HBITMAP bitmap = memDC ? CreateCompatibleBitmap(srcDC, w, h) : nullptr;
+    if (!bitmap) {
+        if (memDC) DeleteDC(memDC);
+        ReleaseDC(hWnd, srcDC);
+        m_error = "CreateCompatibleBitmap failed";
         return false;
     }
+    HGDIOBJ oldBitmap = SelectObject(memDC, bitmap);
 
-    HDC hMemDC = CreateCompatibleDC(hWndDC);
-    HBITMAP hBitmap = CreateCompatibleBitmap(hWndDC, w, h);
-    SelectObject(hMemDC, hBitmap);
+    BOOL blitOk = BitBlt(memDC, 0, 0, w, h, srcDC, region.x, region.y, SRCCOPY);
 
-    BitBlt(hMemDC, 0, 0, w, h, hWndDC, region.x, region.y, SRCCOPY);
-
-    // Extract pixel data (BGRA)
     BITMAPINFOHEADER bi = {};
     bi.biSize = sizeof(bi);
     bi.biWidth = w;
@@ -314,15 +432,22 @@ bool ScreenCapture::captureGDI(void* hwnd, CaptureRegion region, CapturedFrame& 
 
     out.width = w;
     out.height = h;
-    out.pixels.resize(static_cast<size_t>(w * h * 4));
+    out.pixels.resize(static_cast<size_t>(w) * h * 4);
     out.timestamp = GetTickCount64();
 
-    GetDIBits(hMemDC, hBitmap, 0, static_cast<UINT>(h),
-              out.pixels.data(), reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS);
+    SelectObject(memDC, oldBitmap);
+    int lines = blitOk ? GetDIBits(memDC, bitmap, 0, static_cast<UINT>(h),
+                                   out.pixels.data(), reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS)
+                       : 0;
 
-    DeleteObject(hBitmap);
-    DeleteDC(hMemDC);
-    ReleaseDC(hWnd, hWndDC);
+    DeleteObject(bitmap);
+    DeleteDC(memDC);
+    ReleaseDC(hWnd, srcDC);
+
+    if (lines != h) {
+        m_error = "GDI capture failed";
+        return false;
+    }
     return true;
 #else
     (void)hwnd; (void)region; (void)out;

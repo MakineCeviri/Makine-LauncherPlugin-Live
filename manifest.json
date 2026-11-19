@@ -1,7 +1,8 @@
 {
     "id": "com.makineceviri.live",
     "name": "Makine Live",
-    "version": "0.1.0",
+    "version": "0.3.0",
+    "channel": "beta",
     "apiVersion": 1,
     "category": "translation",
     "description": "Real-time screen OCR and translation overlay with DXGI capture and multi-engine translation",
@@ -9,12 +10,14 @@
     "license": "AGPL-3.0-only WITH Commons-Clause",
     "homepage": "https://github.com/MakineCeviri/Makine-LauncherPlugin-Live",
     "entry": "makine-live.dll",
+    "icon": "icon.png",
     "dependencies": [],
     "capabilities": ["network", "screen_capture", "overlay"],
     "features": [
         "Screen capture (DXGI Desktop Duplication / GDI fallback)",
         "OCR text recognition (RapidOCR)",
-        "Translation engines (Google, DeepL, ChatGPT)",
+        "Shared translation pool on makineceviri.org (approved lines, one machine translation per line)",
+        "Developer translation engines (Google, DeepL, ChatGPT)",
         "Transparent overlay window",
         "Frame change detection for efficient OCR"
     ],
@@ -45,8 +48,8 @@
             "key": "translatorEngine",
             "type": "select",
             "label": "Ceviri Motoru",
-            "options": ["gpt", "deepl", "google"],
-            "default": "gpt"
+            "options": ["makine", "gpt", "deepl", "google"],
+            "default": "makine"
         },
         {
             "key": "apiKey",
