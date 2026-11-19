@@ -1,0 +1,9 @@
+Makine Live 0.1.1 · Hata düzeltmesi
+
+DÜZELTİLDİ
+- Çeviri kutusunu taşımak için kilidi açıp (F8) kutuyu sürükledikten kısa süre sonra uygulamanın aniden kapanması düzeltildi. Kutuyu artık istediğiniz kadar taşıyabilirsiniz; bıraktığınız konum hatırlanır.
+
+İYİLEŞTİRMELER
+- Beklenmedik bir kapanma olursa ayrıntılar artık %APPDATA%\MakineLive\logs\crash.log dosyasına da yazılır. Sorun bildirirken makine-live.log ile birlikte bu dosyayı da eklerseniz çok yardımcı olur.
+
+Sorun ve önerileriniz için: Discord'daki Tester-Sohbet kanalı ya da ar.zat kullanıcısı.

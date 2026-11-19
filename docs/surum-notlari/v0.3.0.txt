@@ -1,0 +1,27 @@
+Makine Live artık herkese açık! Yeni sürümle Makine Çeviri hesabınızla, şifresiz giriş yapıyorsunuz. Sunucumuz makineceviri.org'a taşındı; havuzdaki bütün çeviriler yerinde. Güncellemeden sonra bir kez giriş yapmanız yeterli.
+
+YENİ GİRİŞ: MAKİNE ÇEVİRİ HESABI
+- "Makine Çeviri hesabıyla giriş yap"a basın. Uygulama bir kod gösterir ve tarayıcıda makineceviri.org/live/baglan sayfasını açar.
+- Discord ya da e-postanızla girin, sayfadaki kodun uygulamadakiyle aynı olduğuna bakın ve "Makine Live'ı bağla"ya basın.
+- Hesabınız yoksa aynı sayfada birkaç saniyede açılır. Eski test hesaplarına gerek kalmadı.
+- Ekip hesapları (çevirmenler, testerlar) "Ekip hesabıyla giriş"ten kullanıcı adı ve şifreyle girmeye devam eder.
+
+HERKESE AÇIK İNDİRME
+- Makine Live'ı artık herkes makineceviri.org/live adresinden indirebilir. Kurulum yok, tek dosya; Windows 10 ve 11.
+- Kurulum ve kullanım rehberi aynı sayfada.
+
+DAHA HIZLI, DAHA AZ BEKLEME
+- Bir satırı daha önce başka bir oyuncu okuduysa çevirisi size anında gelir ve günlük sınırınızdan düşmez.
+- Aynı satırı üç farklı oyuncu okuyup çeviriler uyuşunca satır onaylanır ve herkese ortak havuzdan gelir. Ne kadar çok kişi oynarsa havuz o kadar hızlı büyür.
+- Çevirmen ekibimiz havuzdaki satırları düzeltip onaylamaya devam ediyor.
+
+KONSOLDA GTA VI
+- PS5 ve Xbox'ta oynadığınız GTA VI'ın altyazısı Türkçe olarak televizyonunuzda (Android TV / Google TV, LG), bilgisayar ekranınızda ya da telefonunuzda görünür.
+- Ayrıntılı rehber: makineceviri.org/live
+
+BİLMENİZ GEREKENLER
+- Güncellemeden sonra uygulama bir kez giriş ister; önceki oturumlar yeni sunucuya taşınmadı.
+- Ekranınızın görüntüsü hiçbir yere gönderilmez; sunucuya yalnızca okunan altyazı satırı gider.
+- Sorun yaşarsanız %APPDATA%\MakineLive\logs\makine-live.log dosyasıyla birlikte makineceviri.org/iletisim ya da Discord sunucumuzdan bize yazın.
+
+Makine Live hâlâ beta. Geri bildirimleriniz bir sonraki sürümü şekillendiriyor; iyi oyunlar!

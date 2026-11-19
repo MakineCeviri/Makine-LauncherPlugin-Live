@@ -1,0 +1,45 @@
+Makine Live'ın ilk kapalı beta sürümüne hoş geldiniz.
+
+Makine Live, oyundaki İngilizce altyazıları ekrandan okur ve Türkçe çevirisini oyunun üstünde gösterir. Oyuna dosya eklemez, oyunun kendisine dokunmaz; yalnızca ekranda gördüğünü okur. Her çeviri ortak bir havuzda toplanır. Bir satırı ne kadar çok oyuncu görürse, sonraki herkese o kadar hızlı ve doğru gelir.
+
+NASIL BAŞLANIR
+1. MakineLive.exe dosyasını çalıştırın. Kurulum gerekmez. Windows "bilinmeyen yayıncı" uyarısı verirse Ek bilgi → Yine de çalıştır'a basın.
+2. Size verilen test hesabıyla giriş yapın.
+3. Oyunu açın. Makine Live oyunu kendiliğinden tanır ve panelde adını gösterir.
+4. F10 ile altyazıların çıktığı bölgeyi seçin. Alanı yalnızca altyazı satırlarını kapsayacak kadar dar tutun.
+5. F9 ile başlatın. Çeviriler oyunun üstündeki kutuda görünür.
+6. Kutuyu sürükleyip istediğiniz yere taşıyın, sonra F8 ile kilitleyin. Kilitliyken tıklamalar oyuna geçer.
+
+Kısayollar: F8 kutuyu kilitle / taşı · F9 başlat / durdur · F10 bölge seç
+
+BU SÜRÜMDE
+- Oyun algılama: Steam, Epic, GOG, Ubisoft, EA ve Xbox oyunları ile Windows'un oyun listesindeki oyunlar tanınır. Tarayıcı, müzik çalar gibi oyun olmayan programlar algılanmaz. Oyununuz listede yoksa paneldeki "Oyun ekle" ile kendiniz ekleyebilirsiniz.
+- Hazır çeviriler: Oyununuz için onaylanmış çeviriler varsa uygulama size sorar ve bunları bilgisayarınıza indirir. Bu satırlar beklemeden gelir ve onaylandıkça kendiliğinden güncellenir.
+- Sunucu üzerinden çeviri: Kendi API anahtarınız gerekmez. Havuzda olmayan satırlar sunucu üzerinden çevrilir. Bir satır 3 farklı oyuncudan uyuşan çeviri alınca onaylanır ve herkese havuzdan gelir. Ekibimizdeki çevirmenler de satırları inceleyip onaylar.
+- Altyazı zamanlaması: Çeviri, oyundaki satır ekranda kaldığı sürece ve en az okuyabileceğiniz kadar görünür. Uzun satırlar kutuya sığacak şekilde küçülür.
+- Görünüm: Çeviri sekmesindeki "Örnek göster" ile kutuyu önceden görebilir; Görünüm sekmesinden stilini, yazı boyutunu, saydamlığını ve konumunu ayarlayabilirsiniz.
+- Yalnızca oyun öndeyken okur: Başka bir pencereye geçtiğinizde ya da bölgenin üstünde başka bir pencere varsa okuma durur. Böylece masaüstündeki yazılar çevrilmez.
+- Güncelleme ve duyurular: Yeni sürüm çıktığında uygulama sizi uyarır ve tek tıkla kendini günceller. Ekipten gelen duyurular açılışta bir kez gösterilir.
+
+İPUÇLARI
+- En iyi sonuç için oyunu "Kenarlıksız pencere" (Borderless) ya da pencere modunda çalıştırın. Tam ekran (Exclusive Fullscreen) modunda çeviri kutusu oyunun üstünde görünmeyebilir.
+- Oyunun altyazı boyutunu büyük, arka planını koyu ayarlamak okuma doğruluğunu artırır.
+- Bir çeviri yanlış ya da tuhafsa dert etmeyin: satırlar onaylandıkça düzelir.
+
+BİLİNEN SINIRLAR
+- Şimdilik yalnızca İngilizceden Türkçeye çeviri yapılır.
+- Yalnızca Windows 10 ve 11 desteklenir.
+- Stilize, el yazısı ya da çok küçük yazı tiplerinde okuma hataları olabilir.
+- Bu bir beta sürümüdür: hatalar ve eksikler olabilir; geri bildirimleriniz uygulamayı şekillendirecek.
+
+SORUN VE ÖNERİ BİLDİRMEK İÇİN
+Discord sunucumuzdaki Tester-Sohbet kanalına yazın ya da Discord'da ar.zat kullanıcısına doğrudan mesaj gönderin.
+Mesajınıza şunları eklerseniz sorunu çok daha hızlı çözeriz:
+- Hangi oyunda ve ne yaparken oldu?
+- Mümkünse bir ekran görüntüsü.
+- Uygulamanın kayıt dosyası: %APPDATA%\MakineLive\logs\makine-live.log
+  (Windows gezgininin adres çubuğuna %APPDATA%\MakineLive\logs yazıp Enter'a basarak klasörü açabilirsiniz.)
+
+Hesap güvenliği: Test hesabınız size özeldir; lütfen başkasıyla paylaşmayın. Hesap güvenliği için girişlerde IP adresi ve cihaz bilgisi kaydedilir.
+
+Makine Çeviri ekibi olarak katıldığınız için teşekkür ederiz. İyi oyunlar!

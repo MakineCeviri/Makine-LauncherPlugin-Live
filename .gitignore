@@ -22,8 +22,47 @@ Makefile
 *.exp
 *.bmp
 
+# Prebuilt OCR runtime (≈45 MB, distributed separately — see docs/MIMARI.md §6)
+third_party/
+
+# Release artifacts
+# py build_exe.py → dist/MakineLive.exe (PyInstaller çalışma dosyaları build/pyinstaller altında)
+dist/
+*.makine
+*.makine.tmp
+rate_music_cpanel.zip
+
+# Server secrets and live data — never commit
+server/config.local.php
+server/data/*
+!server/data/.htaccess
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+makine-live-data/
+
+# Makine TV (Android TV, tv/): Gradle çıktıları, yerel SDK yolu, imza anahtarı (anahtar asla depoya girmez)
+tv/.gradle/
+tv/build/
+tv/app/build/
+tv/local.properties
+*.jks
+*.keystore
+*.apk
+*.ipk
+# Makine TV (LG): servisin TV'de yazdığı durum dosyası (geliştirmede oluşursa)
+tv-webos/service/state.json
+
+# Python
+__pycache__/
+*.pyc
+
 # Logs
 *.log
+
+# Local secrets
+.env
+.env.*
 
 # IDE
 .vs/
@@ -40,5 +79,28 @@ Desktop.ini
 # Cache
 .cache/
 
-# Claude
-.claude/worktrees/
+
+
+
+# Yalnız yerelde (depo herkese açık): ajan / ekip notları ve sunucunun iç ayrıntıları.
+# Teknik mimari herkese açık olarak docs/MIMARI.md'de.
+CLAUDE.md
+GEMINI.md
+.claude/
+
+# Eski rate-music.com sunucusu (cPanel PHP) ve makineceviri.org'a geçiş araçları: yalnız yerelde,
+# rate-music.com kapatılınca silinir. Yeni sunucu ayrı ve özel Makine-WEB deposunda.
+server/
+makinelive.zip
+pack_server.py
+tests/test_server_local.py
+tests/mock_deepl.php
+tests/normalization_test.php
+tests/garbage_test.php
+tools/hash_password.py
+tools/live_migrate.py
+tools/live_password.py
+docs/SUNUCU_GECISI.md
+docs/CPANEL_KURULUM.md
+live-import.sql
+admin.sql

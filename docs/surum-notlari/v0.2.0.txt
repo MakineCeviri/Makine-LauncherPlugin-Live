@@ -1,0 +1,36 @@
+Makine Live 0.2.0 · Konsol / TV modu
+
+YENİ: GTA VI KONSOLDA TÜRKÇE (PS5 VE XBOX)
+Konsolda oynadığınız GTA VI'nın altyazısı artık Türkçe olarak doğrudan TV'nizde, oyunun üstünde görünür.
+Konsol modu yalnızca GTA VI içindir: herkesin çevirisi aynı havuzda toplanır, onaylanan satırlar herkese anında gelir.
+- Konsol HDMI ile TV'ye bağlı kalır, siz her zamanki gibi oynarsınız.
+- Bilgisayardaki Makine Live, PS Remote Play / Xbox uygulaması ya da yakalama kartı penceresinden altyazıyı okur.
+- Çeviri, TV'ye kurulan Makine TV uygulamasıyla oyunun üstünde gösterilir (Android TV / Google TV ve LG webOS TV'ler).
+- Havuzdaki onaylı çeviriler konsolda da aynı şekilde anında gelir.
+
+MONİTÖRDE OYNAYANLAR
+Konsol sekmesinde "Altyazı nerede görünsün?" sorusu var:
+- TV'de: Makine TV uygulaması (Android TV / Google TV, LG).
+- Bu ekranda: konsol görüntüsünü bilgisayarda (yakalama kartı ya da Remote Play) tam ekran açın, altyazı üstünde çıkar.
+- Telefonda: konsol monitöre bağlı kalır, Türkçe altyazı telefonun ya da tabletin tarayıcısında görünür (uygulama gerekmez).
+
+YAYIN VE EKRAN PAYLAŞIMI
+- Konsol modunda çeviri kutusu artık OBS'de ve Discord ekran paylaşımında görünür.
+- Bilgisayar oyunlarında: Görünüm › "Yayında ve ekran paylaşımında göster".
+- OBS için ayrıca: Görünüm › "OBS tarayıcı kaynağı" (OBS'de Kaynak ekle › Tarayıcı, adres kendiliğinden kopyalanır).
+
+NASIL KULLANILIR
+1. Makine Live'da Konsol sekmesini açın, "Konsolda · PS5 / Xbox" ve altyazı için "TV'de"yi seçin.
+2. TV'ye Makine TV'yi kurun: Konsol sekmesinde TV kartındaki "Kur" düğmesi adım adım anlatır ve bilgisayardan kurar.
+3. TV'de Makine TV'yi açın, "TV bul"a basın ve TV ekranındaki 4 haneli kodu girin.
+4. PS Remote Play'i (ya da Xbox uygulamasını) açıp konsolunuza bağlanın, F9 ile başlatın.
+Ayrıntılı kurulum: docs/KONSOL_TV.md (Discord'da da paylaşılacak).
+
+ÖNEMLİ
+- PS5'te Remote Play'e ikinci (ücretsiz) bir PSN hesabıyla bağlanın. Kendi hesabınızla bağlanırsanız kolunuz konsoldan kopar.
+- Remote Play penceresi bilgisayarda açık kalmalı (küçültmeyin). Üstünde başka pencere olması sorun değil.
+- Oyunda altyazıları açın. Bilgisayar, konsol ve TV aynı ağda (aynı modemde) olmalı.
+- LG TV'lerde Makine TV, LG'nin geliştirici modu ile kurulur ve konsolun görüntüsünü kendi içinde açar (Kur › LG). Ayrıntı kılavuzda.
+- Samsung TV'ler için Makine TV şimdilik yok; "Telefonda" ya da "Bu ekranda" seçeneklerini kullanabilirsiniz.
+
+Sorun ve önerileriniz için: Discord'daki Tester-Sohbet kanalı ya da ar.zat kullanıcısı.
