@@ -22,6 +22,11 @@ Makefile
 *.exp
 *.bmp
 
+# OCR models and archives (never in git)
+*.onnx
+*.7z
+*.mkplugin
+
 # Prebuilt OCR runtime (≈45 MB, distributed separately — see docs/MIMARI.md §6)
 third_party/
 
