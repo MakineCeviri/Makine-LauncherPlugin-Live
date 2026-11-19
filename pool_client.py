@@ -390,11 +390,13 @@ class ServerClient:
 
     def download_release(self, path: str, dest: str, sha256: str, progress=None, timeout: float = 30.0) -> str:
         """
-        Yeni sürümü indirir (herkese açık adres; jeton varsa o da gider), SHA-256'yı doğrular ve dosya yolunu döndürür. progress(alınan, toplam) çağrılır.
-        Özet tutmazsa dosya silinir ve ServerError fırlatılır.
+        Yeni sürümü indirir (herkese açık adres), SHA-256'yı doğrular ve dosya yolunu döndürür. progress(alınan, toplam) çağrılır.
+        Özet tutmazsa dosya silinir ve ServerError fırlatılır. Jeton gönderilmez: urllib yönlendirmede başlıkları
+        başka bir sunucuya da taşır.
         """
         url = f"{self.base_url}/{path.lstrip('/')}"
-        req = urllib.request.Request(url, headers={k: v for k, v in self._headers().items() if k != "Accept-Encoding"})
+        req = urllib.request.Request(url, headers={k: v for k, v in self._headers().items()
+                                                   if k not in ("Accept-Encoding", "Authorization")})
         part = dest + ".part"
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         h = hashlib.sha256()
