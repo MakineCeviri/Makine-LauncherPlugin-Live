@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+  LG uygulamasını (tv-webos/app) TV olmadan tarayıcıda görmek için: sahte Luna çağrıları (window.MakineMock).
+  Gerçek TV'de bu dosya kullanılmaz. Örnek: msedge --headless --screenshot … tests/webos_preview.html?scene=line
+  scene: menu (eşleşme ekranı, PC bekleniyor) | line (bağlı, oyunun üstünde altyazı) | long (uzun satır) | note (otomatik bulunamıyor)
+-->
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <title>Makine TV (LG) önizleme</title>
+  <style>
+    /* HDMI görüntüsü yerine koyu bir sahne */
+    body { background: #1f2a33 !important; }
+    #scene { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px;
+             background: #2b3a45; }
+    #scene .ground { position: absolute; left: 0; right: 0; bottom: 0; height: 420px; background: #141b20; }
+  </style>
+  <link rel="stylesheet" href="../tv-webos/app/app.css">
+</head>
+<body>
+  <div id="scene"><div class="ground"></div></div>
+  <div id="hdmi"></div>
+  <div id="sub" class="sub" aria-live="polite"><div class="band"><span class="bar"></span><span class="text"></span></div></div>
+  <div id="panel" class="panel"></div>
+  <script>
+    var scene = (location.search.match(/scene=(\w+)/) || [, 'menu'])[1];
+    var tpl = new XMLHttpRequest();
+    tpl.open('GET', '../tv-webos/app/index.html', false);
+    tpl.send();
+    var doc = new DOMParser().parseFromString(tpl.responseText, 'text/html');
+    document.getElementById('panel').innerHTML = doc.getElementById('panel').innerHTML;
+    document.querySelector('.brand img').src = '../tv-webos/app/img/logo.png';
+
+    window.MakineMock = {
+      call: function (uri, params, cb) {
+        if (uri.indexOf('/start') < 0 || !cb) return;
+        var connected = scene === 'line' || scene === 'long';
+        setTimeout(function () {
+          cb({ returnValue: true, event: 'state', code: '4821', pc: connected ? 'ARDA-PC' : null,
+               discovery: scene !== 'note', port: 47711, name: 'LG OLED55C3' });
+          if (scene === 'line') cb({ event: 'line', text: 'Bu şehir seni yutar, sen fark etmeden önce.', kind: 'verified' });
+          if (scene === 'long') cb({ event: 'line', kind: 'pending', text: 'Uzun bir satır: yazı en fazla dört satıra ' +
+            'sığacak şekilde küçülür ve şerit ekranın altında, ortada durur; beklemedeki çeviriler soldaki sarı şeritle görünür.' });
+        }, 50);
+      }
+    };
+  </script>
+  <script src="../tv-webos/app/app.js"></script>
+  <script>
+    if (scene === 'note') setTimeout(function () {
+      document.getElementById('note').hidden = false;
+      document.getElementById('note').textContent = 'Bu TV ağda otomatik bulunamıyor. Bilgisayarda TV bul › Adresle bağlan: 192.168.1.40';
+    }, 300);
+  </script>
+</body>
+</html>
