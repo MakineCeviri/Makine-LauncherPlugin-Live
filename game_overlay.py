@@ -1,0 +1,3472 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Makine Live — oyun içi test koşucusu (TEST HARNESS).
+
+Nihai ürün makine-live.dll'dir. Bu betik; ekran yakalama + OCR'ı DLL üzerinden,
+havuz sorgusunu ve yedek çeviriyi Python tarafında çalıştırarak özellikleri
+gerçek bir oyunda denemek için kullanılır.
+
+Arayüz
+  - hud_ui.py         panel bileşenleri ve animasyonlu ikonlar (Canvas + Pillow)
+  - overlay_render.py oyun içi çeviri kutusu (piksel bazında alfa, UpdateLayeredWindow)
+  - Tasarım dili      spec/design_tokens.json ("altyazı stüdyosu")
+
+Konsol / TV modu (PS5, Xbox): Remote Play ya da yakalama kartı penceresi okunur (console_mode.py), çeviri ev
+ağından TV'deki Makine TV uygulamasına gider (tv_link.py) ve HDMI görüntüsünün üstünde gösterilir.
+
+Kısayollar: F8 kilitle/taşı · F9 başlat/durdur · F10 bölge seç
+"""
+
+import os
+import sys
+import json
+import time
+import queue
+import webbrowser
+import random
+import ctypes
+import ctypes.wintypes
+import re
+import threading
+from collections import deque, OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from ctypes import c_char_p, c_uint32, c_int, c_void_p, c_bool, Structure
+import tkinter as tk
+import tkinter.font as tkfont
+
+from PIL import Image, ImageTk
+
+from game_detector import detect_game, capture_block_reason, foreground_window_info, get_library
+from console_mode import (ConsoleTarget, find_console_source, console_block_reason, region_to_screen,
+                          screen_to_region, valid_region, client_rect, window_has_image, DEFAULT_REGION,
+                          DEFAULT_GAME, CONSOLE_LABELS)
+from subtitle_web import SubtitleWeb
+from tv_link import TvLink, TvInfo, discover as discover_tvs, TCP_PORT as TV_TCP_PORT
+import tv_install
+import socket
+from local_pool import LocalPool
+import app_update
+from pool_client import (ServerClient, SessionStore, AuthRequired, NetworkError, ServerError, SERVER_URL,
+                         compact_pool_key, app_data_dir)
+from subtitle_timing import LineTracker, SubtitleScheduler
+
+FROZEN = bool(getattr(sys, "frozen", False))
+# Kaynak kök: geliştirmede repo, tek dosya exe'de PyInstaller'ın açtığı geçici klasör (sys._MEIPASS)
+SRC_ROOT = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+# makine-live.dll + RapidOcrOnnx.dll + onnxruntime.dll + models/ + resources/
+RUNTIME_DIR = os.path.join(SRC_ROOT, "runtime") if FROZEN else os.path.join(SRC_ROOT, "build", "release")
+# Eklentinin veri klasörü (settings.cfg, hud.json): exe'de kullanıcı profili, geliştirmede build/test_data
+DATA_DIR = app_data_dir() if FROZEN else os.path.join(SRC_ROOT, "build", "test_data")
+
+
+def _app_version() -> str:
+    for p in (os.path.join(RUNTIME_DIR, "manifest.json"), os.path.join(SRC_ROOT, "manifest.json")):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                return str(json.load(fh).get("version", "dev"))
+        except (OSError, ValueError):
+            continue
+    return "dev"
+
+
+APP_VERSION = _app_version()          # sürüm karşılaştırması bununla (sunucuya X-Makine-Version)
+APP_CHANNEL = "beta"
+APP_VERSION_LABEL = f"{APP_VERSION} {APP_CHANNEL}"   # ekranda: "0.1.0 beta"
+
+# DPI farkındalığı: kutu ve bölge seçimi fiziksel piksellerle çalışır.
+# (Tk penceresi oluşturulmadan önce ayarlanmalı.)
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+import hud_ui as ui                                            # noqa: E402
+from hud_ui import (BG, SURFACE, SURFACE2, RAISED, LINE, LINE_STRONG, TEXT, TEXT2, TEXT3,  # noqa: E402
+                    ACCENT, ACCENT_INK, VERIFIED, mix)
+from overlay_render import SubtitleOverlay, OverlayContent, STYLES  # noqa: E402
+
+
+def clean_ocr_text(raw: str) -> str:
+    """OCR çıktısı: kutular "\n" ile gelir; çok satırlı altyazı tek cümle olarak çevrilir."""
+    return " ".join(raw.split())
+
+
+# Satırın TAMAMI bunlardan biriyse arayüz/sistem yazısıdır (alt dize aranmaz: "STARTED", "SPILL" geçerli)
+_SYSTEM_LINES = {
+    "start", "search", "taskbar", "widgets", "weather", "battery", "microsoft", "google chrome", "discord", "steam",
+    "başlat", "ara", "görev çubuğu", "hava durumu", "pil", "duraklat", "kilit", "alan seç", "taşıma",
+    "canlı çeviri", "havuz", "f8", "f9", "f10",
+}
+
+
+def is_valid_dialogue_text(text: str) -> bool:
+    """Çöp, grafik gürültüsü ve sistem yazılarını eler. Uzun / çok satırlı / boşluğu kaybolmuş cümleleri ELEMEZ."""
+    cleaned = clean_ocr_text(text)
+    if len(cleaned) < 3:
+        return False
+
+    # 1. Ardışık 3 veya daha fazla aynı harf (örn: 'aaa', 'epieanoaisanadeaaa,a')
+    if re.search(r'([a-zA-Z])\1{2,}', cleaned):
+        return False
+
+    # 2. Tek parça, boşluksuz, çok uzun dizi: doku/yağmur gürültüsü. (Eski kural her >13 harfli kelimeyi
+    #    eliyordu; OCR boşluk yuttuğunda uzun cümleler tamamen kayboluyordu.)
+    if " " not in cleaned and len(cleaned) > 28:
+        return False
+
+    # 3. Harf oranı: karakterlerin en az %60'ı harf olmalı
+    non_space = [c for c in cleaned if not c.isspace()]
+    letters = [c for c in non_space if c.isalpha()]
+    if not non_space or len(letters) < 2 or len(letters) / len(non_space) < 0.60:
+        return False
+
+    # 4. Arayüz / görev çubuğu yazıları (yalnızca satırın tamamı eşleşirse)
+    if cleaned.lower().strip(" .:") in _SYSTEM_LINES:
+        return False
+    return True
+
+
+user32 = ctypes.windll.user32
+
+# Virtual Key Codes
+VK_F8 = 0x77
+VK_F9 = 0x78
+VK_F10 = 0x79
+
+
+# ─────────────────────────────────────────────────────────────
+# 1. DLL C ABI Yapıları ve Eklenti Sarmalayıcısı
+# ─────────────────────────────────────────────────────────────
+
+class MakinePluginInfo(Structure):
+    _fields_ = [
+        ("id", c_char_p),
+        ("name", c_char_p),
+        ("version", c_char_p),
+        ("apiVersion", c_uint32),
+    ]
+
+
+class PluginWrapper:
+    def __init__(self, dll_path: str):
+        self.dll_path = os.path.abspath(dll_path)
+        self.dll = None
+        self.is_loaded = False
+        self._lock = threading.Lock()
+        self.load()
+
+    def load(self):
+        if not os.path.exists(self.dll_path):
+            return False
+        try:
+            self.dll = ctypes.CDLL(self.dll_path)
+            self.dll.makine_get_info.restype = MakinePluginInfo
+            self.dll.makine_get_info.argtypes = []
+            self.dll.makine_initialize.restype = c_int
+            self.dll.makine_initialize.argtypes = [c_char_p]
+            self.dll.makine_shutdown.restype = None
+            self.dll.makine_shutdown.argtypes = []
+            self.dll.makine_is_ready.restype = c_bool
+            self.dll.makine_is_ready.argtypes = []
+            self.dll.makine_get_last_error.restype = c_char_p
+            self.dll.makine_get_last_error.argtypes = []
+            self.dll.makine_get_setting.restype = c_char_p
+            self.dll.makine_get_setting.argtypes = [c_char_p]
+            self.dll.makine_set_setting.restype = None
+            self.dll.makine_set_setting.argtypes = [c_char_p, c_char_p]
+            self.dll.makine_capture_and_ocr.restype = c_char_p
+            self.dll.makine_capture_and_ocr.argtypes = [c_void_p, c_int, c_int, c_int, c_int]
+            self.dll.makine_capture_ocr_translate.restype = c_char_p
+            self.dll.makine_capture_ocr_translate.argtypes = [c_void_p, c_int, c_int, c_int, c_int]
+            self.dll.makine_get_last_ocr_text.restype = c_char_p
+            self.dll.makine_get_last_ocr_text.argtypes = []
+            self.is_loaded = True
+            return True
+        except Exception:
+            self.is_loaded = False
+            return False
+
+    def initialize(self, data_path: str) -> int:
+        with self._lock:
+            if not self.is_loaded:
+                return -2
+            os.makedirs(data_path, exist_ok=True)
+            return self.dll.makine_initialize(data_path.encode('utf-8'))
+
+    def last_error(self) -> str:
+        with self._lock:
+            if not self.is_loaded:
+                return "DLL yüklenemedi"
+            res = self.dll.makine_get_last_error()
+            return res.decode('utf-8', errors='replace') if res else ""
+
+    def shutdown(self):
+        with self._lock:
+            if self.is_loaded and self.dll:
+                self.dll.makine_shutdown()
+
+    def set_setting(self, key: str, val: str):
+        with self._lock:
+            if self.is_loaded:
+                self.dll.makine_set_setting(key.encode('utf-8'), val.encode('utf-8'))
+
+    def get_setting(self, key: str) -> str:
+        with self._lock:
+            if not self.is_loaded:
+                return ""
+            res = self.dll.makine_get_setting(key.encode('utf-8'))
+            return res.decode('utf-8', errors='replace') if res else ""
+
+    def capture_and_ocr(self, x: int, y: int, w: int, h: int, hwnd=None) -> str:
+        """hwnd yoksa ekran koordinatı (DXGI); varsa o pencerenin istemci koordinatı ve pencerenin kendi içeriği
+        (üstü kapalı olsa da: konsol modunda Remote Play / yakalama penceresi)."""
+        with self._lock:
+            if not self.is_loaded:
+                return ""
+            res = self.dll.makine_capture_and_ocr(hwnd, x, y, w, h)
+            return res.decode('utf-8', errors='replace') if res else ""
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. Ekrandan bölge seçme aracı
+# ─────────────────────────────────────────────────────────────
+
+class RegionSelector(tk.Toplevel):
+    """
+    Ekranı karartır, seçilen alanı "delik" olarak açık bırakır (renk anahtarı), imleci vurgu
+    renginde artı işaretiyle izler ve canlı boyut etiketi gösterir.
+    """
+
+    KEY = "#010203"
+
+    def __init__(self, master, fonts, callback, current=None):
+        super().__init__(master)
+        self.callback = callback
+        self.f = fonts
+        self.overrideredirect(True)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{sw}x{sh}+0+0")
+        self.attributes("-topmost", True)
+        self.attributes("-alpha", 0.72)
+        self.attributes("-transparentcolor", self.KEY)
+        self.configure(bg="#000000", cursor="none")
+
+        self.c = tk.Canvas(self, bg="#08090a", highlightthickness=0, bd=0, cursor="none")
+        self.c.pack(fill="both", expand=True)
+        self.sw, self.sh = sw, sh
+        self.hole = self.c.create_rectangle(0, 0, 0, 0, fill=self.KEY, outline="", state="hidden")
+        self.frame = self.c.create_rectangle(0, 0, 0, 0, outline=ACCENT, width=2, state="hidden")
+        self.handles = [self.c.create_rectangle(0, 0, 0, 0, fill=ACCENT, outline="", state="hidden") for _ in range(4)]
+        self.vline = self.c.create_line(0, 0, 0, sh, fill=ACCENT, dash=(4, 4))
+        self.hline = self.c.create_line(0, 0, sw, 0, fill=ACCENT, dash=(4, 4))
+        self.size_bg = self.c.create_image(0, 0, anchor="nw", state="hidden")
+        self.size_txt = self.c.create_text(0, 0, anchor="w", font=fonts.code(13), fill=ACCENT_INK, state="hidden")
+
+        tip = "Diyalog alanını sürükleyerek seçin     Esc  vazgeç"
+        fnt = tkfont.Font(font=fonts.ui(14, semi=True))
+        tw = fnt.measure(tip) + 36
+        self.c.create_image(sw // 2 - tw // 2, 36, anchor="nw",
+                            image=ui.rrect_image(tw, 40, 8, fill=RAISED, outline=LINE_STRONG))
+        self.c.create_text(sw // 2, 56, text=tip, font=fonts.ui(14, semi=True), fill=TEXT)
+
+        if current:
+            x, y, w, h = current
+            self.c.create_rectangle(x, y, x + w, y + h, outline=TEXT3, dash=(6, 4))
+            self.c.create_text(x, y - 8, anchor="sw", text="mevcut bölge", font=fonts.ui(12), fill=TEXT2)
+
+        self.start = None
+        self.c.bind("<Motion>", self._motion)
+        self.c.bind("<ButtonPress-1>", self._press)
+        self.c.bind("<B1-Motion>", self._drag)
+        self.c.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.focus_force()
+
+    def _motion(self, e):
+        self.c.coords(self.vline, e.x, 0, e.x, self.sh)
+        self.c.coords(self.hline, 0, e.y, self.sw, e.y)
+
+    def _press(self, e):
+        self.start = (e.x, e.y)
+        for it in (self.hole, self.frame, self.size_bg, self.size_txt, *self.handles):
+            self.c.itemconfigure(it, state="normal")
+        self._drag(e)
+
+    def _drag(self, e):
+        self._motion(e)
+        if not self.start:
+            return
+        x0, y0 = self.start
+        x1, y1 = e.x, e.y
+        l, t, r, b = min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
+        self.c.coords(self.hole, l, t, r, b)
+        self.c.coords(self.frame, l, t, r, b)
+        for hnd, (hx, hy) in zip(self.handles, ((l, t), (r, t), (l, b), (r, b))):
+            self.c.coords(hnd, hx - 3, hy - 3, hx + 3, hy + 3)
+        label = f"{r - l} × {b - t}"
+        lw = tkfont.Font(font=self.f.code(13)).measure(label) + 16
+        ly = t - 30 if t > 40 else b + 8
+        self.c.coords(self.size_bg, l, ly)
+        self.c.itemconfigure(self.size_bg, image=ui.rrect_image(lw, 22, 4, fill=ACCENT))
+        self.c.coords(self.size_txt, l + 8, ly + 11)
+        self.c.itemconfigure(self.size_txt, text=label)
+
+    def _release(self, e):
+        if not self.start:
+            return
+        x0, y0 = self.start
+        x, y, w, h = min(x0, e.x), min(y0, e.y), abs(e.x - x0), abs(e.y - y0)
+        self.destroy()
+        if w > 15 and h > 15:
+            self.callback(x, y, w, h)
+
+
+# ─────────────────────────────────────────────────────────────
+# 3. Geçmiş listesi
+# ─────────────────────────────────────────────────────────────
+
+class HistoryList(tk.Canvas):
+    """Son satırlar: tıkla = çeviriyi kopyala, çift tıkla = oyunda yeniden göster."""
+
+    ROW_H = 62
+    MAX = 50
+
+    def __init__(self, master, fonts, width, height, on_copy, on_replay):
+        super().__init__(master, width=width, height=height, bg=BG, highlightthickness=0, bd=0)
+        self.f = fonts
+        self.w = width
+        self.on_copy, self.on_replay = on_copy, on_replay
+        self.rows = deque(maxlen=self.MAX)
+        self._hover = None
+        self._fnt_main = tkfont.Font(font=fonts.ui(13))
+        self._fnt_src = tkfont.Font(font=fonts.ui(12))
+        self._fnt_badge = tkfont.Font(font=fonts.code(11))
+        self._ctx = ui.UI(master.winfo_toplevel(), self, fonts)
+        self.copy_icon = None
+        self.bind("<Motion>", self._motion)
+        self.bind("<Leave>", lambda e: self._set_hover(None))
+        self.bind("<Button-1>", self._click)
+        self.bind("<Double-Button-1>", self._dbl)
+        self.bind("<MouseWheel>", lambda e: self.yview_scroll(int(-e.delta / 40), "units"))
+        self.configure(yscrollincrement=8)
+        self.redraw()
+
+    def add(self, entry):
+        self.rows.appendleft(entry)
+        self.redraw()
+
+    def clear(self):
+        self.rows.clear()
+        self.redraw()
+
+    def _fit(self, text, font, width):
+        text = " ".join(text.split())
+        if font.measure(text) <= width:
+            return text
+        while text and font.measure(text + "…") > width:
+            text = text[:-1]
+        return text + "…"
+
+    def redraw(self):
+        self.delete("all")
+        self._hover = None
+        if not self.rows:
+            h = int(self.cget("height"))
+            ic = ui.AnimatedIcon(self._ctx, self.w / 2, h / 2 - 22, "subtitle", 28, TEXT3)
+            ic.set(t=1.0)
+            self.create_text(self.w / 2, h / 2 + 12, text="Henüz satır yok", font=self.f.ui(13, semi=True), fill=TEXT2)
+            self.create_text(self.w / 2, h / 2 + 32, text="F9 ile başlatın; çevrilen satırlar burada birikir.",
+                             font=self.f.ui(12), fill=TEXT3)
+            self.configure(scrollregion=(0, 0, self.w, h))
+            self.copy_icon = None
+            return
+        for i, r in enumerate(self.rows):
+            y = i * self.ROW_H
+            tag = f"row{i}"
+            self.create_image(0, y + 2, anchor="nw", tags=(tag, "rowbg"), state="hidden",
+                              image=ui.rrect_image(self.w, self.ROW_H - 4, 6, fill=SURFACE2))
+            self.create_text(12, y + 16, anchor="w", text=r["time"], font=self.f.code(11), fill=TEXT3, tags=tag)
+            label, color = r["badge"]
+            bw = self._fnt_badge.measure(label) + 12
+            self.create_image(76, y + 7, anchor="nw", tags=tag,
+                              image=ui.rrect_image(bw, 18, 4, fill=mix(BG, color, 0.14), outline=mix(BG, color, 0.45)))
+            self.create_text(76 + bw / 2, y + 16, text=label, font=self.f.code(11), fill=color, tags=tag)
+            if r.get("ms") is not None:
+                self.create_text(self.w - 12, y + 16, anchor="e", text=f"{r['ms']} ms", font=self.f.code(11),
+                                 fill=TEXT3, tags=tag)
+            self.create_text(12, y + 34, anchor="w", text=self._fit(r["raw"], self._fnt_src, self.w - 24),
+                             font=self.f.ui(12), fill=TEXT3, tags=tag)
+            self.create_text(12, y + 51, anchor="w", text=self._fit(r["translated"], self._fnt_main, self.w - 48),
+                             font=self.f.ui(13), fill=TEXT, tags=tag)
+            if i < len(self.rows) - 1:
+                self.create_line(12, y + self.ROW_H, self.w - 12, y + self.ROW_H, fill=LINE, tags=tag)
+        self.copy_icon = ui.AnimatedIcon(self._ctx, -100, -100, "copy", 16, TEXT2)
+        self.configure(scrollregion=(0, 0, self.w, len(self.rows) * self.ROW_H))
+
+    def _index_at(self, e):
+        i = int(self.canvasy(e.y) // self.ROW_H)
+        return i if 0 <= i < len(self.rows) else None
+
+    def _set_hover(self, i):
+        if i == self._hover:
+            return
+        if self._hover is not None:
+            for it in self.find_withtag(f"row{self._hover}"):
+                if "rowbg" in self.gettags(it):
+                    self.itemconfigure(it, state="hidden")
+        self._hover = i
+        if i is not None and self.copy_icon:
+            for it in self.find_withtag(f"row{i}"):
+                if "rowbg" in self.gettags(it):
+                    self.itemconfigure(it, state="normal")
+                    self.tag_lower(it)
+            self.copy_icon.move(self.w - 22, i * self.ROW_H + 51)
+            self.tag_raise(self.copy_icon.item)
+            self.configure(cursor="hand2")
+        else:
+            if self.copy_icon:
+                self.copy_icon.move(-100, -100)
+            self.configure(cursor="")
+
+    def _motion(self, e):
+        self._set_hover(self._index_at(e))
+
+    def _click(self, e):
+        i = self._index_at(e)
+        if i is not None:
+            if self.copy_icon:
+                self.copy_icon.play(320)
+            self.on_copy(self.rows[i])
+
+    def _dbl(self, e):
+        i = self._index_at(e)
+        if i is not None:
+            self.on_replay(self.rows[i])
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. Kontrol paneli ve arka plan pipeline'ı
+# ─────────────────────────────────────────────────────────────
+
+SOURCE_LANG = "en"                       # şimdilik yalnızca İngilizceden Türkçeye
+TARGET_LANG = "tr"                      # sunucu şimdilik yalnızca Türkçeye çeviriyor
+ROLE_LABELS = {"admin": "yönetici", "translator": "çevirmen", "tester": "tester", "player": "oyuncu"}
+STYLE_LABELS = [("altyazi", "Altyazı"), ("yalin", "Yalın"), ("sinema", "Sinema")]
+POSITION_LABELS = [("alt", "Alt"), ("ust", "Üst"), ("serbest", "Serbest")]
+
+W = 440
+PAD = 20
+GAME_BTN_W = 92
+POOL_SYNC_S = 60          # yerel havuzun sunucuyla karşılaştırılma aralığı (oyun açıkken)
+STATUS_POLL_S = 300       # bakım / yeni sürüm / duyuru kontrolü (oturum açıkken)
+
+
+def _local_time(utc: str) -> str:
+    """Sunucunun UTC zamanı ("2026-10-22 12:00:00") → yerel "22.10.2026 15:00"."""
+    import datetime as _dt
+    try:
+        t = _dt.datetime.strptime(utc[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=_dt.timezone.utc).astimezone()
+        return t.strftime("%d.%m.%Y %H:%M")
+    except (ValueError, TypeError):
+        return utc
+
+STORE_LABELS = {"steam": "Steam", "epic": "Epic Games", "gog": "GOG", "ubisoft": "Ubisoft Connect", "ea": "EA app",
+                "xbox": "Xbox", "windows": "Windows oyun listesi", "known": "bilinen oyun", "custom": "elle eklendi",
+                "console": "Konsol"}
+TABS = [("canli", "Canlı"), ("ceviri", "Çeviri"), ("gorunum", "Görünüm"), ("konsol", "Konsol"), ("hesap", "Hesap")]
+TV_STATE_TEXT = {"idle": "TV seçilmedi", "connecting": "Bağlanıyor", "connected": "Bağlı",
+                 "bad_code": "Kod kabul edilmedi · TV bul ile yeniden girin", "offline": "TV'ye ulaşılamıyor · yeniden deneniyor"}
+
+
+def _same_target(a, b) -> bool:
+    if a is None or b is None:
+        return a is b
+    return a.pid == b.pid and a.hwnd == b.hwnd
+INNER = W - 2 * PAD
+H = 836
+TAB_Y = 364
+CONTENT_Y = TAB_Y + 46
+
+def _load_samples():
+    """Örnek altyazılar (spec/sample_quotes.json): oyunlarda gerçekten geçen replikler, her seferinde biri rastgele."""
+    try:
+        with open(os.path.join(SRC_ROOT, "spec", "sample_quotes.json"), encoding="utf-8") as fh:
+            out = [(q["game"], q["source"], q["tr"]) for q in json.load(fh)["quotes"] if q.get("tr")]
+        if out:
+            return out
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return [("Fallout", "War. War never changes.", "Savaş. Savaş asla değişmez.")]
+
+
+SAMPLES = _load_samples()
+
+
+def _short(s: str, n: int = 28) -> str:
+    s = " ".join(s.split())
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def _fmt_int(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+# Makine Çeviri logosu (tek kaynak; portal, .exe ikonu ve Launcher ikonu bundan üretilir: tools/brand_assets.py)
+LOGO_PATH = os.path.join(SRC_ROOT, "logo_white-96.webp")
+
+
+def logo_image(size: int, color=None) -> Image.Image:
+    """
+    Logo, size × size RGBA (saydam zemin, varsayılan beyaz). Kaynak 96 px olduğu için büyük boyutlarda alfa kanalı
+    yumuşak büyütülüp kenarları yeniden keskinleştirilir: tek renkli düz bir işaret olduğundan bulanıklaşmaz.
+    """
+    src = Image.open(LOGO_PATH).convert("RGBA")
+    alpha = src.getchannel("A")
+    if size > src.width:
+        big = alpha.resize((size * 2, size * 2), Image.BICUBIC)
+        big = big.point([max(0, min(255, (a - 128) * 3 + 128)) for a in range(256)])
+        alpha = big.resize((size, size), Image.LANCZOS)
+    else:
+        alpha = alpha.resize((size, size), Image.LANCZOS)
+    out = Image.new("RGBA", (size, size), (ui.rgb(color) if color else (255, 255, 255)) + (0,))
+    out.putalpha(alpha)
+    return out
+
+
+def app_mark_image(size: int) -> Image.Image:
+    """Uygulama ikonu: mürekkep koyusu yuvarlak karede beyaz logo (pencere ve exe ikonu; açık zeminde de görünür)."""
+    from PIL import ImageDraw
+    k = 4
+    s = size * k
+    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, s - 1, s - 1), radius=round(s * 0.22), fill=ui.rgb(SURFACE2) + (255,),
+                        outline=ui.rgb(LINE_STRONG) + (255,), width=max(1, round(s * 0.02)))
+    im = im.resize((size, size), Image.LANCZOS)
+    inner = max(8, round(size * (0.86 if size <= 32 else 0.78)))   # logonun kendi iç boşluğu var (96 px'te 5 px)
+    im.alpha_composite(logo_image(inner), ((size - inner) // 2, (size - inner) // 2))
+    return im
+
+
+class LoginView:
+    """
+    Giriş ekranı (panelle aynı tuval dili). Durumlar:
+      choice    Makine Çeviri hesabıyla giriş (ana yol) ya da ekip hesabı
+      device    kod gösterilir; kullanıcı tarayıcıda açılan makineceviri.org/live/baglan/ sayfasında onaylar
+      form      ekip hesabı: kullanıcı adı + şifre
+      checking  kayıtlı oturum sunucuda doğrulanıyor
+      offline   kayıtlı oturum var ama sunucuya ulaşılamadı (jeton silinmez; tekrar dene)
+    """
+
+    def __init__(self, root, fonts, on_submit, on_retry, on_switch, on_device=None, on_device_cancel=None,
+                 on_device_reopen=None):
+        self.root, self.f = root, fonts
+        self.on_submit, self.on_retry, self.on_switch = on_submit, on_retry, on_switch
+        self.on_device = on_device or (lambda: None)
+        self.on_device_cancel = on_device_cancel or (lambda: None)
+        self.on_device_reopen = on_device_reopen or (lambda: None)
+        self.c = tk.Canvas(root, width=W, height=H, bg=BG, highlightthickness=0, bd=0)
+        self.u = ui.UI(root, self.c, fonts)
+        c, u, f = self.c, self.u, fonts
+        cx = W / 2
+
+        self._mark = ImageTk.PhotoImage(logo_image(64))
+        c.create_image(cx, 170, image=self._mark)
+        c.create_text(cx, 236, text="Makine Live", font=f.disp(26), fill=TEXT)
+        if APP_CHANNEL:
+            chip_f = f.ui(11, semi=True)
+            cw = tkfont.Font(font=chip_f).measure(APP_CHANNEL.upper()) + 18
+            c.create_image(cx - cw / 2, 260, anchor="nw",
+                           image=ui.rrect_image(round(cw), 20, 10, fill=mix(BG, ACCENT, 0.12), outline=mix(BG, ACCENT, 0.5)))
+            c.create_text(cx, 270, text=APP_CHANNEL.upper(), font=chip_f, fill=ACCENT)
+
+        # ── Makine Çeviri hesabı (ana yol) ──
+        y = 318
+        c.create_text(PAD, y, anchor="nw", width=INNER, font=f.ui(13), fill=TEXT2, tags="choice",
+                      text="Makine Çeviri hesabınızla giriş yapın. Discord ya da e-posta adresiniz yeter; şifre gerekmez.")
+        self.btn_device = ui.Button(u, PAD, y + 62, INNER, 46, text="Makine Çeviri hesabıyla giriş yap", icon="arrow",
+                                    kind="primary", command=self._device, font=f.ui(14, semi=True), tags=("choice",))
+        self.err_choice = c.create_text(PAD, y + 120, anchor="nw", text="", font=f.ui(12), fill=ui.DISPUTED, width=INNER,
+                                        tags="choice")
+        c.create_text(cx, y + 176, text="Hesabınız yoksa açılan sayfada birkaç saniyede oluşturabilirsiniz.",
+                      font=f.ui(12), fill=TEXT3, width=INNER, justify="center", tags="choice")
+        ui.Button(u, PAD, y + 206, INNER, 38, text="Ekip hesabıyla giriş", kind="ghost",
+                  command=lambda: self.show_form(), font=f.ui(13), tags=("choice",))
+
+        # ── kod onayı ──
+        c.create_text(cx, 330, text="Tarayıcıda açılan sayfada bu kodu onaylayın", font=f.ui(13), fill=TEXT2,
+                      width=INNER, justify="center", tags="device")
+        self.dev_code = c.create_text(cx, 384, text="", font=f.code(30), fill=TEXT, tags="device")
+        self.dev_icon = ui.AnimatedIcon(u, cx, 440, "spinner", 22, ACCENT, tags=("device",))
+        self.dev_sub = c.create_text(cx, 474, anchor="n", text="", font=f.ui(12), fill=TEXT3, width=INNER, justify="center",
+                                     tags="device")
+        ui.Button(u, PAD, 540, INNER, 42, text="Sayfayı yeniden aç", kind="secondary",
+                  command=lambda: self.on_device_reopen(), font=f.ui(13, semi=True), tags=("device",))
+        ui.Button(u, PAD, 592, INNER, 38, text="Vazgeç", kind="ghost",
+                  command=lambda: self.on_device_cancel(), font=f.ui(13), tags=("device",))
+
+        # ── ekip hesabı ──
+        y = 318
+        c.create_text(PAD, y, anchor="w", text="Ekip hesabınızla giriş yapın.", font=f.ui(13), fill=TEXT2,
+                      tags="form")
+        y += 30
+        c.create_text(PAD, y + 8, anchor="w", text="Kullanıcı adı", font=f.ui(12, semi=True), fill=TEXT2, tags="form")
+        self.var_user = tk.StringVar()
+        self.fld_user = ui.Field(u, PAD, y + 22, INNER, 40, self.var_user, tags=("form",))
+        y += 76
+        c.create_text(PAD, y + 8, anchor="w", text="Şifre", font=f.ui(12, semi=True), fill=TEXT2, tags="form")
+        self.var_pass = tk.StringVar()
+        self._pass_visible = False
+        self.fld_pass = ui.Field(u, PAD, y + 22, INNER, 40, self.var_pass, show="•", tags=("form",), lead_icon="key",
+                                 trail=("eye_off", self._toggle_pass))
+        y += 78
+        self.err = c.create_text(PAD, y, anchor="nw", text="", font=f.ui(12), fill=ui.DISPUTED, width=INNER,
+                                 tags="form")
+        y += 34
+        self.btn = ui.Button(u, PAD, y, INNER, 46, text="Giriş yap", icon="arrow", kind="primary",
+                             command=self._submit, font=f.ui(14, semi=True), tags=("form",))
+        for e in (self.fld_user.entry, self.fld_pass.entry):
+            e.bind("<Return>", lambda ev: self._submit())
+        ui.Button(u, PAD, y + 62, INNER, 38, text="Makine Çeviri hesabıyla giriş", kind="ghost",
+                  command=lambda: self.show_choice(), font=f.ui(13), tags=("form",))
+
+        # ── doğrulanıyor / çevrimdışı ──
+        self.chk_icon = ui.AnimatedIcon(u, cx, 360, "spinner", 26, ACCENT, tags=("check",))
+        self.chk_title = c.create_text(cx, 400, text="", font=f.ui(15, semi=True), fill=TEXT, tags="check")
+        self.chk_sub = c.create_text(cx, 426, text="", font=f.ui(12), fill=TEXT3, width=INNER, justify="center",
+                                     tags="check")
+        self.btn_retry = ui.Button(u, PAD, 470, INNER, 44, text="Tekrar dene", icon="refresh", kind="primary",
+                                   command=lambda: self.on_retry(), font=f.ui(14, semi=True), tags=("offline",))
+        self.btn_switch = ui.Button(u, PAD, 524, INNER, 38, text="Başka hesapla giriş yap", kind="ghost",
+                                    command=lambda: self.on_switch(), font=f.ui(13), tags=("offline",))
+
+        c.create_text(cx, H - 34, text=f"sürüm {APP_VERSION_LABEL}", font=f.code(11), fill=TEXT3)
+        self.show_choice()
+
+    def _device(self):
+        self.set_error("")
+        self.btn_device.set_enabled(False)
+        self.btn_device.set_text("Bağlanılıyor…")
+        self.on_device()
+
+    def show_choice(self, error=""):
+        self.chk_icon.stop()
+        self.dev_icon.stop()
+        self._state(False, False, False, choice=True)
+        self.btn_device.set_enabled(True)
+        self.btn_device.set_text("Makine Çeviri hesabıyla giriş yap")
+        self.set_error(error)
+
+    def show_device(self, code, sub=""):
+        """Kod onayı: kod büyük, altında ne yapılacağı. sub: süre / bağlantı durumu."""
+        self.chk_icon.stop()
+        self._state(False, False, False, device=True)
+        self.c.itemconfigure(self.dev_code, text=code)
+        self.c.itemconfigure(self.dev_sub, text=sub or "Sayfa açılmadıysa “Sayfayı yeniden aç”a basın. "
+                                                       "Onaylayınca uygulama kendiliğinden giriş yapar.")
+        self.dev_icon.set(name="spinner", color=ACCENT)
+        self.dev_icon.loop(800)
+
+    def set_device_note(self, text):
+        self.c.itemconfigure(self.dev_sub, text=text)
+
+    def _toggle_pass(self):
+        self._pass_visible = not self._pass_visible
+        self.fld_pass.set_show("" if self._pass_visible else "•")
+        icon = self.fld_pass.trail
+        icon.animate(1.0, 140, frm=0.0, done=lambda: (icon.set(name="eye" if self._pass_visible else "eye_off"),
+                                                      icon.animate(0.0, 160)))
+
+    def _state(self, form, check, offline, choice=False, device=False):
+        self.c.delete("gate")
+        if not device:
+            self.dev_icon.stop()
+        self.c.itemconfigure("choice", state="normal" if choice else "hidden")
+        self.c.itemconfigure("device", state="normal" if device else "hidden")
+        self.c.itemconfigure("form", state="normal" if form else "hidden")
+        self.c.itemconfigure("check", state="normal" if check else "hidden")
+        self.c.itemconfigure("offline", state="normal" if offline else "hidden")
+
+    def _submit(self):
+        user, pw = self.var_user.get().strip(), self.var_pass.get()
+        if not user or not pw:
+            self.set_error("Kullanıcı adı ve şifre gerekli.")
+            return
+        self.set_busy(True)
+        self.on_submit(user, pw)
+
+    def set_error(self, text):
+        self.c.itemconfigure(self.err, text=text or "")
+        self.c.itemconfigure(self.err_choice, text=text or "")
+
+    def set_busy(self, busy):
+        self.btn.set_enabled(not busy)
+        self.btn.set_text("Giriş yapılıyor…" if busy else "Giriş yap")
+        if busy:
+            self.set_error("")
+
+    def show_form(self, error="", username=None):
+        self.chk_icon.stop()
+        self._state(True, False, False)
+        self.set_busy(False)
+        self.set_error(error)
+        if username is not None:
+            self.var_user.set(username)
+        self.var_pass.set("")
+        target = self.fld_pass.entry if self.var_user.get() else self.fld_user.entry
+        self.root.after(60, target.focus_set)
+
+    def show_checking(self, user):
+        self._state(False, True, False)
+        self.chk_icon.set(name="spinner", color=ACCENT)
+        self.chk_icon.loop(800)
+        self.c.itemconfigure(self.chk_title, text="Oturum doğrulanıyor")
+        self.c.itemconfigure(self.chk_sub, text=f"{user} olarak giriş yapılıyor…")
+
+    def show_gate(self, icon, color, title, message, primary=None, secondary=None, progress=None):
+        """Bakım / güncelleme ekranı. primary, secondary: (etiket, komut). progress: 0–1 ya da None."""
+        self._state(False, False, False)
+        self.chk_icon.stop()
+        c, u, f, cx = self.c, self.u, self.f, W / 2
+        icon_item = ui.AnimatedIcon(u, cx, 330, icon, 28, color, tags=("gate",))
+        if icon == "spinner":
+            icon_item.loop(800)
+        c.create_text(cx, 372, text=title, font=f.ui(16, semi=True), fill=TEXT, tags="gate")
+        c.create_text(cx, 398, anchor="n", text=message, font=f.ui(12), fill=TEXT2, width=INNER, justify="center", tags="gate")
+        y = 540
+        if progress is not None:
+            c.create_image(PAD, y - 40, anchor="nw", tags="gate", image=ui.rrect_image(INNER, 6, 3, fill=SURFACE2))
+            w = max(6, round(INNER * max(0.0, min(1.0, progress))))
+            c.create_image(PAD, y - 40, anchor="nw", tags="gate", image=ui.rrect_image(w, 6, 3, fill=ACCENT))
+        if primary:
+            ui.Button(u, PAD, y, INNER, 44, text=primary[0], kind="primary", command=primary[1],
+                      font=f.ui(14, semi=True), tags=("gate",))
+        if secondary:
+            ui.Button(u, PAD, y + 54, INNER, 38, text=secondary[0], kind="ghost", command=secondary[1],
+                      font=f.ui(13), tags=("gate",))
+
+    def show_offline(self, user, message):
+        self._state(False, True, True)
+        self.chk_icon.stop()
+        self.chk_icon.set(name="link", t=0.0, color=ui.DISPUTED)
+        self.c.itemconfigure(self.chk_title, text="Sunucuya ulaşılamıyor")
+        self.c.itemconfigure(self.chk_sub, text=f"{user} hesabı kayıtlı. {message}")
+
+
+class MakineGameLiveApp(tk.Tk):
+    def __init__(self, plugin=None, server=None, session_store=None):
+        super().__init__()
+        self.title("Makine Live")
+        self.configure(bg=BG)
+        self.geometry(f"{W}x{H}")
+        self.resizable(False, False)
+        self._set_window_icon()
+
+        self.dll_path = os.path.join(RUNTIME_DIR, "makine-live.dll")
+        self.data_path = DATA_DIR
+        self.hud_prefs_path = os.path.join(self.data_path, "hud.json")
+
+        self._ui_queue = queue.Queue()
+        self._cfg_lock = threading.Lock()
+        self._cfg = {}
+
+        self.plugin = plugin or PluginWrapper(self.dll_path)
+        init_rc = self.plugin.initialize(self.data_path)
+        # Giriş + çeviri makineceviri.org üzerinden (kullanıcıda API anahtarı yok)
+        self.server = server or ServerClient(SERVER_URL, app_version=APP_VERSION, device_name=self._device_name())
+        self._status = {}                     # son /api/live/app?action=status yanıtı
+        self._gate = None                     # "maintenance" | "update" | None (giriş tuvalinde kapı ekranı)
+        self._popups = []                     # sırayla gösterilecek duyurular / güncelleme önerisi
+        self._popup_open = False
+        self._ann_seen = set()
+        self._update_offered = False
+        self._status_tick_started = False
+        self.session = session_store or SessionStore()
+        self.profile = None                   # app_me / app_login yanıtı; None = giriş yapılmamış
+        self._notice = None                   # (metin, tür) — kota / anahtar yok / bağlantı
+        self._skip_keys = set()               # 422: sunucunun çöp saydığı satırlar (yeniden sorulmaz)
+
+        # Yalnızca oyunlar algılanır (game_library): oyun yoksa hedef boştur ve hiçbir şey okunmaz
+        self.detected_game_name = ""
+        self.detected_game_slug = ""
+        self.detected_exe = ""
+        self.detected_appid = ""              # Steam numarası (portaldaki oyun görseli)
+        self.library = get_library()
+        self.library.on_change = lambda: self._post(self._apply_detection)
+        self._adding_game = False
+
+        self.is_running = False
+        self.is_locked = False
+        self.region = (0, 0, 800, 400)
+        self.worker_thread = None
+        self._started_at = None
+
+        # Altyazı zamanlaması (subtitle_timing.py): takip worker'da, zamanlayıcı ana thread'de
+        self.tracker = LineTracker()
+        self.scheduler = SubtitleScheduler()
+        self._shown_disp = None
+        self._flash_id = 10 ** 9
+        self._line_t0 = {}                    # satır id -> ilk görüldüğü an (algılama→gösterim süresi)
+        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ceviri")
+        self._tr_cache = OrderedDict()        # boşluksuz anahtar -> (çeviri, tür); oturum içi
+        self._tr_lock = threading.Lock()
+        # Yerel havuz: algılanan oyunun ONAYLI çevirileri bilgisayara iner (kullanıcı onaylayınca), satırlar önce oradan
+        self.local_pool = LocalPool(app_data_dir())
+        self._pool_slug = ""                  # yerel havuzu etkin oyun
+        self._pool_prompt_slug = ""           # "oynayacağınız oyun bu mu?" sorusu açık olan oyun
+        self._pool_busy = False
+        self._pool_offline_logged = False
+        self._pool_retry_slug = ""            # soru sorulamadı (ağ / eski sunucu): bir sonraki turda yeniden denenir
+        self.target = None                    # game_detector.TargetWindow
+        self._block_reason = None
+        self._last_block_log = 0.0
+
+        self.stats = {"lines": 0, "pool": 0, "verified": 0, "api": 0, "chars_saved": 0,
+                      "lat": deque(maxlen=30)}
+        self.stage_ms = {"ocr": deque(maxlen=50), "pool": deque(maxlen=50), "api": deque(maxlen=50)}
+        self.prefs = {"style": "altyazi", "font_px": 26, "opacity": 78, "position": "alt",
+                      "custom_anchor": None, "min_show_ms": 1200, "tab": "canli",
+                      # Konsol / TV modu: oyun konsolda, görüntü Remote Play / yakalama penceresinden okunur
+                      # Konsol modu yalnızca GTA VI içindir (console_mode.console_game). Altyazı nerede görünür:
+                      # tv = Makine TV, pc = bu bilgisayarın ekranı (monitörde oynayanlar), web = telefon / tablet
+                      "mode": "pc", "console_region": list(DEFAULT_REGION), "console_out": "tv",
+                      "console_source": "", "console_exes": [], "tv": None, "tv_code": "",
+                      "tv_kind": "android",
+                      # Yayın: kutu OBS ekran yakalamada / ekran paylaşımında görünsün; OBS tarayıcı kaynağı
+                      "stream_visible": False, "obs_source": False}
+        # TV bağlantısı (Makine TV, ev ağı). Durum değişiklikleri ana thread'e taşınır.
+        self.tv_link = TvLink(os.environ.get("COMPUTERNAME", "PC"),
+                              on_state=lambda s, d: self._post(self._on_tv_state, s, d))
+        self._tv_line_id = 0
+        self._sheet_top = None
+        # Telefon / tablet ekranı ve OBS tarayıcı kaynağı (yerel HTTP, yalnızca açıkken)
+        self.web = SubtitleWeb(LOGO_PATH, on_clients=lambda n: self._post(self._on_web_clients, n))
+        self._web_clients = 0
+        # "Yayında göster" (PC oyunu): kutu yakalamaya açıkken okuma oyun penceresinin kendi içeriğinden yapılır.
+        # Pencereden okunamayan oyunlarda (tamamen siyah) kutu yakalamadan gizli kalır ve ekran kopyası okunur.
+        self._wincap = {"key": None, "ok": None, "next": 0.0, "fails": 0}
+
+        self._sample = random.choice(SAMPLES)    # önizleme / "Örnek göster" repliği
+        self.fonts = ui.Fonts(self)
+        self.c = tk.Canvas(self, width=W, height=H, bg=BG, highlightthickness=0, bd=0)
+        self.c.pack(fill="both", expand=True)
+        self.u = ui.UI(self, self.c, self.fonts)
+
+        self.overlay = SubtitleOverlay(self, on_moved=self._on_overlay_moved)
+        self._load_prefs()
+        self._build_ui()
+        self._load_settings()
+        self._snapshot_cfg()
+        self._apply_mode(initial=True)
+
+        if init_rc != 0:
+            reason = self.plugin.last_error() or f"kod {init_rc}"
+            self.log(f"DLL başlatılamadı: {reason}")
+            self.after(600, lambda: self.toast("DLL başlatılamadı · ayrıntı Kayıt'ta", warn=True))
+        self._scan_library(first=True)
+
+        # Giriş ekranı: panel yalnızca geçerli bir oturumla görünür
+        self.c.pack_forget()
+        self.login = LoginView(self, self.fonts, self._login_submit, self._validate_session,
+                               self._switch_account, on_device=self._device_login, on_device_cancel=self._device_cancel,
+                               on_device_reopen=self._device_reopen)
+        self._device_gen = 0                  # Makine Çeviri hesabıyla girişin sırası (Vazgeç eskisini durdurur)
+        self._device_url = ""
+        self.login.c.pack(fill="both", expand=True)
+        saved = self.session.load()
+        if saved and saved.get("server", self.server.base_url) == self.server.base_url:
+            self.server.token = saved["token"]
+            self._saved_user = saved.get("user", "")
+        else:
+            self._saved_user = ""
+        # Önce sunucu durumu: bakım ve zorunlu güncelleme girişten önce kontrol edilir
+        self.login.show_checking(self._saved_user or "Makine Live")
+        self.login.c.itemconfigure(self.login.chk_title, text="Sunucuya bağlanılıyor")
+        self.login.c.itemconfigure(self.login.chk_sub, text="Sürüm ve bakım durumu kontrol ediliyor…")
+        self._fetch_status(self._on_startup_status)
+
+        self._style_title_bar()
+        self._start_hotkey_listener()
+        self.after(30, self._drain_ui_queue)
+        self.after(50, self._tick_scheduler)
+        self.after(1000, self._tick_clock)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def _set_window_icon(self):
+        try:
+            self._icon_photo = ImageTk.PhotoImage(app_mark_image(64))
+            self.iconphoto(True, self._icon_photo)
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────
+    # Oturum
+    # ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _device_name() -> str:
+        return f"{os.environ.get('COMPUTERNAME', 'PC')} · Makine Live {APP_VERSION_LABEL}"
+
+    def _login_submit(self, username, password):
+        def worker():
+            try:
+                profile = self.server.login(username, password, self._device_name())
+                self._post(self._on_login_ok, profile)
+            except AuthRequired as e:
+                self._post(self.login.show_form, str(e) or "Kullanıcı adı veya şifre hatalı.", username)
+            except NetworkError:
+                self._post(self.login.show_form, "Sunucuya ulaşılamıyor. İnternet bağlantınızı kontrol edin.", username)
+            except ServerError as e:
+                self._post(self.login.show_form, str(e), username)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_login_ok(self, profile):
+        try:
+            self.session.save(self.server.token, profile.get("user", ""), self.server.base_url)
+        except OSError as e:
+            self.log(f"oturum kaydedilemedi: {e}")
+        self.log(f"giriş  {profile.get('user')} ({profile.get('role')})")
+        self._on_signed_in(profile)
+
+    def _validate_session(self):
+        """Kayıtlı jetonu sunucuda doğrula. Ağ hatasında jeton silinmez (çevrimdışı ekranı), 401'de silinir."""
+        user = getattr(self, "_saved_user", "") or "Hesap"
+        self.login.show_checking(user)
+
+        def worker():
+            try:
+                profile = self.server.me()
+                self._post(self._on_signed_in, profile)
+            except AuthRequired:
+                self._post(self._on_auth_lost, "Oturumun süresi doldu. Lütfen yeniden giriş yapın.")
+            except ServerError as e:
+                if e.code == "banned":
+                    self._post(self._on_auth_lost, str(e))
+                elif e.code == "maintenance":
+                    self._post(self._fetch_status, self._on_startup_status)
+                else:
+                    self._post(self.login.show_offline, user, "İnternet bağlantısı gelince tekrar deneyin.")
+            except NetworkError:
+                self._post(self.login.show_offline, user, "İnternet bağlantısı gelince tekrar deneyin.")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _switch_account(self):
+        self.server.token = None
+        self.session.clear()
+        self.login.show_choice()
+
+    # Makine Çeviri hesabıyla giriş: kod + tarayıcıda onay (makineceviri.org/live/baglan/), uygulama bekler.
+
+    def _device_login(self):
+        self._device_gen += 1
+        gen = self._device_gen
+
+        def worker():
+            try:
+                start = self.server.device_start(self._device_name())
+            except NetworkError:
+                self._post(self.login.show_choice, "Sunucuya ulaşılamıyor. İnternet bağlantınızı kontrol edin.")
+                return
+            except (ServerError, AuthRequired) as e:
+                self._post(self.login.show_choice, str(e) or "Giriş başlatılamadı. Biraz sonra tekrar deneyin.")
+                return
+            if gen != self._device_gen:
+                return
+            self._device_url = start.get("url", "")
+            self._post(self.login.show_device, start.get("code", ""))
+            self._post(self._device_reopen)
+            deadline = time.time() + float(start.get("expires_in", 600))
+            interval = max(2.0, float(start.get("interval", 3)))
+            offline = False
+            while gen == self._device_gen and time.time() < deadline:
+                time.sleep(interval)
+                if gen != self._device_gen:
+                    return
+                try:
+                    profile = self.server.device_poll(start["device"])
+                except NetworkError:
+                    if not offline:
+                        offline = True
+                        self._post(self.login.set_device_note, "Bağlantı koptu · yeniden deneniyor…")
+                    continue
+                except (ServerError, AuthRequired) as e:
+                    if gen == self._device_gen:
+                        expired = isinstance(e, ServerError) and e.status == 410
+                        self._post(self.login.show_choice, "Kodun süresi doldu. Tekrar deneyin." if expired else str(e))
+                    return
+                if offline:
+                    offline = False
+                    self._post(self.login.set_device_note, "Onaylayınca uygulama kendiliğinden giriş yapar.")
+                if profile:
+                    if gen == self._device_gen:
+                        self._device_gen += 1
+                        self._post(self._on_login_ok, profile)
+                    return
+            if gen == self._device_gen:
+                self._post(self.login.show_choice, "Kodun süresi doldu. Tekrar deneyin.")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _device_reopen(self):
+        if self._device_url:
+            webbrowser.open(self._device_url)
+
+    def _device_cancel(self):
+        self._device_gen += 1
+        self.login.show_choice()
+
+    def _on_signed_in(self, profile):
+        self.profile = profile
+        self.login.c.pack_forget()
+        self.c.pack(fill="both", expand=True)
+        self._update_account()
+        self._executor.submit(self.server.warm)
+        self._check_server_async()
+        self._pool_on_game(self.target)
+        self._refresh_status()
+        if not self._status_tick_started:
+            self._status_tick_started = True
+            self.after(STATUS_POLL_S * 1000, self._status_tick)
+        if not getattr(self, "_pool_tick_started", False):
+            self._pool_tick_started = True
+            self.after(POOL_SYNC_S * 1000, self._pool_tick)
+        if not profile.get("translation_ready", True):
+            self._set_notice("Sunucuda çeviri anahtarı yok · yalnızca havuzdaki satırlar gelir", "no_key")
+
+    def _on_auth_lost(self, message="Oturumunuz kapatıldı. Lütfen yeniden giriş yapın."):
+        """401: jeton geçersiz (süre, iptal ya da hesap silindi). Pipeline durur, giriş ekranına dönülür."""
+        if self.is_running:
+            self.toggle_running()
+        user = (self.profile or {}).get("user") or getattr(self, "_saved_user", "")
+        self.profile = None
+        self.server.token = None
+        self.session.clear()
+        self.c.pack_forget()
+        self.login.c.pack(fill="both", expand=True)
+        self.login.show_choice(message)
+        self.log("oturum  kapandı")
+
+    def logout(self):
+        if self.is_running:
+            self.toggle_running()
+        threading.Thread(target=self.server.logout, daemon=True).start()
+        user = (self.profile or {}).get("user", "")
+        self.session.clear()
+        self.profile = None
+        self.c.pack_forget()
+        self.login.c.pack(fill="both", expand=True)
+        self.login.show_choice()
+        self.log("çıkış yapıldı")
+
+    def _update_account(self):
+        p = self.profile or {}
+        user = p.get("user", "")
+        role = ROLE_LABELS.get(p.get("role", ""), p.get("role", ""))
+        self.c.itemconfigure(self.hdr_sub, text=f"{user} · {role}" if user else "")
+        self.c.itemconfigure(self.acc_user, text=user or "—")
+        self.c.itemconfigure(self.acc_kind, text="Makine Çeviri hesabı" if p.get("role") == "player" else "Ekip hesabı" if user else "")
+        chip_f = self.fonts.ui(11, semi=True)
+        cw = tkfont.Font(font=chip_f).measure(role.upper()) + 16
+        ux = PAD + 16 + tkfont.Font(font=self.fonts.disp(18)).measure(user or "—") + 12
+        color = ACCENT if p.get("role") == "tester" else (VERIFIED if p.get("role") == "admin" else TEXT2)
+        self.c.coords(self.acc_chip_bg, ux, self.acc_y + 15)
+        self.c.itemconfigure(self.acc_chip_bg, image=ui.rrect_image(round(cw), 20, 10, fill=mix(SURFACE, color, 0.14),
+                                                                    outline=mix(SURFACE, color, 0.5)))
+        self.c.coords(self.acc_chip, ux + cw / 2, self.acc_y + 25)
+        self.c.itemconfigure(self.acc_chip, text=role.upper(), fill=color)
+
+    def _set_notice(self, text, kind=None):
+        self._notice = (text, kind) if text else None
+        self._tick_clock(reschedule=False)
+
+    def _clear_notice(self, *kinds):
+        if self._notice and (not kinds or self._notice[1] in kinds):
+            self._set_notice(None)
+
+    # ─────────────────────────────────────────────────────────
+    # Pencere
+    # ─────────────────────────────────────────────────────────
+
+    def _toplevel_hwnd(self):
+        """Panelin üst düzey pencere tanıtıcısı (Tk'nın iç penceresinin ebeveyni)."""
+        try:
+            return user32.GetParent(self.winfo_id()) or self.winfo_id()
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _style_title_bar(self):
+        """Windows 11: koyu başlık çubuğu; başlık ve kenar rengi zeminle aynı."""
+        try:
+            self.update_idletasks()
+            hwnd = user32.GetParent(self.winfo_id()) or self.winfo_id()
+            dwm = ctypes.windll.dwmapi
+
+            def set_attr(attr, value):
+                v = ctypes.c_int(value)
+                dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v))
+
+            def colorref(hexc):
+                r, g, b = ui.rgb(hexc)
+                return r | (g << 8) | (b << 16)
+
+            set_attr(20, 1)                    # DWMWA_USE_IMMERSIVE_DARK_MODE
+            set_attr(35, colorref(BG))         # DWMWA_CAPTION_COLOR
+            set_attr(34, colorref(LINE))       # DWMWA_BORDER_COLOR
+            set_attr(36, colorref(TEXT2))      # DWMWA_TEXT_COLOR
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────
+    # Thread-safe UI köprüsü
+    # ─────────────────────────────────────────────────────────
+
+    def _post(self, fn, *args):
+        """Arka plan thread'lerinden ana thread'e iş gönderir."""
+        self._ui_queue.put((fn, args))
+
+    def _drain_ui_queue(self):
+        # Bir işin hatası köprüyü durdurmasın: hata günlüğe yazılır, sıradaki işler ve sonraki turlar devam eder
+        try:
+            while True:
+                try:
+                    fn, args = self._ui_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn(*args)
+                except Exception:  # noqa: BLE001
+                    _FILE_LOG.error("arayüz işi başarısız: %s\n%s", getattr(fn, "__name__", fn), traceback.format_exc())
+        finally:
+            self.after(30, self._drain_ui_queue)
+
+    def _snapshot_cfg(self, *_):
+        with self._cfg_lock:
+            p = self.prefs
+            self._cfg = {
+                "src": SOURCE_LANG,
+                "tgt": TARGET_LANG,
+                "only_focus": True,          # her zaman: yalnızca oyun öndeyken okunur (konsol modunda pencere açık olmalı)
+                "mode": p["mode"],
+                "console_region": tuple(p["console_region"]),
+                "stream_visible": p["stream_visible"],
+            }
+
+    def _cfg_copy(self):
+        with self._cfg_lock:
+            return dict(self._cfg)
+
+    # ─────────────────────────────────────────────────────────
+    # Arayüz
+    # ─────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        c, u, f = self.c, self.u, self.fonts
+
+        # ── Başlık ──
+        c.create_text(PAD, 30, anchor="w", text="Makine Live", font=f.disp(18), fill=TEXT)
+        wm = tkfont.Font(font=f.disp(18)).measure("Makine Live")
+        self.hdr_sub = c.create_text(PAD + wm + 8, 32, anchor="w", text="", font=f.ui(12), fill=TEXT3)
+
+        # ── Oyun kartı ──
+        y = 56
+        c.create_image(PAD, y, anchor="nw", image=ui.rrect_image(INNER, 58, 8, fill=SURFACE, outline=LINE))
+        self.game_icon = ui.AnimatedIcon(u, PAD + 26, y + 29, "game", 22, TEXT2)
+        self.game_name = c.create_text(PAD + 50, y + 21, anchor="w", text="Oyunlar taranıyor…",
+                                       font=f.ui(14, semi=True), fill=TEXT)
+        self.game_meta = c.create_text(PAD + 50, y + 40, anchor="w", text="", font=f.code(11), fill=TEXT3)
+        self.btn_refresh = ui.Button(u, W - PAD - 46, y + 11, 36, 36, icon="refresh", kind="ghost",
+                                     command=lambda: self.refresh_active_game(animate=True), parent_bg=SURFACE)
+        # Algılanan oyun yoksa: öndeki pencereyi oyun olarak ekle. Varsa: "bu bir oyun değil" işareti.
+        self.btn_game = ui.Button(u, W - PAD - 46 - 6 - GAME_BTN_W, y + 11, GAME_BTN_W, 36, text="Oyun ekle",
+                                  kind="ghost", command=self._game_action, parent_bg=SURFACE, font=f.ui(12))
+        self._game_text_w = W - PAD - 46 - 6 - GAME_BTN_W - 8 - (PAD + 50)
+
+        # ── Ana düğme ──
+        y = 128
+        self.btn_main = ui.Button(u, PAD, y, INNER, 46, text="Başlat", icon="play_stop", kind="primary",
+                                  command=self.toggle_running, keycap="F9", font=f.ui(14, semi=True), icon_size=18)
+        self.status_icon = ui.AnimatedIcon(u, PAD + 7, y + 64, "link", 14, TEXT3)
+        self.status_txt = c.create_text(PAD + 20, y + 64, anchor="w", text="", font=f.ui(12), fill=TEXT3)
+
+        # ── Canlı önizleme ──
+        y = 212
+        c.create_text(PAD, y + 13, anchor="w", text="Önizleme", font=f.ui(12, semi=True), fill=TEXT2)
+        self.btn_lock = ui.Button(u, W - PAD - 132, y, 132, 26, text="Kilitle", icon="lock", kind="ghost",
+                                  command=self.toggle_lock, keycap="F8", font=f.ui(12), icon_size=16)
+        self.btn_lock.icon.set(t=1.0)   # başlangıçta taşıma modu: kilit açık
+        self.btn_sample = ui.Button(u, W - PAD - 132 - 120, y, 116, 26, text="Örnek göster", icon="subtitle",
+                                    kind="ghost", command=self.flash_sample, font=f.ui(12), icon_size=16,
+                                    on_hover=lambda on: on and self.btn_sample.icon.animate(1.0, 320, frm=0.0))
+        self.btn_sample.icon.set(t=1.0)
+        self.preview_y = y + 34
+        self.preview_h = 112
+        c.create_image(PAD, self.preview_y, anchor="nw", image=ui.checker_image(INNER, self.preview_h, 8))
+        self.preview_item = c.create_image(W / 2, self.preview_y + self.preview_h / 2)
+        self.preview_scale = c.create_text(W - PAD - 10, self.preview_y + self.preview_h - 10, anchor="e",
+                                           font=f.code(10), fill=TEXT3)
+        self._preview_job = None
+
+        # ── Sekmeler ──
+        self.tabs = ui.Tabs(u, PAD, TAB_Y, INNER, TABS, self.prefs.get("tab", "canli"), command=self._switch_tab)
+
+        self._build_tab_live("tab_canli")
+        self._build_tab_translate("tab_ceviri")
+        self._build_tab_look("tab_gorunum")
+        self._build_tab_console("tab_konsol")
+        self._build_tab_account("tab_hesap")
+        self._show_tab(self.tabs.value, animate=False)
+
+        # ── Alt bilgi: kısayollar ──
+        fy = H - 26
+        c.create_line(PAD, fy - 20, W - PAD, fy - 20, fill=LINE)
+        x = PAD
+        for key, label in (("F8", "kilitle"), ("F9", "başlat / durdur"), ("F10", "bölge seç")):
+            kc = ui.Keycap(u, x, fy - 9, key)
+            x += kc.w + 6
+            c.create_text(x, fy, anchor="w", text=label, font=f.ui(12), fill=TEXT3)
+            x += tkfont.Font(font=f.ui(12)).measure(label) + 18
+
+        self._toast_items = []
+        self._tick_clock(reschedule=False)
+        self._render_preview()
+
+
+    # ── Canlı sekmesi ──
+
+    def _build_tab_live(self, tag):
+        c, u, f = self.c, self.u, self.fonts
+        y = CONTENT_Y
+        tiles = [("lines", "Satır"), ("hit", "Havuz isabeti"), ("lat", "Ort. gecikme"), ("saved", "DeepL tasarrufu")]
+        tw = (INNER - 3 * 8) / 4
+        self.stat_items = {}
+        for i, (key, label) in enumerate(tiles):
+            x = PAD + i * (tw + 8)
+            c.create_image(x, y, anchor="nw", image=ui.rrect_image(round(tw), 64, 6, fill=SURFACE, outline=LINE), tags=tag)
+            v = c.create_text(x + 12, y + 24, anchor="w", text="0", font=f.disp(19), fill=TEXT, tags=tag)
+            s = c.create_text(x + 12, y + 47, anchor="w", text=label, font=f.ui(11), fill=TEXT3, tags=tag)
+            self.stat_items[key] = (v, s)
+
+        y += 78
+        c.create_text(PAD, y + 7, anchor="w", text="Gecikme · son 30 satır", font=f.ui(11), fill=TEXT3, tags=tag)
+        c.create_oval(W - PAD - 106, y + 4, W - PAD - 100, y + 10, fill=VERIFIED, outline="", tags=tag)
+        c.create_text(W - PAD - 94, y + 7, anchor="w", text="havuz", font=f.ui(11), fill=TEXT3, tags=tag)
+        c.create_oval(W - PAD - 46, y + 4, W - PAD - 40, y + 10, fill=TEXT2, outline="", tags=tag)
+        c.create_text(W - PAD, y + 7, anchor="e", text="DeepL", font=f.ui(11), fill=TEXT3, tags=tag)
+        self.spark = c.create_image(PAD, y + 18, anchor="nw", tags=tag)
+
+        y += 60
+        c.create_text(PAD, y + 13, anchor="w", text="Geçmiş", font=f.ui(13, semi=True), fill=TEXT, tags=tag)
+        self.hist_count = c.create_text(PAD + 60, y + 13, anchor="w", text="", font=f.code(11), fill=TEXT3, tags=tag)
+        self.btn_log = ui.Button(u, W - PAD - 136, y, 72, 26, text="Kayıt", kind="ghost", command=self._toggle_log,
+                                 font=f.ui(12), tags=(tag,))
+        self.btn_clear = ui.Button(u, W - PAD - 60, y, 60, 26, text="Sil", icon="trash", kind="ghost",
+                                   command=self._clear_history, font=f.ui(12), icon_size=16, tags=(tag,),
+                                   on_hover=lambda on: on and self.btn_clear.icon.play(360))
+        list_y = y + 34
+        list_h = H - 58 - list_y
+        self.history = HistoryList(c, self.fonts, INNER, list_h, self._copy_row, self._replay_row)
+        self.history_win = c.create_window(PAD, list_y, anchor="nw", window=self.history, tags=tag)
+        self.log_box = tk.Text(c, bg=SURFACE, fg=TEXT2, insertbackground=TEXT, relief="flat", bd=0,
+                               font=f.code(11), wrap="word", highlightthickness=0, padx=10, pady=8)
+        self.log_box.configure(state="disabled")
+        self.log_win = c.create_window(PAD, list_y, anchor="nw", window=self.log_box, width=INNER, height=list_h,
+                                       state="hidden")
+        self._log_visible = False
+        self._refresh_stats()
+
+    # ── Çeviri sekmesi ──
+
+    def _build_tab_translate(self, tag):
+        c, u, f = self.c, self.u, self.fonts
+        y = CONTENT_Y
+        c.create_text(PAD, y + 8, anchor="w", text="Dil", font=f.ui(12, semi=True), fill=TEXT2, tags=tag)
+        for x, code, name in ((PAD, "en", "İngilizce"), (PAD + 164, "tr", "Türkçe")):
+            c.create_image(x, y + 22, anchor="nw", tags=tag, image=ui.rrect_image(120, 34, 6, fill=SURFACE, outline=LINE))
+            c.create_text(x + 12, y + 39, anchor="w", text=code, font=f.code(12), fill=TEXT3, tags=tag)
+            c.create_text(x + 38, y + 39, anchor="w", text=name, font=f.ui(13), fill=TEXT2, tags=tag)
+        ui.AnimatedIcon(u, PAD + 142, y + 39, "arrow", 18, TEXT3, tags=(tag,))
+        c.create_text(PAD, y + 74, anchor="nw", font=f.ui(12), fill=TEXT3, tags=tag, width=INNER,
+                      text="Çeviri sunucuda yapılır, API anahtarı gerekmez. Bir satır 3 farklı oyuncudan uyuşan "
+                           "çeviri alınca onaylanır ve herkese havuzdan anında gelir.")
+        y += 124
+        c.create_line(PAD, y, W - PAD, y, fill=LINE, tags=tag)
+        y += 16
+        c.create_text(PAD, y + 8, anchor="w", text="Okunacak bölge", font=f.ui(12, semi=True), fill=TEXT2, tags=tag)
+        self.region_txt = c.create_text(PAD, y + 38, anchor="w", font=f.code(14), fill=TEXT, tags=tag)
+        self.region_hint = c.create_text(PAD, y + 58, anchor="w", font=f.ui(11), fill=TEXT3, tags=tag,
+                                         text="x, y   ·   genişlik × yükseklik")
+        self.btn_region = ui.Button(u, W - PAD - 128, y + 22, 128, 34, text="Seç", icon="region", kind="secondary",
+                                    command=self.start_region_selection, keycap="F10", font=f.ui(13, semi=True),
+                                    tags=(tag,), on_hover=lambda on: on and self.btn_region.icon.play(400))
+        self._update_region_label()
+        y += 84
+        c.create_text(PAD, y, anchor="nw", font=f.ui(11), fill=TEXT3, tags=tag, width=INNER,
+                      text="Yalnızca algılanan oyun öndeyken ve bölgenin üstünde başka pencere yokken okunur.")
+
+    # ── Görünüm sekmesi ──
+
+    def _build_tab_look(self, tag):
+        c, u, f = self.c, self.u, self.fonts
+        p = self.prefs
+        y = CONTENT_Y
+        c.create_text(PAD, y + 8, anchor="w", text="Stil", font=f.ui(12, semi=True), fill=TEXT2, tags=tag)
+        self.seg_style = ui.Segmented(u, PAD, y + 22, INNER, 34, STYLE_LABELS, p["style"],
+                                      command=lambda v: self._set_pref("style", v), tags=(tag,))
+        y += 64
+        self.sl_size = ui.Slider(u, PAD, y, INNER, "Yazı boyutu", 16, 44, p["font_px"], "{} px",
+                                 command=lambda v, fin: self._set_pref("font_px", v, fin), tags=(tag,))
+        y += 46
+        self.sl_opacity = ui.Slider(u, PAD, y, INNER, "Bant opaklığı", 40, 100, p["opacity"], "%{}",
+                                    command=lambda v, fin: self._set_pref("opacity", v, fin), tags=(tag,))
+        y += 46
+        self.sl_hold = ui.Slider(u, PAD, y, INNER, "En kısa gösterim", 0.6, 3.0, p["min_show_ms"] / 1000,
+                                 "{:.1f} sn", step=0.2,
+                                 command=lambda v, fin: self._set_pref("min_show_ms", int(v * 1000), fin), tags=(tag,))
+        y += 50
+        c.create_text(PAD, y + 8, anchor="w", text="Konum", font=f.ui(12, semi=True), fill=TEXT2, tags=tag)
+        self.seg_pos = ui.Segmented(u, PAD, y + 22, INNER, 34, POSITION_LABELS, p["position"],
+                                    command=lambda v: self._set_pref("position", v), tags=(tag,))
+        c.create_text(PAD, y + 70, anchor="w", font=f.ui(11), fill=TEXT3, tags=tag,
+                      text="Serbest: kilit açıkken kutuyu oyunda sürükleyin.")
+        y += 88
+        c.create_line(PAD, y, W - PAD, y, fill=LINE, tags=tag)
+        y += 10
+        # Yayın: OBS'nin ekran yakalaması ve Discord / Teams ekran paylaşımı kutuyu ancak bu açıkken görür.
+        self.tg_stream = ui.Toggle(u, PAD, y, INNER, "Yayında ve ekran paylaşımında göster", p["stream_visible"],
+                                   command=self._set_stream_visible, tags=(tag,))
+        y += 30
+        self.tg_obs = ui.Toggle(u, PAD, y, INNER, "OBS tarayıcı kaynağı", p["obs_source"],
+                                command=self._set_obs_source, tags=(tag,))
+        y += 28
+        self.obs_url_txt = c.create_text(PAD, y + 12, anchor="w", text="", font=f.code(11), fill=TEXT3,
+                                         tags=(tag, "obs_row"))
+        self.btn_obs_copy = ui.Button(u, W - PAD - 76, y, 76, 24, text="Kopyala", kind="ghost", font=f.ui(12),
+                                      command=lambda: self._copy_text(self.web.obs_url, "OBS adresi kopyalandı"),
+                                      tags=(tag, "obs_row"))
+
+    # ── Konsol / TV sekmesi ──
+
+    def _build_tab_console(self, tag):
+        """
+        PS5 / Xbox: PC Remote Play ya da yakalama penceresini okur. Çeviri nerede görünür: TV'deki Makine TV,
+        bu bilgisayarın ekranı (monitörde oynayanlar: konsol görüntüsü PC'de tam ekran) ya da telefon / tablet.
+        Konsol modu yalnızca GTA VI içindir; oyun seçimi yoktur.
+        """
+        c, u, f = self.c, self.u, self.fonts
+        p = self.prefs
+        y = CONTENT_Y
+        c.create_text(PAD, y + 8, anchor="w", text="Oyun nerede?", font=f.ui(12, semi=True), fill=TEXT2, tags=tag)
+        self.seg_mode = ui.Segmented(u, PAD, y + 22, INNER, 34, [("pc", "Bu bilgisayarda"), ("konsol", "Konsolda · PS5 / Xbox")],
+                                     p["mode"], command=self._set_mode, tags=(tag,))
+        y += 68
+        self.con_cards = {"src": self._console_card(tag, y, "game", "Konsol görüntüsü",
+                                                    [("Pencere seç", self._pick_console_window, 104)])}
+        y += 70
+        c.create_text(PAD, y + 8, anchor="w", text="Altyazı nerede görünsün?", font=f.ui(12, semi=True), fill=TEXT2,
+                      tags=tag)
+        self.seg_out = ui.Segmented(u, PAD, y + 22, INNER, 34, [("tv", "TV'de"), ("pc", "Bu ekranda"), ("web", "Telefonda")],
+                                    p["console_out"], command=self._set_console_out, tags=(tag,))
+        y += 68
+        card = self._console_card(tag, y, "link", "TV", [("TV bul", self._tv_search, 70), ("Kur", self._tv_install_sheet, 52)])
+        card["web_btn"] = ui.Button(u, W - PAD - 10 - 84, y + 14, 84, 32, text="Kopyala", kind="secondary",
+                                    command=lambda: self._copy_text(self.web.phone_url, "Telefon adresi kopyalandı"),
+                                    font=f.ui(12), tags=(tag,), parent_bg=SURFACE)
+        self.con_cards["out"] = card
+        y += 70
+        c.create_text(PAD, y, anchor="nw", font=f.ui(11), fill=TEXT3, tags=tag, width=INNER,
+                      text=f"Konsol modu yalnızca {DEFAULT_GAME} içindir; bütün çeviriler onun havuzundan gelir. "
+                           "Monitörde oynuyorsanız konsol görüntüsünü bu bilgisayarda tam ekran açıp \"Bu ekranda\"yı "
+                           "ya da telefonu ekranın altına koyup \"Telefonda\"yı seçin.")
+        self._refresh_console_cards()
+
+    def _console_card(self, tag, y, icon, title, buttons):
+        c, u, f = self.c, self.u, self.fonts
+        h = 60
+        c.create_image(PAD, y, anchor="nw", tags=tag, image=ui.rrect_image(INNER, h, 8, fill=SURFACE, outline=LINE))
+        ic = ui.AnimatedIcon(u, PAD + 24, y + h / 2, icon, 20, TEXT3, tags=(tag,))
+        if icon == "link":
+            ic.set(t=0.7)          # dalgalar görünsün (t=0 yalnızca nokta)
+        bx = W - PAD - 10
+        btns = []
+        for label, cmd, bw in reversed(buttons):
+            bx -= bw
+            btns.append(ui.Button(u, bx, y + 14, bw, 32, text=label, kind="secondary", command=cmd,
+                                  font=f.ui(12), tags=(tag,), parent_bg=SURFACE))
+            bx -= 6
+        text_w = bx - (PAD + 46) - 4
+        t = c.create_text(PAD + 46, y + 20, anchor="w", text=title, font=f.ui(13, semi=True), fill=TEXT, tags=tag)
+        m = c.create_text(PAD + 46, y + 40, anchor="w", text="", font=f.code(11), fill=TEXT3, tags=tag)
+        return {"icon": ic, "title": t, "meta": m, "w": text_w, "full_w": W - PAD - 10 - (PAD + 46) - 4,
+                "buttons": btns[::-1]}
+
+    def _set_card(self, key, title=None, meta=None, ok=None, width=None):
+        card = self.con_cards[key]
+        fit = self._fit_w
+        w = width or card["w"]
+        if title is not None:
+            self.c.itemconfigure(card["title"], text=fit(title, self.fonts.ui(13, semi=True), w))
+        if meta is not None:
+            self.c.itemconfigure(card["meta"], text=fit(meta, self.fonts.code(11), w))
+        if ok is not None:
+            card["icon"].set(color=VERIFIED if ok is True else (ACCENT if ok == "wait" else TEXT3))
+
+    def _show_items(self, tag_or_id, visible):
+        """Sekmenin içinde duruma göre görünen öğeler (sekme gizliyken dokunulmaz: sekme geçişi hepsini açar)."""
+        on = getattr(self, "_tab_now", None) == ("konsol" if tag_or_id != "obs_row" else "gorunum")
+        self.c.itemconfigure(tag_or_id, state="normal" if (visible and on) else "hidden")
+
+    def _refresh_console_cards(self):
+        if not hasattr(self, "con_cards"):
+            return
+        p = self.prefs
+        konsol = p["mode"] == "konsol"
+        t = self.target if isinstance(self.target, ConsoleTarget) else None
+        if not konsol:
+            self._set_card("src", "Konsol görüntüsü", "konsol modu kapalı", ok=None)
+        elif t is None:
+            self._set_card("src", "Konsol görüntüsü bulunamadı", "PS Remote Play / Xbox / yakalama penceresini açın",
+                           ok="wait")
+        else:
+            w, h = t.size()
+            self._set_card("src", t.source.label, f"{CONSOLE_LABELS.get(t.source.console, '')} · {w}×{h}", ok=True)
+
+        out = p["console_out"]
+        card = self.con_cards["out"]
+        tv_btns, web_btn = card["buttons"], card["web_btn"]
+        for b in tv_btns:
+            self._show_items(b.tag, out == "tv")
+        self._show_items(web_btn.tag, out == "web")
+        card["icon"].set(name={"pc": "subtitle", "web": "phone"}.get(out, "link"), t=0.7 if out == "tv" else 1.0)
+        if out == "pc":
+            self._set_card("out", "Bu bilgisayarın ekranı",
+                           "konsol görüntüsünün üstünde · tam ekran açın" if konsol else "konsol modu kapalı",
+                           ok=True if konsol else None, width=card["full_w"])
+        elif out == "web":
+            if not konsol:
+                self._set_card("out", "Telefon / tablet", "konsol modu kapalı", ok=None)
+            elif not self.web.running:
+                self._set_card("out", "Telefon / tablet", f"açılamadı · {self.web.error or 'kapı dolu'}", ok="wait")
+            else:
+                n = self._web_clients
+                self._set_card("out", self.web.phone_url.replace("http://", ""),
+                               f"{n} cihaz bağlı" if n else "telefonun tarayıcısına yazın", ok=True if n else "wait")
+        else:
+            state, detail = self.tv_link.state, self.tv_link.detail
+            tv = TvInfo.from_json(p["tv"] or {})
+            if state == "connected":
+                self._set_card("out", detail or (tv.name if tv else "TV"), "bağlı · altyazılar TV'de gösteriliyor", ok=True)
+            elif tv is None:
+                self._set_card("out", "TV seçilmedi", "TV'de Makine TV'yi açıp TV bul'a basın", ok="wait" if konsol else None)
+            else:
+                meta = TV_STATE_TEXT.get(state, state) if konsol else "konsol modu kapalı"
+                self._set_card("out", tv.name, meta, ok="wait" if konsol else None)
+
+    def _copy_text(self, text, message):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.toast(message)
+
+    def _fit_w(self, text, font, width):
+        fnt = tkfont.Font(font=font)
+        if fnt.measure(text) <= width:
+            return text
+        while text and fnt.measure(text + "…") > width:
+            text = text[:-1]
+        return text.rstrip() + "…"
+
+    # Mod
+
+    def _set_mode(self, mode):
+        if mode == self.prefs["mode"]:
+            return
+        self.prefs["mode"] = mode
+        self._save_hud_prefs()
+        self._snapshot_cfg()
+        self._apply_mode()
+        self.log("mod    " + ("konsol · Remote Play / yakalama penceresi okunur, çeviri TV'ye gider" if mode == "konsol"
+                              else "bilgisayar · algılanan PC oyunu okunur"))
+
+    def _apply_mode(self, initial=False):
+        """Mod / altyazı yeri değişince: hedef yeniden aranır, TV bağlantısı ve web yayını açılır / kapanır."""
+        self._apply_outputs()
+        if not initial:
+            self.tracker = LineTracker()
+            self.scheduler.clear()
+            self._shown_disp = None
+            self.overlay.clear()
+            self._set_target(None)
+            self._apply_detection()
+        self._update_region_label()
+        self._refresh_console_cards()
+
+    def _apply_outputs(self):
+        """TV bağlantısı, telefon / OBS sunucusu, kutunun konumu ve yakalamadaki görünürlüğü prefs'e göre."""
+        p = self.prefs
+        konsol = p["mode"] == "konsol"
+        tv = TvInfo.from_json(p["tv"] or {}) if konsol and p["console_out"] == "tv" else None
+        if tv and p["tv_code"]:
+            self.tv_link.pair(tv, p["tv_code"])
+        else:
+            self.tv_link.pair(None)
+        phone = konsol and p["console_out"] == "web"
+        was = self.web.running
+        self.web.configure(phone or p["obs_source"], lan=phone)
+        self.web.set_style(p["font_px"], p["opacity"])
+        if self.web.running and not was:
+            self.log("web    altyazı yayını açık · " + (f"telefon: {self.web.phone_url} · " if phone else "")
+                     + f"OBS: {self.web.obs_url}")
+        elif not self.web.running and (phone or p["obs_source"]):
+            self.log(f"web    altyazı yayını açılamadı: {self.web.error}")
+        if not (konsol and p["console_out"] == "pc"):
+            self.overlay.set_frame(None)
+        self._update_capture_visibility()
+        if hasattr(self, "obs_url_txt"):
+            self.c.itemconfigure(self.obs_url_txt, text=self.web.obs_url.replace("http://", ""))
+            self._show_items("obs_row", p["obs_source"] and self.web.running)
+
+    def _set_console_out(self, out):
+        if out == self.prefs["console_out"]:
+            return
+        self.prefs["console_out"] = out
+        self._save_hud_prefs()
+        self.overlay.clear()
+        self.tv_link.clear()
+        self.web.clear()
+        self._shown_disp = None
+        self._apply_outputs()
+        self._refresh_console_cards()
+        self.log("çıkış  altyazı " + {"tv": "TV'de (Makine TV)", "pc": "bu bilgisayarın ekranında",
+                                      "web": f"telefonda / tablette · {self.web.phone_url}"}[out])
+        if out == "web" and self.web.running:
+            self.toast("Telefonda tarayıcıya yazın: " + self.web.phone_url.replace("http://", ""))
+
+    def _pc_box_on(self) -> bool:
+        """Çeviri kutusu bu bilgisayarda gösterilsin mi? Konsol modunda yalnızca "Bu ekranda" seçiliyse."""
+        return self.prefs["mode"] != "konsol" or self.prefs["console_out"] == "pc"
+
+    # Yayın: OBS ekran yakalama, Discord / Teams ekran paylaşımı, OBS tarayıcı kaynağı
+
+    def _set_stream_visible(self, value):
+        self.prefs["stream_visible"] = bool(value)
+        self._save_hud_prefs()
+        self._snapshot_cfg()
+        self._wincap = {"key": None, "ok": None, "next": 0.0, "fails": 0}
+        self._update_capture_visibility()
+        if value:
+            self.log("yayın  kutu yayında ve ekran paylaşımında görünür · oyun penceresinin kendi görüntüsü okunur")
+            self.toast("Kutu artık OBS'de ve ekran paylaşımında görünür")
+        else:
+            self.log("yayın  kutu ekran yakalamadan gizli (yalnızca sizin ekranınızda)")
+
+    def _set_obs_source(self, value):
+        self.prefs["obs_source"] = bool(value)
+        self._save_hud_prefs()
+        self._apply_outputs()
+        if value and self.web.running:
+            self._copy_text(self.web.obs_url, "OBS adresi kopyalandı · OBS'de Kaynak ekle › Tarayıcı")
+
+    def _capture_visible_wanted(self) -> bool:
+        """
+        Kutu ekran yakalamaya açık olabilir mi? Yalnızca okuma ekranın kopyasından değil pencerenin kendi içeriğinden
+        yapılıyorsa: konsol modunda her zaman; PC oyununda "yayında göster" açık ve oyun penceresi okunabiliyorsa.
+        """
+        if self.prefs["mode"] == "konsol":
+            return True
+        if not self.prefs["stream_visible"]:
+            return False
+        return not self.is_running or self._wincap["ok"] is True
+
+    def _update_capture_visibility(self):
+        want = self._capture_visible_wanted()
+        if self.overlay.win.capture_visible != want:
+            self.overlay.set_capture_visible(want)
+
+    def _on_web_clients(self, n):
+        prev, self._web_clients = self._web_clients, n
+        if n > prev:
+            self.log(f"web    bir cihaz bağlandı ({n})")
+        self._refresh_console_cards()
+
+    def _detect_target(self):
+        if self.prefs["mode"] == "konsol":
+            p = self.prefs
+            return find_console_source({os.getpid()}, prefer=p["console_source"], custom_exes=p["console_exes"])
+        return detect_game({os.getpid()})
+
+    # Konsol kaynağı: listede olmayan bir pencereyi elle seç
+
+    def _pick_console_window(self):
+        if self._adding_game:
+            return
+        if self.prefs["mode"] != "konsol":
+            self.seg_mode.set("konsol", animate=True)
+            self._set_mode("konsol")
+        self._adding_game = True
+
+        def tick(n):
+            if n > 0:
+                self._set_card("src", f"Konsol penceresine geçin · {n}", "öndeki pencere okunacak", ok="wait")
+                self.after(1000, lambda: tick(n - 1))
+                return
+            self._adding_game = False
+            info = foreground_window_info({os.getpid()})
+            if info is None:
+                self.toast("Öndeki pencere seçilemedi", warn=True)
+            else:
+                exe = os.path.basename(info[1]).lower()
+                exes = self.prefs["console_exes"]
+                if exe not in exes:
+                    exes.insert(0, exe)
+                    del exes[10:]
+                self.prefs["console_source"] = "custom"
+                self._save_hud_prefs()
+                self.log(f"konsol kaynak olarak seçildi: {exe} · \"{info[2]}\"")
+                self.toast(f"{os.path.splitext(exe)[0]} konsol görüntüsü olarak okunacak")
+            self._set_target(None)
+            self._apply_detection()
+        tick(3)
+
+    # Açılır pencere
+
+    def _sheet(self, height, title):
+        """Panelin üstünde açılan koyu pencere (oyun seçme, TV bulma, kurulum). Esc ya da Kapat kapatır."""
+        self._close_sheet()
+        top = tk.Toplevel(self)
+        top.overrideredirect(True)
+        top.configure(bg=BG)
+        top.attributes("-topmost", True)
+        w = INNER
+        top.geometry(f"{w}x{height}+{self.winfo_rootx() + PAD}+{self.winfo_rooty() + CONTENT_Y - 200}")
+        cv = tk.Canvas(top, width=w, height=height, bg=BG, highlightthickness=0, bd=0)
+        cv.pack()
+        cv.create_image(0, 0, anchor="nw", image=ui.rrect_image(w, height, 10, fill=RAISED, outline=LINE_STRONG))
+        cv.create_rectangle(1, 16, 4, 44, fill=ACCENT, outline="")
+        cv.create_text(20, 30, anchor="w", text=title, font=self.fonts.ui(15, semi=True), fill=TEXT)
+        su = ui.UI(top, cv, self.fonts)
+        ui.Button(su, w - 78, 14, 64, 30, text="Kapat", kind="ghost", command=self._close_sheet, parent_bg=RAISED,
+                  font=self.fonts.ui(12))
+        top.bind("<Escape>", lambda e: self._close_sheet())
+        top.focus_force()
+        self._sheet_top = top
+        return top, cv, su, w
+
+    def _close_sheet(self):
+        if self._sheet_top is not None:
+            try:
+                self._sheet_top.destroy()
+            except tk.TclError:
+                pass
+            self._sheet_top = None
+
+    # TV: bul, eşleş, kur
+
+    def _on_tv_state(self, state, detail):
+        prev = getattr(self, "_tv_prev_state", "idle")
+        self._tv_prev_state = state
+        if state == "connected" and prev != "connected":
+            self.log(f"tv     bağlandı · {detail}")
+            self.toast(f"TV bağlandı · {detail}")
+            if self._shown_disp is not None:          # bağlanınca ekrandaki satır TV'de de görünsün
+                self._tv_line_id += 1
+                self.tv_link.send_line(self._tv_line_id, self._shown_disp.text, self._shown_disp.kind)
+        elif state == "bad_code":
+            self.log(f"tv     {detail}: eşleşme kodu kabul edilmedi")
+            self.toast("TV kodu kabul etmedi · TV bul ile yeniden girin", warn=True)
+        elif state == "offline" and prev == "connected":
+            self.log(f"tv     {detail}: bağlantı koptu · yeniden deneniyor")
+        self._refresh_console_cards()
+
+    def _tv_search(self):
+        if self.prefs["mode"] != "konsol":
+            self.seg_mode.set("konsol", animate=True)
+            self._set_mode("konsol")
+        if self.prefs["console_out"] != "tv":
+            self.seg_out.set("tv", animate=True)
+            self._set_console_out("tv")
+        self._set_card("out", "TV aranıyor…", "ev ağında Makine TV aranıyor", ok="wait")
+
+        def worker():
+            try:
+                found = discover_tvs(1.6)
+            except OSError as e:
+                self._post(self.log, f"tv     arama başarısız: {e}")
+                found = []
+            self._post(self._show_tv_list, found)
+
+        threading.Thread(target=worker, daemon=True, name="tv-ara").start()
+
+    def _show_tv_list(self, tvs):
+        self._refresh_console_cards()
+        f = self.fonts
+        if not tvs:
+            h = 318
+            top, cv, su, w = self._sheet(h, "TV bulunamadı")
+            cv.create_text(20, 58, anchor="nw", width=w - 40, font=f.ui(13), fill=TEXT2,
+                           text="TV'de Makine TV uygulaması açık mı? TV ile bu bilgisayar aynı ağa (aynı modeme) bağlı olmalı.\n\n"
+                                "Bazı modemler ve LG TV'ler otomatik bulmayı engeller: Makine TV ekranında yazan adresle "
+                                "bağlanabilirsiniz. Makine TV henüz kurulu değilse \"TV'ye kur\".")
+            ui.Button(su, 20, h - 54, 116, 36, text="Tekrar ara", kind="primary", command=lambda: (self._close_sheet(),
+                      self._tv_search()), parent_bg=RAISED)
+            ui.Button(su, 144, h - 54, 140, 36, text="Adresle bağlan", kind="secondary", command=self._tv_address_sheet,
+                      parent_bg=RAISED)
+            ui.Button(su, 292, h - 54, 88, 36, text="TV'ye kur", kind="ghost", command=self._tv_install_sheet,
+                      parent_bg=RAISED, font=f.ui(12))
+            return
+        if len(tvs) == 1:
+            self._tv_code_sheet(tvs[0])
+            return
+        row_h = 52
+        h = 70 + row_h * len(tvs) + 56
+        top, cv, su, w = self._sheet(h, "Hangi TV?")
+        for i, tv in enumerate(tvs):
+            ui.Button(su, 16, 60 + i * row_h, w - 32, row_h - 8, text=f"{tv.name}   ·   {tv.host}", kind="secondary",
+                      align="left", command=lambda t=tv: self._tv_code_sheet(t), parent_bg=RAISED)
+        ui.Button(su, 16, h - 48, 150, 32, text="Adresle bağlan", kind="ghost", command=self._tv_address_sheet,
+                  parent_bg=RAISED, font=f.ui(12))
+
+    def _tv_address_sheet(self):
+        """Otomatik bulma çalışmazsa (yayın paketlerini engelleyen modem / TV): TV ekranındaki adresle bağlan."""
+        h = 236
+        top, cv, su, w = self._sheet(h, "Adresle bağlan")
+        f = self.fonts
+        cv.create_text(20, 58, anchor="nw", width=w - 40, font=f.ui(13), fill=TEXT2,
+                       text="Makine TV ekranında yazan adresi girin (ör. 192.168.1.40).")
+        var = tk.StringVar()
+        old = TvInfo.from_json(self.prefs["tv"] or {})
+        if old:
+            var.set(old.host)
+        field = ui.Field(su, 20, 100, w - 40, 40, var, placeholder="192.168.1.40")
+        status = cv.create_text(20, 160, anchor="w", text="", font=f.ui(12), fill=ui.DISPUTED)
+
+        def submit(*_):
+            host = var.get().strip()
+            try:
+                socket.inet_aton(host)
+            except OSError:
+                cv.itemconfigure(status, text="Adres 192.168.1.40 biçiminde olmalı.")
+                return
+            self._tv_code_sheet(TvInfo(f"ip:{host}", host, host, TV_TCP_PORT))
+
+        ui.Button(su, 20, h - 54, w - 40, 38, text="Devam", kind="primary", command=submit, parent_bg=RAISED)
+        field.entry.bind("<Return>", submit)
+        field.entry.focus_set()
+
+    def _tv_code_sheet(self, tv):
+        top, cv, su, w = self._sheet(236, tv.name)
+        f = self.fonts
+        cv.create_text(20, 58, anchor="nw", width=w - 40, font=f.ui(13), fill=TEXT2,
+                       text="TV ekranındaki 4 haneli eşleşme kodunu girin.")
+        var = tk.StringVar()
+        field = ui.Field(su, 20, 100, w - 40, 44, var, placeholder="0000")
+        field.entry.configure(font=f.code(20), justify="center")
+        status = cv.create_text(20, 164, anchor="w", text="", font=f.ui(12), fill=ui.DISPUTED)
+
+        def submit(*_):
+            code = "".join(ch for ch in var.get() if ch.isdigit())
+            if len(code) != 4:
+                cv.itemconfigure(status, text="Kod 4 rakamdan oluşur.")
+                return
+            self._close_sheet()
+            self.prefs["tv"] = tv.to_json()
+            self.prefs["tv_code"] = code
+            self._save_hud_prefs()
+            self.tv_link.pair(tv, code)
+            self.log(f"tv     {tv.name} ({tv.host}) ile eşleşiliyor")
+            self._refresh_console_cards()
+
+        ui.Button(su, 20, 236 - 54, w - 40, 38, text="Bağlan", kind="primary", command=submit, parent_bg=RAISED)
+        field.entry.bind("<Return>", submit)
+        field.entry.focus_set()
+
+    INSTALL_STEPS = {
+        "android": ("TV'de Ayarlar › Cihaz tercihleri › Hakkında › Yapı satırına 7 kez basın (geliştirici seçenekleri açılır).",
+                    "Ayarlar › Cihaz tercihleri › Geliştirici seçenekleri'nde USB hata ayıklama'yı açın. Varsa Ağ üzerinden "
+                    "hata ayıklama'yı da açın.",
+                    "TV'nin adresi aşağıda kendiliğinden bulunur (bulunmazsa Ayarlar › Ağ'da yazar). Kur'a basın; TV'de "
+                    "izin sorusu çıkarsa İzin ver'i seçin."),
+        "lg": ("TV'de LG Content Store'dan \"Developer Mode\" uygulamasını kurup ücretsiz LG geliştirici hesabıyla "
+               "(developer.lge.com) giriş yapın.",
+               "Developer Mode'da Dev Mode Status'u açın (TV yeniden başlar), sonra Key Server'ı açın.",
+               "Developer Mode ekranında yazan 6 karakterlik Passphrase'i aşağıya girip Kur'a basın. Makine TV kurulunca "
+               "konsolun girişini uygulamadan seçin (1–4)."),
+    }
+
+    def _tv_install_sheet(self, kind=None):
+        kind = kind if kind in self.INSTALL_STEPS else self.prefs.get("tv_kind", "android")
+        lg = kind == "lg"
+        sheet_h = 478 if lg else 448
+        top, cv, su, w = self._sheet(sheet_h, "Makine TV'yi kur")
+        f = self.fonts
+
+        def switch(k):
+            self.prefs["tv_kind"] = k
+            self._save_hud_prefs()
+            self.after(0, lambda: self._tv_install_sheet(k))
+
+        ui.Segmented(su, 20, 56, w - 40, 32, [("android", "Android / Google TV"), ("lg", "LG (webOS)")], kind,
+                     command=switch)
+        y = 104
+        for i, s in enumerate(self.INSTALL_STEPS[kind]):
+            cv.create_text(20, y, anchor="nw", text=str(i + 1), font=f.code(13), fill=ACCENT)
+            item = cv.create_text(40, y, anchor="nw", width=w - 60, text=s, font=f.ui(12), fill=TEXT2)
+            bb = cv.bbox(item)
+            y = (bb[3] if bb else y + 34) + 10
+        var = tk.StringVar()
+        cv.create_text(20, y + 16, anchor="w", text="TV adresi", font=f.ui(12), fill=TEXT3)
+        af = ui.Field(su, 120, y + 4, w - 140, 36, var, placeholder="192.168.1.40")
+        af.entry.configure(font=f.code(14))
+        y += 44
+        pw = tk.StringVar()
+        if lg:
+            cv.create_text(20, y + 14, anchor="w", text="Passphrase", font=f.ui(12), fill=TEXT3)
+            pf = ui.Field(su, 120, y + 2, w - 140, 36, pw, placeholder="ör. A1B2C3")
+            pf.entry.configure(font=f.code(14))
+            y += 44
+        status = cv.create_text(20, y + 14, anchor="nw", width=w - 40, text="Ağda TV aranıyor…", font=f.ui(12), fill=TEXT3)
+        busy = [False]
+
+        def set_status(text, color=TEXT3):
+            try:
+                cv.itemconfigure(status, text=text, fill=color)
+            except tk.TclError:
+                pass
+
+        def found(hosts):
+            if not var.get().strip() and hosts:
+                var.set(hosts[0])
+            if hosts:
+                set_status("TV bulundu, " + ("Passphrase'i girip " if lg else "") + "Kur'a basın.")
+            else:
+                set_status("Ağda " + ("geliştirici modu açık bir LG TV" if lg else "hata ayıklaması açık bir TV")
+                           + " bulunamadı. Adresi elle girin.")
+
+        scan = tv_install.find_webos_hosts if lg else tv_install.find_adb_hosts
+        threading.Thread(target=lambda: self._post(found, scan()), daemon=True).start()
+
+        def run():
+            host = var.get().strip()
+            if busy[0] or not host:
+                return
+            if lg and len(pw.get().strip()) < 4:
+                set_status("Developer Mode ekranındaki Passphrase'i girin.", ui.DISPUTED)
+                return
+            busy[0] = True
+            set_status("Başlıyor…", TEXT2)
+
+            def worker():
+                try:
+                    progress = lambda m: self._post(set_status, m, TEXT2)  # noqa: E731
+                    if lg:
+                        ver = tv_install.install_webos(host, pw.get(), progress=progress)
+                    else:
+                        ver = tv_install.install(host, progress=progress)
+                    self._post(set_status, f"Kuruldu{f' · sürüm {ver}' if ver else ''}. Şimdi TV bul ile eşleşin.", VERIFIED)
+                    self._post(self.log, f"tv     Makine TV kuruldu ({host}){f' · {ver}' if ver else ''}")
+                except tv_install.InstallError as e:
+                    self._post(set_status, str(e), ui.DISPUTED)
+                    self._post(self.log, f"tv     kurulum başarısız ({host}): {e}")
+                finally:
+                    busy[0] = False
+
+            threading.Thread(target=worker, daemon=True, name="tv-kur").start()
+
+        by = sheet_h - 54
+        ui.Button(su, 20, by, 110, 38, text="Kur", kind="primary", command=run, parent_bg=RAISED)
+        if not lg:
+            ui.Button(su, 138, by, 170, 38, text="APK'yı kaydet", kind="ghost", command=self._save_apk, parent_bg=RAISED)
+
+    def _save_apk(self):
+        from tkinter import filedialog
+        import shutil
+        src = tv_install.apk_path()
+        if not src:
+            self.toast("Makine TV paketi bulunamadı", warn=True)
+            return
+        dest = filedialog.asksaveasfilename(parent=self._sheet_top or self, title="Makine TV paketini kaydet",
+                                            initialfile="makine-tv.apk", defaultextension=".apk",
+                                            filetypes=[("Android paketi", "*.apk")])
+        if dest:
+            shutil.copyfile(src, dest)
+            self.toast("APK kaydedildi · USB bellekle TV'ye kurabilirsiniz")
+
+    # ── Hesap sekmesi ──
+
+    def _build_tab_account(self, tag):
+        c, u, f = self.c, self.u, self.fonts
+        y = CONTENT_Y
+        self.acc_y = y
+        c.create_image(PAD, y, anchor="nw", tags=tag, image=ui.rrect_image(INNER, 76, 8, fill=SURFACE, outline=LINE))
+        self.acc_user = c.create_text(PAD + 16, y + 25, anchor="w", text="—", font=f.disp(18), fill=TEXT, tags=tag)
+        self.acc_chip_bg = c.create_image(PAD + 120, y + 15, anchor="nw", tags=tag)
+        self.acc_chip = c.create_text(PAD + 140, y + 25, text="", font=f.ui(11, semi=True), fill=ACCENT, tags=tag)
+        self.acc_kind = c.create_text(PAD + 16, y + 54, anchor="w", text="", font=f.ui(12), fill=TEXT3, tags=tag)
+        c.create_text(W - PAD - 16, y + 54, anchor="e", text=f"sürüm {APP_VERSION_LABEL}", font=f.code(12), fill=TEXT3,
+                      tags=tag)
+        y += 96
+        c.create_text(PAD, y, anchor="nw", font=f.ui(11), fill=TEXT3, tags=tag, width=INNER,
+                      text="Oturum bu bilgisayarda Windows hesabınıza bağlı olarak şifreli saklanır. Çıkış yapınca "
+                           "silinir; yönetici oturumu uzaktan da kapatabilir.")
+        y += 56
+        self.btn_logout = ui.Button(u, PAD, y, INNER, 40, text="Çıkış yap", icon="lock", kind="secondary",
+                                    command=self.logout, font=f.ui(13, semi=True), tags=(tag,))
+
+    # ── Sekme geçişi ──
+
+    def _switch_tab(self, key):
+        self._show_tab(key, animate=True)
+        self.prefs["tab"] = key
+        self._save_hud_prefs()
+
+    def _show_tab(self, key, animate=True):
+        for k, _ in TABS:
+            self.c.itemconfigure(f"tab_{k}", state="normal" if k == key else "hidden")
+        self._tab_now = key
+        if key == "konsol":
+            self._refresh_console_cards()           # duruma göre gizli düğmeler
+        elif key == "gorunum":
+            self._show_items("obs_row", self.prefs["obs_source"] and self.web.running)
+        log_on = key == "canli" and self._log_visible
+        self.c.itemconfigure(self.log_win, state="normal" if log_on else "hidden")
+        if log_on:
+            self.c.itemconfigure(self.history_win, state="hidden")
+        if not animate:
+            return
+        tag = f"tab_{key}"
+        moved = [10]
+        self.c.move(tag, 0, 10)
+
+        def step(e):
+            target = round(10 * (1 - e))
+            self.c.move(tag, 0, target - moved[0])
+            moved[0] = target
+
+        ui.Tween(self, 200, step)
+
+    # ── Önizleme ──
+
+    def _render_preview(self):
+        self._preview_job = None
+        _, _, tr = self._sample
+        content = OverlayContent(text=tr, kind="verified")
+        # Oyundaki gerçek genişlikle çiz, sonra küçült: satır kaydırma oyundakiyle aynı olur
+        img = self.overlay.render_preview(content, max_width=self.overlay.style.max_width)
+        # gölge için bırakılan boş kenarı kırp, önizleme kutusuna sığdır
+        bbox = img.getbbox() or (0, 0, img.width, img.height)
+        img = img.crop((max(0, bbox[0] - 6), max(0, bbox[1] - 6),
+                        min(img.width, bbox[2] + 6), min(img.height, bbox[3] + 6)))
+        max_w, max_h = INNER - 12, self.preview_h - 12
+        k = min(1.0, max_w / img.width, max_h / img.height)
+        if k < 1.0:
+            img = img.resize((max(1, round(img.width * k)), max(1, round(img.height * k))), Image.LANCZOS)
+        self._preview_photo = ImageTk.PhotoImage(img)
+        self.c.itemconfigure(self.preview_item, image=self._preview_photo)
+        self.c.itemconfigure(self.preview_scale, text=f"ölçek %{round(k * 100)}")
+
+    def _schedule_preview(self):
+        if self._preview_job:
+            self.after_cancel(self._preview_job)
+        self._preview_job = self.after(30, self._render_preview)
+
+    # ── Görünüm tercihleri ──
+
+    def _set_pref(self, key, value, final=True):
+        self.prefs[key] = value
+        self._apply_look()
+        if key in ("font_px", "opacity"):
+            self.web.set_style(self.prefs["font_px"], self.prefs["opacity"])
+        if final:
+            self._save_hud_prefs()
+
+    def _apply_look(self):
+        p = self.prefs
+        self.overlay.configure_look(style=p["style"], font_px=p["font_px"], opacity=p["opacity"] / 100.0,
+                                    position=p["position"], custom_anchor=p.get("custom_anchor"))
+        self.scheduler.min_base = p["min_show_ms"] / 1000.0
+        self._schedule_preview()
+
+    def _on_overlay_moved(self, anchor):
+        self.prefs["custom_anchor"] = list(anchor)
+        self.prefs["position"] = "serbest"
+        self.seg_pos.set("serbest", animate=True)
+        self._save_hud_prefs()
+
+    # ─────────────────────────────────────────────────────────
+    # Kayıt, geçmiş, istatistik, bildirim
+    # ─────────────────────────────────────────────────────────
+
+    def log(self, text: str):
+        _FILE_LOG.info(text)
+        self.log_box.configure(state="normal")
+        self.log_box.insert("end", f"{time.strftime('%H:%M:%S')}  {text}\n")
+        lines = int(self.log_box.index("end-1c").split(".")[0])
+        if lines > 500:
+            self.log_box.delete("1.0", f"{lines - 500}.0")
+        self.log_box.see("end")
+        self.log_box.configure(state="disabled")
+
+    def _toggle_log(self):
+        self._log_visible = not self._log_visible
+        self.c.itemconfigure(self.log_win, state="normal" if self._log_visible else "hidden")
+        self.c.itemconfigure(self.history_win, state="hidden" if self._log_visible else "normal")
+        self.btn_log.set_text("Geçmiş" if self._log_visible else "Kayıt")
+
+    def _clear_history(self):
+        self.history.clear()
+        self._refresh_stats()
+
+    def _add_history(self, raw, translated, source, status, ms):
+        if source == "havuz":
+            badge = ("onaylı", VERIFIED) if status == "verified" else ("havuz", ACCENT)
+            kind = "verified" if status == "verified" else "pending"
+        else:
+            badge = (source, TEXT2)
+            kind = "api"
+        self.history.add({"time": time.strftime("%H:%M:%S"), "raw": raw, "translated": translated,
+                          "badge": badge, "ms": ms, "kind": kind})
+        self._refresh_stats()
+
+    def _copy_row(self, row):
+        self.clipboard_clear()
+        self.clipboard_append(row["translated"])
+        self.toast("Çeviri panoya kopyalandı")
+
+    def _replay_row(self, row):
+        self._flash(row["translated"], row["kind"] if row["kind"] in ("verified", "pending") else "api")
+        self.toast("Oyunda yeniden gösterildi")
+
+    def _refresh_stats(self):
+        s = self.stats
+        looked = s["pool"] + s["api"]
+        lat = list(s["lat"])
+        pool_ms = [m for m, k in lat if k == "pool"]
+        api_ms = [m for m, k in lat if k == "api"]
+
+        def avg(xs):
+            return round(sum(xs) / len(xs)) if xs else None
+
+        lat_sub = "Ort. gecikme"
+        if pool_ms and api_ms:
+            lat_sub = f"havuz {avg(pool_ms)} · deepl {avg(api_ms)}"
+        chars = s["chars_saved"]
+        values = {
+            "lines": (str(s["lines"]), "Satır"),
+            "hit": (f"%{round(100 * s['pool'] / looked)}" if looked else "—", "Havuz isabeti"),
+            "lat": (f"{avg([m for m, _ in lat])} ms" if lat else "—", lat_sub),
+            "saved": (str(s["pool"]), (f"{chars / 1000:.1f}k karakter" if chars >= 1000 else f"{chars} karakter")
+                      if s["pool"] else "DeepL tasarrufu"),
+        }
+        for key, (v, sub) in values.items():
+            vi, si = self.stat_items[key]
+            self.c.itemconfigure(vi, text=v)
+            self.c.itemconfigure(si, text=sub)
+        self.c.itemconfigure(self.spark, image=ui.sparkline_image(lat, INNER, 30))
+        n = len(self.history.rows)
+        self.c.itemconfigure(self.hist_count, text=str(n) if n else "")
+
+    def toast(self, text, warn=False):
+        for it in self._toast_items:
+            self.c.delete(it)
+        f = self.fonts.ui(12, semi=True)
+        tw = tkfont.Font(font=f).measure(text) + 28
+        x = (W - tw) / 2
+        y0 = H - 96
+        bg = self.c.create_image(x, y0 + 8, anchor="nw",
+                                 image=ui.rrect_image(round(tw), 32, 6, fill=RAISED,
+                                                      outline=ACCENT if warn else LINE_STRONG))
+        tx = self.c.create_text(W / 2, y0 + 24 + 8, text=text, font=f, fill=TEXT)
+        self._toast_items = [bg, tx]
+        moved = [8]
+
+        def step(e):
+            target = round(8 * (1 - e))
+            for it in (bg, tx):
+                self.c.move(it, 0, target - moved[0])
+            moved[0] = target
+
+        ui.Tween(self, 180, step)
+        self.after(1800, lambda: [self.c.delete(i) for i in (bg, tx)])
+
+    # ─────────────────────────────────────────────────────────
+    # Ayarlar
+    # ─────────────────────────────────────────────────────────
+
+    def _load_prefs(self):
+        try:
+            with open(self.hud_prefs_path, encoding="utf-8") as fh:
+                prefs = json.load(fh)
+        except (OSError, ValueError):
+            return
+        p = self.prefs
+        if prefs.get("style") in STYLES:
+            p["style"] = prefs["style"]
+        try:
+            p["font_px"] = min(44, max(16, int(prefs.get("font_px", 26))))
+            p["opacity"] = min(100, max(40, int(prefs.get("opacity", 78))))
+            p["min_show_ms"] = min(3000, max(600, int(prefs.get("min_show_ms", 1200))))
+        except (TypeError, ValueError):
+            pass
+        if prefs.get("position") in ("alt", "ust", "serbest"):
+            p["position"] = prefs["position"]
+        ca = prefs.get("custom_anchor")
+        if isinstance(ca, list) and len(ca) == 2:
+            p["custom_anchor"] = ca
+        if prefs.get("tab") in dict(TABS):
+            p["tab"] = prefs["tab"]
+        # Konsol / TV
+        if prefs.get("mode") in ("pc", "konsol"):
+            p["mode"] = prefs["mode"]
+        if valid_region(prefs.get("console_region")):
+            p["console_region"] = [float(v) for v in prefs["console_region"]]
+        if isinstance(prefs.get("console_source"), str):
+            p["console_source"] = prefs["console_source"]
+        if isinstance(prefs.get("console_exes"), list):
+            p["console_exes"] = [str(e).lower() for e in prefs["console_exes"] if isinstance(e, str)][:10]
+        if TvInfo.from_json(prefs.get("tv") or {}) is not None:
+            p["tv"] = prefs["tv"]
+            p["tv_code"] = str(prefs.get("tv_code") or "")[:8]
+        if prefs.get("console_out") in ("tv", "pc", "web"):
+            p["console_out"] = prefs["console_out"]
+        elif prefs.get("pc_box") and not p["tv"]:         # 0.2.0 öncesi: "bu bilgisayarda da göster"
+            p["console_out"] = "pc"
+        p["stream_visible"] = bool(prefs.get("stream_visible", False))
+        p["obs_source"] = bool(prefs.get("obs_source", False))
+        if prefs.get("tv_kind") in ("android", "lg"):
+            p["tv_kind"] = prefs["tv_kind"]
+
+    def _load_settings(self):
+        self._apply_look()
+
+    def _save_settings(self):
+        # Çeviri Python tarafında /api/live/translate ile yapılır; DLL'den yalnızca yakalama + OCR kullanılır.
+        # (translatorEngine / apiKey DLL'e yazılmaz: DLL'in varsayılan motoru zaten sunucu motoru.)
+        cfg = self._cfg_copy()
+        self.plugin.set_setting("ocrEnabled", "true")
+        self.plugin.set_setting("sourceLang", cfg["src"])
+        self.plugin.set_setting("targetLang", cfg["tgt"])
+        # DXGI first (works for DirectX / fullscreen games where GDI returns black); the DLL falls back to GDI itself
+        self.plugin.set_setting("captureMethod", "auto")
+        self._save_hud_prefs()
+
+    def _save_hud_prefs(self):
+        try:
+            os.makedirs(self.data_path, exist_ok=True)
+            with open(self.hud_prefs_path, "w", encoding="utf-8") as fh:
+                json.dump(self.prefs, fh)
+        except OSError:
+            pass
+
+    # ─────────────────────────────────────────────────────────
+    # Durum
+    # ─────────────────────────────────────────────────────────
+
+    def _set_state(self, running):
+        if running:
+            self.btn_main.set_kind("running")
+            self.btn_main.set_text("Durdur")
+            self.btn_main.icon.animate(1.0, 240)
+            self._started_at = time.time()
+            self.status_icon.set(name="link", t=0.0, color=VERIFIED)
+        else:
+            self.btn_main.set_kind("primary")
+            self.btn_main.set_text("Başlat")
+            self.btn_main.icon.animate(0.0, 240)
+            self._started_at = None
+            self.status_icon.stop()
+            self.status_icon.set(name="link", t=0.0, color=TEXT3)
+        self._tick_clock(reschedule=False)
+
+    def _tick_clock(self, reschedule=True):
+        if self._started_at and self._block_reason:
+            self.c.itemconfigure(self.status_txt, text=f"Bekliyor  ·  {self._block_reason}", fill=ACCENT)
+        elif self._notice:
+            self.c.itemconfigure(self.status_txt, text=self._notice[0], fill=ACCENT)
+        elif self._started_at:
+            el = int(time.time() - self._started_at)
+            text = f"Çalışıyor  ·  {el // 3600:02d}:{el % 3600 // 60:02d}:{el % 60:02d}  ·  {self.stats['lines']} satır"
+            self.c.itemconfigure(self.status_txt, text=text, fill=TEXT2)
+        else:
+            self.c.itemconfigure(self.status_txt, text="Durduruldu  ·  F9 ile başlatın", fill=TEXT3)
+        if reschedule:
+            self.after(1000, self._tick_clock)
+
+    def _on_flight(self, active):
+        """Çeviri işi sürüyor: durum ikonu döner (aynı anda birden fazla iş olabilir)."""
+        self._inflight_n = max(0, getattr(self, "_inflight_n", 0) + (1 if active else -1))
+        if active:
+            if self._inflight_n == 1:
+                self.status_icon.set(name="spinner", color=ACCENT)
+                self.status_icon.loop(800)
+        elif self._inflight_n == 0 and self.status_icon.name == "spinner":
+            self.status_icon.stop()
+            self.status_icon.set(name="link", t=0.0, color=VERIFIED if self.is_running else TEXT3)
+
+    def _flash_check(self):
+        """Havuzdan onaylı çeviri geldi: onay işareti çizilerek gelir."""
+        ic = self.status_icon
+        ic.stop()
+        ic.set(name="check", t=0.0, color=VERIFIED)
+
+        def back():
+            if ic.name == "check":
+                ic.set(name="link", t=0.0, color=VERIFIED if self.is_running else TEXT3)
+
+        ic.animate(1.0, 320, done=lambda: self.after(900, back))
+
+    def _update_region_label(self):
+        if self.prefs["mode"] == "konsol":
+            fx, fy, fw, fh = self.prefs["console_region"]
+            self.c.itemconfigure(self.region_txt, text=f"%{fx * 100:.0f}, %{fy * 100:.0f}   ·   %{fw * 100:.0f} × %{fh * 100:.0f}")
+            self.c.itemconfigure(self.region_hint, text="konsol görüntüsüne göre   ·   x, y   ·   genişlik × yükseklik")
+            return
+        x, y, w, h = self.region
+        self.c.itemconfigure(self.region_txt, text=f"{x}, {y}   ·   {w} × {h}")
+        self.c.itemconfigure(self.region_hint, text="x, y   ·   genişlik × yükseklik")
+
+    def _check_server_async(self):
+        def worker():
+            ok = self.server.check_connection()
+            self._post(self._on_server_status, ok)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_server_status(self, ok):
+        # Bağlantı başlıkta gösterilmez; yalnızca sorun varsa durum satırında uyarı çıkar
+        if ok:
+            self._clear_notice("network")
+        else:
+            self.log("hata   sunucuya ulaşılamadı")
+            self._set_notice("Sunucuya ulaşılamıyor · bağlantınızı kontrol edin", "network")
+
+    def refresh_active_game(self, animate=True):
+        """Yenile düğmesi: kütüphaneyi yeniden tara (yeni kurulan oyunlar) ve oyunu yeniden algıla."""
+        if animate:
+            self.btn_refresh.icon.animate(1.0, 520, frm=0.0, done=lambda: self.btn_refresh.icon.set(t=0.0))
+            self.game_icon.play(420)
+            self._scan_library()
+            if self.target is not None:
+                self.local_pool.declined.discard(self.target.slug)
+                self._pool_on_game(self.target)
+        else:
+            self._apply_detection()
+
+    def _scan_library(self, first=False):
+        def job():
+            t0 = time.monotonic()
+            self.library.refresh()
+            ms = (time.monotonic() - t0) * 1000
+            counts = "  ".join(f"{STORE_LABELS.get(k, k)} {v}" for k, v in self.library.summary().items() if v)
+            self._post(self.log, f"oyunlar {counts or 'bulunamadı'}  ·  {ms:.0f} ms")
+            self._post(self._apply_detection)
+            if first:
+                self._post(self._detect_tick)
+        threading.Thread(target=job, daemon=True, name="oyun-tarama").start()
+
+    def _apply_detection(self):
+        if self._adding_game or (not self.library.loaded and self.prefs["mode"] != "konsol"):
+            return
+        target = self._detect_target()
+        first = not hasattr(self, "_shown_target")
+        if first or not _same_target(target, self.target) or (target and target.name != self.detected_game_name):
+            self._set_target(target)
+
+    def _detect_tick(self):
+        """Durdurulmuşken de kart güncel kalsın: oyun açılınca / kapanınca birkaç saniye içinde görünür."""
+        if not self.is_running:
+            self._apply_detection()
+        self.after(3000, self._detect_tick)
+
+    def _game_action(self):
+        if self._adding_game:
+            return
+        if self.prefs["mode"] == "konsol":            # konsolda oyun ve kaynak Konsol sekmesinden seçilir
+            self.tabs.select("konsol", user=True)
+            return
+        t = self.target
+        if t is not None:
+            self.library.mark_not_game(t.path)
+            if self._pool_slug == t.slug:
+                self._pool_slug = ""
+            self.local_pool.forget(t.slug)
+            self.log(f"oyun değil  {t.exe} · bir daha algılanmayacak ({t.path})")
+            self.toast(f"{t.name} artık oyun sayılmayacak")
+            self._set_target(None)
+            self._apply_detection()
+            return
+        # Öndeki pencereyi oyun olarak ekle: kullanıcıya oyuna geçmesi için süre ver
+        self._adding_game = True
+        self.btn_game.set_enabled(False)
+
+        def tick(n):
+            if n > 0:
+                self.c.itemconfigure(self.game_name, text=f"Oyuna geçin · {n}")
+                self.c.itemconfigure(self.game_meta, text="öndeki pencere oyun olarak eklenecek")
+                self.after(1000, lambda: tick(n - 1))
+                return
+            self._adding_game = False
+            self.btn_game.set_enabled(True)
+            info = foreground_window_info({os.getpid()})
+            if info is None:
+                self.toast("Öndeki pencere bir oyun penceresi değil", warn=True)
+                self._set_target(None)
+                self._apply_detection()
+                return
+            _pid, path, _title = info
+            entry = self.library.add_custom(path)
+            self.log(f"oyun eklendi  {entry.name} · {path}")
+            self.toast(f"{entry.name} oyun olarak eklendi")
+            self._set_target(None)
+            self._apply_detection()
+        tick(3)
+
+    def toggle_running(self):
+        if not self.is_running and self.profile is None:
+            return   # giriş yapılmadan pipeline çalışmaz (F9 giriş ekranında yok sayılır)
+        if not self.is_running:
+            self._snapshot_cfg()
+            self._save_settings()
+            self.refresh_active_game(animate=False)
+            self.tracker = LineTracker()
+            self.scheduler.clear()
+            self._shown_disp = None
+            self._block_reason = None
+            self.is_running = True
+            self._set_state(True)
+            if not self.is_locked and self._pc_box_on():
+                self.overlay.show()
+            self.log("başladı" + (f" · konsol: {DEFAULT_GAME}" if self.prefs["mode"] == "konsol" else ""))
+            self._wincap = {"key": None, "ok": None, "next": 0.0, "fails": 0}
+            self._update_capture_visibility()
+            self._pool_sync_async()
+            # TLS el sıkışmasını önceden yap: ilk satır bağlantı kurulmasını beklemesin
+            self._executor.submit(self.server.warm)
+            self.worker_thread = threading.Thread(target=self._pipeline_loop, daemon=True)
+            self.worker_thread.start()
+        else:
+            self.is_running = False
+            self._set_state(False)
+            self.scheduler.clear()
+            self._shown_disp = None
+            self.overlay.clear()
+            self.tv_link.clear()
+            self.web.clear()
+            self._update_capture_visibility()
+            self.log(f"durdu  ·  {self._stage_summary()}")
+            self._pool_sync_async(hits_only=True)
+
+    def toggle_lock(self):
+        self.is_locked = not self.is_locked
+        self.overlay.set_click_through(self.is_locked)
+        if self.is_locked:
+            self.btn_lock.set_text("Kilidi aç")
+            self.btn_lock.icon.animate(0.0, 260)
+            self.log("kutu kilitlendi, tıklamalar oyuna geçiyor")
+            self.toast("Kutu kilitlendi · tıklamalar oyuna geçer")
+        else:
+            self.btn_lock.set_text("Kilitle")
+            self.btn_lock.icon.animate(1.0, 260)
+            self.overlay.show()
+            self.log("kutu taşınabilir")
+            self.toast("Kutuyu oyunda sürükleyebilirsiniz")
+
+    def flash_sample(self):
+        self.btn_sample.icon.animate(1.0, 320, frm=0.0)
+        # Her basışta farklı bir oyundan başka bir replik
+        others = [s for s in SAMPLES if s is not self._sample] or SAMPLES
+        self._sample = random.choice(others)
+        self._schedule_preview()
+        self._flash(self._sample[2], "verified")
+        self.log(f"örnek  {self._sample[0]}: \"{self._sample[1]}\"")
+
+    def start_region_selection(self):
+        self.btn_region.icon.play(400)
+        t = self.target if self.prefs["mode"] == "konsol" and isinstance(self.target, ConsoleTarget) else None
+        if self.prefs["mode"] == "konsol" and t is None:
+            self.toast("Önce konsol görüntüsünü (Remote Play) açın", warn=True)
+            return
+
+        def on_selected(x, y, w, h):
+            if t is not None:
+                # Konsolda bölge Remote Play / yakalama penceresinin video alanına göre orandır (pencere taşınsa da kalır)
+                frac = screen_to_region(t.video(), (x, y, w, h))
+                if not valid_region(frac):
+                    self.toast(f"Bölge {t.source.label} görüntüsünün içinde olmalı", warn=True)
+                    return
+                self.prefs["console_region"] = list(frac)
+                self._save_hud_prefs()
+                self._snapshot_cfg()
+                self._update_region_label()
+                self.log(f"bölge  konsol görüntüsünün %{frac[0] * 100:.0f}, %{frac[1] * 100:.0f} · "
+                         f"%{frac[2] * 100:.0f} × %{frac[3] * 100:.0f}")
+                self.toast("Altyazı alanı seçildi")
+                return
+            self.region = (x, y, w, h)
+            self._update_region_label()
+            self.log(f"bölge  {x}, {y}  {w} × {h}")
+            self.toast(f"Bölge seçildi · {w} × {h}")
+
+        current = region_to_screen(t.video(), self.prefs["console_region"]) if t is not None else self.region
+        self.after(150, lambda: RegionSelector(self, self.fonts, on_selected, current=current))
+
+    # ─────────────────────────────────────────────────────────
+    # Pipeline (arka plan thread'i)
+    # ─────────────────────────────────────────────────────────
+
+    def _pipeline_loop(self):
+        """
+        Yakalama döngüsü (~100 ms). Çeviri burada BEKLENMEZ: iş havuzuna verilir, böylece uzun bir
+        DeepL isteği sürerken yeni satırlar ve satırın ekrandan kalkışı kaçırılmaz.
+        DLL değişmemiş karede OCR yapmadan önceki metni ~1 ms'de döndürür.
+        """
+        our_pids = {os.getpid()}
+        next_pick = 0.0
+        self._panel_hwnd = self._toplevel_hwnd()
+        while self.is_running:
+            loop_t0 = time.monotonic()
+            cfg = self._cfg_copy()
+            region = self.region
+
+            # 0. Hedef kilidi: yalnızca algılanan OYUNUN penceresi okunur. Oyun yoksa / kapandıysa saniyede bir aranır.
+            #    Konsol modunda hedef Remote Play / yakalama penceresidir; oyuncu TV'ye baktığı için önde olması
+            #    gerekmez, ama ekranda açık ve üstü kapalı olmamalıdır. Bölge pencerenin video alanına göre orandır.
+            konsol = cfg["mode"] == "konsol"
+            cur = self.target
+            if konsol and cur is not None and not isinstance(cur, ConsoleTarget):
+                cur = None
+            if (cur is None or not cur.alive()) and loop_t0 >= next_pick and not self._adding_game:
+                next_pick = loop_t0 + 1.0
+                target = self._detect_target()
+                if not _same_target(target, self.target):
+                    self.target = target
+                    self._post(self._set_target, target)
+            hwnd = None
+            if konsol:
+                # DLL pencerenin kendi içeriğini okur (PrintWindow): üstünde başka pencere olsa da okunur,
+                # yalnızca küçültülmemiş ve yeterince büyük olmalı. Bölge pencerenin istemci koordinatıdır.
+                t = self.target if isinstance(self.target, ConsoleTarget) else None
+                reason = console_block_reason(t)
+                if t is not None and not reason:
+                    region = t.client_region(cfg["console_region"])
+                    hwnd = t.hwnd
+            else:
+                reason = capture_block_reason(self.target, region, our_pids, require_foreground=cfg["only_focus"],
+                                              own_windows=(self._panel_hwnd,))
+                if not reason and cfg["stream_visible"]:
+                    local = self._window_region(self.target, region, loop_t0)
+                    if local is not None:
+                        region, hwnd = local, self.target.hwnd
+                if not reason and hwnd is None and self.overlay.win.capture_visible:
+                    # Kutu yakalamaya açıkken ekranın kopyası okunmaz (OCR kendi çevirimizi okurdu):
+                    # ana iş parçacığı kutuyu gizleyene kadar bu yoklama atlanır.
+                    self._post(self._update_capture_visibility)
+                    time.sleep(0.1)
+                    continue
+            if reason:
+                self._emit(self.tracker.reset(loop_t0))
+                self._post(self._set_block_reason, reason)
+                time.sleep(0.2)
+                continue
+            self._post(self._set_block_reason, None)
+
+            # 1. Ekran yakala + OCR (makine-live.dll)
+            rx, ry, rw, rh = region
+            t0 = time.monotonic()
+            raw = self.plugin.capture_and_ocr(rx, ry, rw, rh, hwnd)
+            ocr_ms = (time.monotonic() - t0) * 1000
+            text = clean_ocr_text(raw) if is_valid_dialogue_text(raw) else ""
+            now = time.monotonic()
+            if ocr_ms > 40:
+                self.stage_ms["ocr"].append(ocr_ms)
+
+            # 2. Satır takibi → yeni / kalktı / çevir olayları
+            self._emit(self.tracker.update(text, now), cfg)
+
+            time.sleep(max(0.0, self.POLL_S - (time.monotonic() - loop_t0)))
+
+    POLL_S = 0.10
+    WINCAP_RECHECK_S = 30.0       # pencereden okuma çalışırken arada bir yeniden yoklanır (ör. tam ekrana geçildi)
+    WINCAP_RETRY_S = 5.0          # siyah geldiyse (yükleme ekranı olabilir) yeniden deneme aralığı
+    WINCAP_MAX_FAILS = 6
+
+    def _window_region(self, target, region, now):
+        """
+        "Yayında göster" (PC oyunu): bölge oyun penceresinin istemci koordinatına çevrilir ve DLL pencerenin kendi
+        içeriğini okur; böylece yakalamaya açık kutu OCR'a karışmaz. Pencere okunamıyorsa (siyah) None: ekranın
+        kopyası okunur ve kutu yakalamadan gizli kalır. Sonuç pipeline iş parçacığında tutulur, ana iş parçacığına
+        yalnızca değişince bildirilir.
+        """
+        st = self._wincap
+        key = (target.pid, int(target.hwnd or 0))
+        if st["key"] != key:
+            st.update(key=key, ok=None, next=0.0, fails=0)
+        prev = st["ok"]
+        if now >= st["next"]:
+            if window_has_image(target.hwnd):
+                st.update(ok=True, fails=0, next=now + self.WINCAP_RECHECK_S)
+            else:
+                st["fails"] += 1
+                gave_up = st["fails"] >= self.WINCAP_MAX_FAILS
+                st.update(ok=False, next=now + (60.0 if gave_up else self.WINCAP_RETRY_S))
+                if st["fails"] == self.WINCAP_MAX_FAILS:
+                    self._post(self.log, f"yayın  {target.exe} penceresinden okunamıyor (görüntü siyah) · kutu "
+                                         "yayında gizli kalır. Oyunu kenarlıksız / pencereli modda açmayı deneyin.")
+        local = None
+        if st["ok"]:
+            cl, ct, cr, cb = client_rect(target.hwnd)
+            x, y, w, h = region
+            if cl <= x and ct <= y and x + w <= cr and y + h <= cb:
+                local = (x - cl, y - ct, w, h)
+            else:                                                       # bölge pencereden taşıyor: ekran kopyası
+                st.update(ok=False, next=now + self.WINCAP_RETRY_S)
+                if prev is not False:
+                    self._post(self.log, "yayın  okunan bölge oyun penceresinin dışına taşıyor · kutu yayında gizli "
+                                         "(F10 ile bölgeyi pencerenin içinde seçin)")
+        if prev != st["ok"]:
+            if st["ok"]:
+                self._post(self.log, f"yayın  {target.exe} penceresinden okunuyor · kutu yayında görünür")
+            self._post(self._update_capture_visibility)
+        return local
+
+    def _emit(self, events, cfg=None):
+        """Takip olaylarını işle: zamanlayıcı ana thread'de, çeviri iş havuzunda."""
+        for ev in events:
+            kind, line_id, arg = ev
+            if kind == "new":
+                self._post(self._on_line_new, line_id, arg)
+            elif kind == "gone":
+                self._post(self.scheduler.source_gone, line_id, arg)
+            elif kind == "dispatch" and cfg is not None:
+                self._executor.submit(self._translate_job, line_id, arg, cfg, self.detected_game_slug,
+                                      self.detected_game_name)
+
+    def _on_line_new(self, line_id, t):
+        self.scheduler.source_new(line_id, t)
+        self._line_t0[line_id] = t
+        if len(self._line_t0) > 200:
+            for k in list(self._line_t0)[:100]:
+                self._line_t0.pop(k, None)
+        self._count_line()
+
+    # ── Çeviri işi (iş havuzu thread'i) ──
+
+    def _tr_cache_get(self, key):
+        with self._tr_lock:
+            v = self._tr_cache.get(key)
+            if v:
+                self._tr_cache.move_to_end(key)
+            return v
+
+    def _tr_cache_put(self, key, value):
+        with self._tr_lock:
+            self._tr_cache[key] = value
+            self._tr_cache.move_to_end(key)
+            while len(self._tr_cache) > 500:
+                self._tr_cache.popitem(last=False)
+
+    def _translate_job(self, line_id, text, cfg, game_slug, game_name=""):
+        """
+        Tek sunucu isteği: /api/live/translate havuza bakar, yoksa sunucunun DeepL anahtarıyla çevirir ve havuza yazar.
+        Ağ / DeepL hatasında bir kez kısa bir beklemeden sonra yeniden denenir.
+        """
+        key = compact_pool_key(text)
+        self._post(self._on_flight, True)
+        try:
+            # 0. Yerel havuz: bu oyunun onaylı çevirileri bilgisayarda (ağa çıkılmaz)
+            t0 = time.monotonic()
+            local = self.local_pool.lookup(game_slug, text) if game_slug == self._pool_slug else None
+            if local:
+                ms = (time.monotonic() - t0) * 1000
+                self._post(self._on_translation, line_id, text, local[1], "verified", "yerel", ms,
+                           {"exact": local[2]})
+                return
+            # 1. Bu oturumda onaylı olarak geldi. Onaylanmamış satırlar her seferinde sunucuya gider:
+            #    oy sunucuda kayıtlı kalır, satır bu arada onaylandıysa onaylı çeviri gelir.
+            hit = self._tr_cache_get(key)
+            if hit and hit[1] == "verified":
+                self._post(self._on_translation, line_id, text, hit[0], hit[1], "önbellek", 0, {})
+                return
+            if key in self._skip_keys:
+                self._post(self.scheduler.translation_failed, line_id)
+                return
+
+            res = None
+            for attempt in (1, 2):
+                t0 = time.monotonic()
+                try:
+                    res = self.server.translate(game_slug, game_name, text, cfg["src"], cfg["tgt"],
+                                                steam_appid=self.detected_appid if game_slug == self.detected_game_slug else "")
+                    break
+                except AuthRequired:
+                    self._post(self._on_auth_lost, "Oturumunuz kapatıldı. Lütfen yeniden giriş yapın.")
+                    break
+                except NetworkError as e:
+                    self._post(self.log, f"hata   sunucuya ulaşılamadı ({e}) · deneme {attempt}")
+                    self._post(self._set_notice, "Sunucuya ulaşılamıyor · yeniden deneniyor", "network")
+                except ServerError as e:
+                    if e.status == 422:
+                        self._skip_keys.add(key)
+                        self._post(self.log, f'atla   sunucu çöp saydı ({e.data.get("reason", "")}): "{_short(text)}"')
+                        break
+                    if e.status == 429:
+                        self._post(self._set_notice, "Günlük çeviri sınırı doldu — havuzdaki çeviriler gelmeye devam ediyor",
+                                   "quota")
+                        break
+                    if e.code == "maintenance":
+                        self._post(self._refresh_status)
+                        break
+                    if e.code == "banned":
+                        self._post(self._on_auth_lost, str(e))
+                        break
+                    if e.status == 503:
+                        self._post(self._set_notice, "Sunucuda çeviri anahtarı yok · yalnızca havuzdaki satırlar gelir",
+                                   "no_key")
+                        break
+                    self._post(self.log, f"hata   sunucu {e.status}: {e} · deneme {attempt}")
+                    self._post(self._set_notice, "Çeviri servisi yanıt vermedi · yeniden deneniyor", "upstream")
+                if attempt == 1:
+                    time.sleep(1.0)
+            if not res or not res.get("translated"):
+                self._post(self.scheduler.translation_failed, line_id)
+                return
+
+            req_ms = (time.monotonic() - t0) * 1000
+            origin = res.get("origin", "deepl")
+            status = res.get("status", "pending")
+            if origin == "pool":
+                kind = "verified" if status == "verified" else "pending"
+                self.stage_ms["pool"].append(req_ms)
+            else:
+                kind = "api"
+                self.stage_ms["api"].append(req_ms)
+            self._tr_cache_put(key, (res["translated"], kind))
+            self._post(self._on_translation, line_id, text, res["translated"], kind, origin, req_ms, res)
+        finally:
+            self._post(self._on_flight, False)
+
+    # ── Sonuçlar (ana thread) ──
+
+    def _on_translation(self, line_id, raw, translated, kind, source, stage_ms, res):
+        now = time.monotonic()
+        self.scheduler.translation_ready(line_id, translated, kind, now)
+        t0 = self._line_t0.get(line_id)
+        total_ms = round((now - t0) * 1000) if t0 else round(stage_ms)
+        server_ms = res.get("server_ms") if res else None
+        srv = f"sunucu {server_ms} ms · " if server_ms is not None else ""
+        if source == "yerel":
+            self.stats["pool"] += 1
+            self.stats["verified"] += 1
+            self.stats["chars_saved"] += len(raw)
+            self.stats["lat"].append((total_ms, "pool"))
+            self._flash_check()
+            self._add_history(raw, translated, "havuz", "verified", total_ms)
+            self.log(f"yerel  onaylı{'' if res.get('exact') else ' (benzer satır)'}  arama {stage_ms:.0f} ms · "
+                     f"algılamadan {total_ms} ms  \"{_short(raw)}\"")
+            res = None
+        elif source == "pool":
+            self.stats["pool"] += 1
+            self.stats["chars_saved"] += len(raw)
+            self.stats["lat"].append((total_ms, "pool"))
+            if kind == "verified":
+                self.stats["verified"] += 1
+                self._flash_check()
+            self._add_history(raw, translated, "havuz", "verified" if kind == "verified" else "pending", total_ms)
+            self.log(f"havuz  {'onaylı' if kind == 'verified' else 'bekliyor'}  {srv}istek {round(stage_ms)} ms · "
+                     f"algılamadan {total_ms} ms  \"{_short(raw)}\"")
+            self._clear_notice("network", "upstream")
+        elif source == "önbellek":
+            self._add_history(raw, translated, "önbellek", "api", total_ms)
+            self.log(f"önbellek  algılamadan {total_ms} ms  \"{_short(raw)}\"")
+        elif source == "own":
+            # Satır henüz onaylanmadı; bu hesabın daha önce verdiği çeviri (DeepL çağrısı ve yeni oy yok)
+            votes = f"oy {res.get('votes', 0)}/{res.get('votes_needed', 3)} · " if res else ""
+            self._add_history(raw, translated, "önceki", "api", total_ms)
+            self.log(f"önceki  {votes}{srv}istek {round(stage_ms)} ms  \"{_short(raw)}\"")
+            self._clear_notice("network", "upstream")
+        elif source == "shared":
+            # Satırı başka bir oyuncu daha önce okudu: sunucu aynı makine çevirisini verdi (DeepL çağrısı yok,
+            # günlük sınırdan düşmez), bu hesabın oyu sayıldı
+            votes = f"oy {res.get('votes', 0)}/{res.get('votes_needed', 3)} · " if res else ""
+            self._add_history(raw, translated, "ortak", "api", total_ms)
+            self.log(f"ortak  {votes}{srv}istek {round(stage_ms)} ms · algılamadan {total_ms} ms  \"{_short(raw)}\"")
+            self._clear_notice("network", "upstream", "quota")
+        else:
+            self.stats["api"] += 1
+            self.stats["lat"].append((total_ms, "api"))
+            deepl = f"deepl {res.get('deepl_ms')} ms · " if res and res.get("deepl_ms") is not None else ""
+            votes = f"oy {res.get('votes', 0)}/{res.get('votes_needed', 3)} · " if res and "votes" in res else ""
+            self._add_history(raw, translated, "deepl", "api", total_ms)
+            self.log(f"deepl  yeni  {votes}{deepl}{srv}istek {round(stage_ms)} ms · algılamadan {total_ms} ms  \"{_short(raw)}\"")
+            self._clear_notice("network", "upstream", "no_key", "quota")
+        self._refresh_stats()
+
+    def _tick_scheduler(self):
+        """Kutunun ne göstereceğine zamanlayıcı karar verir (50 ms)."""
+        try:
+            d = self.scheduler.tick(time.monotonic())
+            if d != self._shown_disp:
+                konsol = self.prefs["mode"] == "konsol"
+                out = self.prefs["console_out"]
+                if d is not None:
+                    self._tv_line_id += 1
+                    if self._pc_box_on():
+                        if konsol and isinstance(self.target, ConsoleTarget) and self.target.alive():
+                            self.overlay.set_frame(self.target.video())   # konsol görüntüsünün üstünde
+                        self.overlay.present_line(d.text, d.kind)
+                    if konsol and out == "tv":
+                        self.tv_link.send_line(self._tv_line_id, d.text, d.kind)
+                    if self.web.running:                                   # telefon / OBS tarayıcı kaynağı
+                        self.web.send_line(self._tv_line_id, d.text, d.kind)
+                else:
+                    self.overlay.end_line()
+                    if konsol and out == "tv":
+                        self.tv_link.clear()
+                    self.web.clear()
+                self._shown_disp = d
+        finally:
+            self.after(50, self._tick_scheduler)
+
+    def _flash(self, text, kind):
+        """Örnek / geçmişten yeniden göster: kaynaksız satır, okuma süresi kadar."""
+        self._flash_id += 1
+        self.scheduler.flash(self._flash_id, text, kind, time.monotonic())
+
+    # ── Hedef pencere ──
+
+    def _set_target(self, target):
+        prev = getattr(self, "_shown_target", None)
+        self.target = target
+        self._shown_target = target
+        if target:
+            self.detected_game_name, self.detected_game_slug = target.name, target.slug
+            self.detected_exe = target.exe
+            self.c.itemconfigure(self.game_name, text=self._fit(target.name, self.fonts.ui(14, semi=True)))
+            meta = f"{self._store_label(target)}  ·  {target.exe}"
+            self.c.itemconfigure(self.game_meta, text=self._fit(meta, self.fonts.code(11)))
+            self.game_icon.set(color=ACCENT)
+            self.btn_game.set_text("Konsol" if isinstance(target, ConsoleTarget) else "Oyun değil")
+            if not _same_target(target, prev):
+                self.log(f"oyun   {target.name} ({target.slug}) · {self._store_label(target)} · "
+                         f"{target.exe} pid {target.pid} · yalnızca bu pencere okunur")
+            self._refresh_game_meta()
+            if prev is None or prev.slug != target.slug:
+                self._resolve_appid(target)
+                self._pool_on_game(target)
+        else:
+            konsol = self.prefs["mode"] == "konsol"
+            self.detected_game_name = self.detected_game_slug = self.detected_exe = self.detected_appid = ""
+            self.c.itemconfigure(self.game_name, text="Konsol görüntüsü bulunamadı" if konsol else "Oyun algılanmadı")
+            self.c.itemconfigure(self.game_meta, text=self._fit("Remote Play ya da yakalama penceresini açın" if konsol
+                                                                else "oyunu açın ya da ekleyin", self.fonts.code(11)))
+            self.game_icon.set(color=TEXT2)
+            self.btn_game.set_text("Konsol" if konsol else "Oyun ekle")
+            self._hide_pool_prompt()
+            if prev is not None:
+                self.log("oyun   " + ("konsol görüntüsü yok" if konsol else "algılanan oyun yok") + " · okuma bekliyor")
+        self._refresh_console_cards()
+
+    def _store_label(self, t) -> str:
+        if isinstance(t, ConsoleTarget):
+            return f"{CONSOLE_LABELS.get(t.source.console, 'Konsol')} · {t.source.label}"
+        return STORE_LABELS.get(t.store, t.store)
+
+    def _resolve_appid(self, target):
+        """Steam numarası: Steam oyunlarında hazır, diğerlerinde Steam mağazasında ada göre (bir kez, önbellekli)."""
+        self.detected_appid = target.game.steam_appid or ""
+        if self.detected_appid or isinstance(target, ConsoleTarget):   # konsol oyununda Steam araması yapılmaz
+            return
+
+        def worker():
+            appid = self.library.steam_appid_for(target.game)
+            if appid:
+                self._post(self._set_appid, target.slug, appid)
+
+        threading.Thread(target=worker, daemon=True, name="steam-numara").start()
+
+    def _set_appid(self, slug, appid):
+        if self.target is not None and self.target.slug == slug:
+            self.detected_appid = appid
+
+    def _refresh_game_meta(self):
+        t = self.target
+        if t is None:
+            return
+        store = self._store_label(t)
+        p = self.local_pool.get(t.slug) if self._pool_slug == t.slug else None
+        meta = f"{store}  ·  {_fmt_int(len(p))} hazır çeviri" if p is not None else f"{store}  ·  {t.exe}"
+        self.c.itemconfigure(self.game_meta, text=self._fit(meta, self.fonts.code(11)))
+
+    # ── Yerel havuz: "hazır çeviriler bulundu, oynayacağınız oyun bu mu?" ──
+
+    def _pool_on_game(self, target):
+        """Oyun algılandı: önceden onaylandıysa sormadan eşitle; değilse sunucuya kaç onaylı satır olduğunu sor."""
+        if target is None or self.profile is None:
+            return
+        slug, name = target.slug, target.name
+        if self.local_pool.is_confirmed(slug):
+            if self._pool_slug != slug:
+                self._pool_slug = slug
+                p = self.local_pool.get(slug)
+                if p is not None:
+                    self.log(f"yerel  {name}: {_fmt_int(len(p))} onaylı çeviri yüklendi")
+                self._refresh_game_meta()
+            self._pool_sync_async()
+            return
+        self._pool_slug = ""
+        if slug in self.local_pool.declined or self._pool_prompt_slug == slug:
+            return
+
+        def worker():
+            try:
+                head = self.server.pool_sync(slug, head=True, timeout=6.0, steam_appid=target.game.steam_appid)
+            except AuthRequired:
+                self._post(self._on_auth_lost, "Oturumunuz kapatıldı. Lütfen yeniden giriş yapın.")
+                return
+            except (NetworkError, ServerError) as e:
+                first = self._pool_retry_slug != slug
+                self._pool_retry_slug = slug
+                if first:
+                    old = isinstance(e, ServerError) and e.status == 400
+                    self._post(self.log, f"yerel  {name}: hazır çeviriler sorulamadı ("
+                               + ("sunucu güncel değil, yeni sunucu paketi yüklenmeli" if old else str(e))
+                               + f") · {POOL_SYNC_S} sn'de bir yeniden denenecek")
+                return
+            self._pool_retry_slug = ""
+            count = int(head.get("count", 0) or 0)
+            if count > 0:
+                self._post(self._show_pool_prompt, slug, name, count)
+            else:
+                self._post(self.log, f"yerel  {name}: henüz onaylı çeviri yok · satırlar sunucudan gelir")
+
+        threading.Thread(target=worker, daemon=True, name="havuz-sor").start()
+
+    def _show_pool_prompt(self, slug, name, count):
+        t = self.target
+        if t is None or t.slug != slug or self.local_pool.is_confirmed(slug) or slug in self.local_pool.declined:
+            return
+        self._hide_pool_prompt()
+        self._pool_prompt_slug = slug
+        c, u, f = self.c, self.u, self.fonts
+        tag = "pool_prompt"
+        y = 212
+        hgt = 146
+        c.create_image(PAD, y, anchor="nw", tags=(tag,),
+                       image=ui.rrect_image(INNER, hgt, 8, fill=RAISED, outline=mix(LINE_STRONG, ACCENT, 0.35)))
+        icon = ui.AnimatedIcon(u, PAD + 28, y + 28, "subtitle", 20, ACCENT, tags=(tag,))
+        icon.play(420)
+        c.create_text(PAD + 48, y + 28, anchor="w", text="Hazır çeviriler bulundu", font=f.ui(14, semi=True),
+                      fill=TEXT, tags=(tag,))
+        c.create_text(PAD + 18, y + 50, anchor="nw", width=INNER - 36, font=f.ui(13), fill=TEXT2, tags=(tag,),
+                      text=f"{name} için {_fmt_int(count)} onaylı çeviri var. Oynayacağınız oyun bu mu?")
+        by = y + hgt - 44
+        ui.Button(u, PAD + 18, by, 132, 32, text="Evet, indir", kind="primary", font=f.ui(12, semi=True),
+                  command=lambda: self._pool_accept(slug, name), tags=(tag,), parent_bg=RAISED)
+        ui.Button(u, PAD + 18 + 140, by, 84, 32, text="Hayır", kind="ghost", font=f.ui(12),
+                  command=lambda: self._pool_decline(slug, name), tags=(tag,), parent_bg=RAISED)
+        self.log(f"yerel  {name}: {_fmt_int(count)} onaylı çeviri bulundu · onay bekleniyor")
+
+    def _hide_pool_prompt(self):
+        if self._pool_prompt_slug:
+            self.c.delete("pool_prompt")
+            self._pool_prompt_slug = ""
+
+    def _pool_accept(self, slug, name):
+        self._hide_pool_prompt()
+        self.local_pool.confirm(slug, name)
+        self._pool_slug = slug
+        self.toast(f"{name} çevirileri indiriliyor")
+        self._pool_sync_async()
+
+    def _pool_decline(self, slug, name):
+        self._hide_pool_prompt()
+        self.local_pool.declined.add(slug)
+        self.log(f"yerel  {name}: indirilmedi · satırlar sunucudan gelir")
+        self.toast("Yanlış oyun algılandıysa kartta Oyun değil'e basın")
+
+    def _pool_tick(self):
+        """Oyun açıkken yerel havuzu düzenli olarak sunucuyla karşılaştır (onay / düzenleme / silme)."""
+        try:
+            t = self.target
+            if self._pool_slug and t is not None and t.slug == self._pool_slug:
+                self._pool_sync_async()
+            elif self._pool_retry_slug and t is not None and t.slug == self._pool_retry_slug:
+                self._pool_on_game(t)
+        finally:
+            self.after(POOL_SYNC_S * 1000, self._pool_tick)
+
+    def _pool_sync_async(self, hits_only=False):
+        slug = self._pool_slug
+        if not slug or self._pool_busy or self.profile is None:
+            return
+        self._pool_busy = True
+
+        def worker():
+            try:
+                hits = self.local_pool.take_hits(slug)
+                if hits:
+                    try:
+                        self.server.pool_hits(slug, hits)
+                    except (NetworkError, ServerError, AuthRequired):
+                        self.local_pool.return_hits(slug, hits)
+                if hits_only:
+                    return
+                t0 = time.monotonic()
+                try:
+                    resp = self.server.pool_sync(slug, rev=self.local_pool.rev(slug), steam_appid=self.detected_appid)
+                except AuthRequired:
+                    self._post(self._on_auth_lost, "Oturumunuz kapatıldı. Lütfen yeniden giriş yapın.")
+                    return
+                except (NetworkError, ServerError) as e:
+                    if not self._pool_offline_logged:
+                        self._pool_offline_logged = True
+                        have = self.local_pool.get(slug)
+                        self._post(self.log, f"yerel  eşitlenemedi ({e})"
+                                   + (f" · bilgisayardaki {_fmt_int(len(have))} satır kullanılıyor" if have else ""))
+                    return
+                self._pool_offline_logged = False
+                d = self.local_pool.apply_sync(slug, resp)
+                ms = (time.monotonic() - t0) * 1000
+                self._post(self._on_pool_synced, slug, d, ms)
+            finally:
+                self._pool_busy = False
+
+        threading.Thread(target=worker, daemon=True, name="havuz-esitle").start()
+
+    def _on_pool_synced(self, slug, d, ms):
+        if d.get("unchanged"):
+            return
+        p = self.local_pool.get(slug)
+        name = (p.name if p and p.name else slug)
+        parts = [f"+{d['added']}"] if d["added"] else []
+        if d["changed"]:
+            parts.append(f"~{d['changed']} değişti")
+        if d["removed"]:
+            parts.append(f"−{d['removed']}")
+        self.log(f"yerel  {name}: {_fmt_int(d['total'])} onaylı çeviri"
+                 + (f" ({' · '.join(parts)})" if parts else "") + f" · {ms:.0f} ms")
+        self._refresh_game_meta()
+
+
+    # ─────────────────────────────────────────────────────────
+    # Sunucu durumu: bakım, sürüm kontrolü, duyurular
+    # ─────────────────────────────────────────────────────────
+
+    def _fetch_status(self, then):
+        def worker():
+            try:
+                st = self.server.status()
+            except (AuthRequired, NetworkError, ServerError):
+                st = None
+            self._post(then, st)
+        threading.Thread(target=worker, daemon=True, name="durum").start()
+
+    def _on_startup_status(self, st):
+        self._status = st or {}
+        if st and self._gate_for(st):
+            return
+        if self.server.token:
+            self._validate_session()
+        else:
+            self.login.show_choice()
+
+    def _refresh_status(self):
+        self._fetch_status(self._apply_status)
+
+    def _status_tick(self):
+        try:
+            if self.profile is not None and not self._gate:
+                self._refresh_status()
+        finally:
+            self.after(STATUS_POLL_S * 1000, self._status_tick)
+
+    def _gate_for(self, st) -> bool:
+        """Bakım ya da zorunlu güncelleme varsa kapı ekranını gösterir (True)."""
+        m = st.get("maintenance") or {}
+        if m.get("on") and not m.get("bypass"):
+            self._show_gate_maintenance(m.get("message") or "")
+            return True
+        upd = st.get("update") or {}
+        if upd.get("mandatory") and upd.get("latest"):
+            # İndirme herkese açık: giriş yapmadan da güncellenir.
+            self._show_gate_update(upd)
+            return True
+        return False
+
+    def _enter_gate(self, kind):
+        """Giriş tuvaline geç (çalışıyorsa durdur)."""
+        if self.is_running:
+            self.toggle_running()
+        self._close_popup(mark=False)
+        self._gate = kind
+        self.c.pack_forget()
+        self.login.c.pack(fill="both", expand=True)
+
+    def _leave_gate(self, st):
+        self._gate = None
+        if self.profile is not None:
+            self.login.c.pack_forget()
+            self.c.pack(fill="both", expand=True)
+            self._apply_status(st)
+        elif self.server.token:
+            self._validate_session()
+        else:
+            self.login.show_choice()
+
+    def _apply_status(self, st):
+        if not st:
+            return
+        self._status = st
+        if self._gate_for(st):
+            return
+        if self._gate:
+            self._leave_gate(st)
+            return
+        if self.profile is None:
+            return
+        upd = st.get("update") or {}
+        if upd.get("available") and upd.get("latest") and not self._update_offered:
+            self._update_offered = True
+            self._popups.append({"_type": "update", "update": upd})
+            self.log(f"sürüm  yeni sürüm var: v{upd['latest']['version']} (bu: {APP_VERSION_LABEL})")
+        new = [a for a in st.get("announcements") or [] if a.get("id") not in self._ann_seen]
+        for i, a in enumerate(new):
+            self._ann_seen.add(a.get("id"))
+            self._popups.append({"_type": "ann", "ann": a, "_pos": (i + 1, len(new))})
+        self._show_next_popup()
+
+    # ── Kapı ekranları ──
+
+    def _portal_url(self):
+        return self.server.base_url + "/live/"
+
+    def _show_gate_maintenance(self, message):
+        self._enter_gate("maintenance")
+        self.login.show_gate("lock", ACCENT, "Bakım çalışması",
+                             (message or "Makine Live şu an bakımda.") + "\n\nBakım bitince uygulama kendiliğinden açılır.",
+                             primary=("Tekrar dene", lambda: self._fetch_status(self._on_gate_status)))
+        self.log("bakım  sunucu bakımda · uygulama bekliyor")
+        self.after(30000, self._gate_poll)
+
+    def _gate_poll(self):
+        if self._gate == "maintenance":
+            self._fetch_status(self._on_gate_status)
+            self.after(30000, self._gate_poll)
+
+    def _on_gate_status(self, st):
+        if st is None:
+            return
+        self._status = st
+        if not self._gate_for(st):
+            self._leave_gate(st)
+
+    def _show_gate_update(self, upd, error=""):
+        latest = upd["latest"]
+        self._enter_gate("update")
+        notes = (latest.get("notes") or "").strip()
+        msg = (f"Bu sürüm ({APP_VERSION_LABEL}) artık kullanılamıyor. Devam etmek için v{latest['version']} sürümüne "
+               f"güncelleyin ({latest.get('size', 0) / 1048576:.1f} MB).")
+        if notes:
+            msg += "\n\n" + (notes if len(notes) <= 280 else notes[:277] + "…")
+        if error:
+            msg += "\n\n" + error
+        self.login.show_gate("arrow", ACCENT, "Güncelleme gerekli", msg,
+                             primary=("Şimdi güncelle", lambda: self._start_update(upd)),
+                             secondary=("İndirme sayfasını aç", lambda: webbrowser.open(self._portal_url())))
+
+    def _start_update(self, upd, optional=False):
+        latest = upd["latest"]
+        if not app_update.can_self_update():
+            webbrowser.open(self._portal_url())
+            self.toast("Geliştirme sürümü: yeni sürümü indirme sayfasından alın")
+            return
+        if optional:
+            self._enter_gate("update")
+        dest = os.path.join(app_update.update_dir(), f"MakineLive-{latest['version']}.exe")
+        last = [0.0]
+
+        def progress(got, total):
+            now = time.monotonic()
+            if now - last[0] > 0.25 or (total and got >= total):
+                last[0] = now
+                self._post(self._update_progress, latest, got, total)
+
+        def worker():
+            try:
+                path = self.server.download_release(upd["download"], dest, latest.get("sha256", ""), progress)
+                self._post(self._finish_update, path, latest)
+            except AuthRequired:
+                self._post(self._on_auth_lost, "Güncellemek için yeniden giriş yapın.")
+            except (NetworkError, ServerError) as e:
+                self._post(self._show_gate_update, upd, f"İndirme başarısız: {e}")
+
+        self._update_progress(latest, 0, latest.get("size", 0))
+        self.log(f"sürüm  v{latest['version']} indiriliyor")
+        threading.Thread(target=worker, daemon=True, name="guncelleme").start()
+
+    def _update_progress(self, latest, got, total):
+        frac = got / total if total else None
+        mb = f"{got / 1048576:.1f} / {total / 1048576:.1f} MB" if total else f"{got / 1048576:.1f} MB"
+        self.login.show_gate("spinner", ACCENT, f"v{latest['version']} indiriliyor", mb + "\n\nİndirme bitince uygulama kapanıp "
+                             "yeni sürümle yeniden açılır.", progress=frac if frac is not None else 0.0)
+
+    def _finish_update(self, path, latest):
+        self.login.show_gate("check", VERIFIED, "Güncelleniyor",
+                             f"v{latest['version']} doğrulandı. Uygulama yeniden açılıyor…")
+        self.log(f"sürüm  v{latest['version']} doğrulandı · yeniden başlatılıyor")
+        try:
+            app_update.swap_and_restart(path)
+        except OSError as e:
+            self.login.show_gate("arrow", ui.DISPUTED, "Güncelleme başlatılamadı", f"{e}\n\nYeni sürüm: {path}",
+                                 primary=("Klasörü aç", lambda: os.startfile(os.path.dirname(path))))
+            return
+        self.after(600, self._quit_for_update)
+
+    def _quit_for_update(self):
+        try:
+            self.overlay.clear()
+            self.destroy()
+        finally:
+            os._exit(0)
+
+    # ── Duyuru ve güncelleme pencereleri (panelin üstünde, birer birer) ──
+
+    ANN_COLORS = {"important": "DISPUTED", "maintenance": "ACCENT", "release": "VERIFIED", "info": "TEXT2"}
+
+    def _show_next_popup(self):
+        if self._popup_open or not self._popups or self.profile is None or self._gate:
+            return
+        item = self._popups.pop(0)
+        self._popup_open = item
+        c, u, f = self.c, self.u, self.fonts
+        tag = "popup"
+        # Gömülü pencereler (geçmiş / kayıt listesi) tuvalin üstünde çizildiği için gizlenir
+        c.itemconfigure(self.history_win, state="hidden")
+        c.itemconfigure(self.log_win, state="hidden")
+        c.create_rectangle(0, 0, W, H, fill="#000000", stipple="gray50", outline="", tags=tag)
+        x0, y0, cw = PAD, 96, INNER
+        if item["_type"] == "update":
+            latest = item["update"]["latest"]
+            kind, label = "release", "Yeni sürüm"
+            title = f"Makine Live v{latest['version']} çıktı"
+            meta = f"Şu an {APP_VERSION_LABEL} kullanıyorsunuz · {latest.get('size', 0) / 1048576:.1f} MB"
+            body = (latest.get("notes") or "").strip() or "Yeni sürümle iyileştirmeler ve düzeltmeler geliyor."
+            pos = None
+        else:
+            a = item["ann"]
+            kind, label = a.get("kind", "info"), a.get("kind_label") or "Duyuru"
+            title = a.get("title", "")
+            meta = f"{a.get('author') or 'Yönetici'} · {_local_time(a.get('created_at', ''))}"
+            body = (a.get("body") or "").strip()
+            pos = item.get("_pos")
+        color = {"DISPUTED": ui.DISPUTED, "ACCENT": ACCENT, "VERIFIED": VERIFIED, "TEXT2": TEXT2}[self.ANN_COLORS.get(kind, "TEXT2")]
+        if len(body) > 700:
+            body = body[:697] + "…"
+        bf = f.ui(13)
+        # yükseklik: gövdeyi ölç
+        tmp = c.create_text(0, -1000, anchor="nw", text=body, font=bf, width=cw - 40)
+        bb = c.bbox(tmp)
+        c.delete(tmp)
+        body_h = (bb[3] - bb[1]) if (bb and body) else 0
+        ch = min(H - y0 - 70, (116 + body_h + 78) if body else 176)   # gövde + düğme payı
+        c.create_image(x0, y0, anchor="nw", tags=tag, image=ui.rrect_image(cw, ch, 10, fill=RAISED, outline=mix(LINE_STRONG, color, 0.45)))
+        c.create_rectangle(x0 + 1, y0 + 14, x0 + 4, y0 + 46, fill=color, outline="", tags=tag)
+        chip_f = f.ui(11, semi=True)
+        chip_w = tkfont.Font(font=chip_f).measure(label) + 18
+        c.create_image(x0 + 20, y0 + 18, anchor="nw", tags=tag,
+                       image=ui.rrect_image(round(chip_w), 22, 11, fill=mix(RAISED, color, 0.16), outline=mix(RAISED, color, 0.55)))
+        c.create_text(x0 + 20 + chip_w / 2, y0 + 29, text=label, font=chip_f, fill=color, tags=tag)
+        if pos and pos[1] > 1:
+            c.create_text(x0 + cw - 20, y0 + 29, anchor="e", text=f"{pos[0]} / {pos[1]}", font=f.code(11), fill=TEXT3, tags=tag)
+        c.create_text(x0 + 20, y0 + 62, anchor="nw", text=title, font=f.ui(16, semi=True), fill=TEXT, width=cw - 40, tags=tag)
+        c.create_text(x0 + 20, y0 + 90, anchor="nw", text=meta, font=f.ui(11), fill=TEXT3, width=cw - 40, tags=tag)
+        if body:
+            c.create_text(x0 + 20, y0 + 116, anchor="nw", text=body, font=bf, fill=TEXT2, width=cw - 40, tags=tag)
+        by = y0 + ch - 54
+        if item["_type"] == "update":
+            ui.Button(u, x0 + 20, by, 160, 36, text="Şimdi güncelle", kind="primary", font=f.ui(13, semi=True),
+                      command=lambda: self._popup_update(item), tags=(tag,), parent_bg=RAISED)
+            ui.Button(u, x0 + 188, by, 90, 36, text="Sonra", kind="ghost", font=f.ui(13),
+                      command=lambda: self._close_popup(), tags=(tag,), parent_bg=RAISED)
+        else:
+            more = bool(self._popups) and self._popups[0].get("_type") == "ann"
+            ui.Button(u, x0 + 20, by, 150, 36, text="Sonraki" if more else "Anladım", kind="primary",
+                      font=f.ui(13, semi=True), command=lambda: self._close_popup(), tags=(tag,), parent_bg=RAISED)
+        self.log(f"duyuru {label.lower()}: {title}" if item["_type"] == "ann" else f"sürüm  v{item['update']['latest']['version']} önerildi")
+        try:
+            self.deiconify()
+            self.lift()
+        except tk.TclError:
+            pass
+
+    def _close_popup(self, mark=True):
+        item = self._popup_open
+        if not item:
+            return
+        self._popup_open = False
+        self.c.delete("popup")
+        self._show_tab(self.tabs.value, animate=False)
+        if mark and item.get("_type") == "ann":
+            ann_id = item["ann"].get("id")
+
+            def worker():
+                try:
+                    self.server.announcement_read(ann_id)
+                except (AuthRequired, NetworkError, ServerError):
+                    pass
+            threading.Thread(target=worker, daemon=True).start()
+        self.after(180, self._show_next_popup)
+
+    def _popup_update(self, item):
+        self._close_popup()
+        self._start_update(item["update"], optional=True)
+
+    def _fit(self, text, font):
+        """Metni oyun kartındaki alana sığdır (sonu … ile kısaltılır)."""
+        fnt = tkfont.Font(font=font)
+        if fnt.measure(text) <= self._game_text_w:
+            return text
+        while text and fnt.measure(text + "…") > self._game_text_w:
+            text = text[:-1]
+        return text.rstrip() + "…"
+
+    def _set_block_reason(self, reason):
+        if reason == self._block_reason:
+            return
+        self._block_reason = reason
+        if reason and time.monotonic() - self._last_block_log > 2.0:
+            self._last_block_log = time.monotonic()
+            self.log(f"bekle  {reason}")
+        self._tick_clock(reschedule=False)
+
+    def _stage_summary(self):
+        def med(xs):
+            xs = sorted(xs)
+            return round(xs[len(xs) // 2]) if xs else None
+        s = self.stage_ms
+        return f"ocr {med(s['ocr'])} ms · havuzdan {med(s['pool'])} ms · deepl ile {med(s['api'])} ms (istek medyanı)"
+
+    def _count_line(self):
+        self.stats["lines"] += 1
+        self._refresh_stats()
+
+    # ─────────────────────────────────────────────────────────
+    # Global kısayollar
+    # ─────────────────────────────────────────────────────────
+
+    def _start_hotkey_listener(self):
+        def listener():
+            prev = {VK_F8: False, VK_F9: False, VK_F10: False}
+            actions = {VK_F8: self.toggle_lock, VK_F9: self.toggle_running, VK_F10: self.start_region_selection}
+            while True:
+                for vk, action in actions.items():
+                    down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
+                    if down and not prev[vk]:
+                        self._post(action)
+                    prev[vk] = down
+                time.sleep(0.06)
+
+        threading.Thread(target=listener, daemon=True).start()
+
+    def destroy(self):
+        self.is_running = False
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._close_sheet()
+        self.tv_link.clear()
+        self.tv_link.close()
+        self.web.stop()
+        self._save_hud_prefs()
+        try:
+            self.overlay.destroy()
+        except Exception:
+            pass
+        self.plugin.shutdown()
+        super().destroy()
+
+
+# ─────────────────────────────────────────────────────────────
+# Dosya günlüğü ve hata yakalama (kullanıcılar sorun bildirirken bu dosyayı gönderir)
+#   %APPDATA%\MakineLive\logs\makine-live.log  — paneldeki kayıtlar + yakalanmayan hataların tam izi
+# ─────────────────────────────────────────────────────────────
+
+import logging
+import logging.handlers
+import traceback
+
+_FILE_LOG = logging.getLogger("makine-live")
+_FILE_LOG.propagate = False
+
+
+def _setup_file_log() -> str:
+    log_dir = os.path.join(app_data_dir(), "logs")
+    path = os.path.join(log_dir, "makine-live.log")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(path, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s  %(message)s"))
+        _FILE_LOG.addHandler(handler)
+        _FILE_LOG.setLevel(logging.INFO)
+        _FILE_LOG.info("──── Makine Live %s başladı (%s)", APP_VERSION_LABEL, "exe" if FROZEN else "geliştirme")
+    except OSError:
+        pass
+    return path
+
+
+_CRASH_FILE = None
+
+
+def _enable_native_crash_log(log_path: str) -> None:
+    """
+    Yerel çökmeler (erişim ihlali, "Fatal Python error") Python istisnası üretmez ve makine-live.log'a düşmez.
+    faulthandler bütün iş parçacıklarının yığınını logs/crash.log dosyasına yazar.
+    """
+    global _CRASH_FILE
+    try:
+        import faulthandler
+        if _CRASH_FILE is None:
+            _CRASH_FILE = open(os.path.join(os.path.dirname(log_path), "crash.log"), "a", encoding="utf-8")
+            _CRASH_FILE.write(f"\n──── {time.strftime('%Y-%m-%d %H:%M:%S')} · Makine Live {APP_VERSION_LABEL}\n")
+            _CRASH_FILE.flush()
+        faulthandler.enable(file=_CRASH_FILE, all_threads=True)
+    except (OSError, ValueError, RuntimeError):
+        pass
+
+
+def _install_crash_handlers(log_path: str, app=None) -> None:
+    def report(kind, exc_type, exc, tb):
+        _FILE_LOG.error("YAKALANMAYAN HATA (%s)\n%s", kind, "".join(traceback.format_exception(exc_type, exc, tb)))
+        if app is not None:
+            try:
+                app.after(0, app.log, f"hata   beklenmeyen bir sorun oluştu · ayrıntı: {log_path}")
+            except Exception:  # noqa: BLE001 — pencere kapanmış olabilir
+                pass
+
+    _enable_native_crash_log(log_path)
+    sys.excepthook = lambda t, e, tb: report("ana", t, e, tb)
+    threading.excepthook = lambda a: report(f"iş parçacığı {a.thread.name if a.thread else '?'}", a.exc_type, a.exc_value, a.exc_traceback)
+    if app is not None:
+        app.report_callback_exception = lambda t, e, tb: report("arayüz", t, e, tb)
+
+
+# ─────────────────────────────────────────────────────────────
+# Giriş noktası: tek örnek, --selftest
+# ─────────────────────────────────────────────────────────────
+
+_MUTEX_NAME = r"Local\MakineLive.App.SingleInstance"
+
+
+def _acquire_single_instance():
+    """İkinci açılışta mevcut pencereyi öne getirip çıkar. Mutex tutamağı süreç boyunca açık kalmalı."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    if kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+        hwnd = user32.FindWindowW("TkTopLevel", "Makine Live")
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+        return None
+    return handle
+
+
+def run_selftest() -> int:
+    """
+    Arayüzsüz doğrulama (paketlenmiş exe için): DLL'i paketten yükler, ekrana kısa süre bilinen bir satır çizip
+    OCR ile okur, sonucu %APPDATA%/MakineLive/selftest.json dosyasına yazar. 0 = başarılı.
+    """
+    from PIL import ImageDraw, ImageFont
+    expected = "Press X to call Jason"
+    result = {"frozen": FROZEN, "runtime_dir": RUNTIME_DIR, "version": APP_VERSION, "ok": False}
+    t_start = time.perf_counter()
+    try:
+        plugin = PluginWrapper(os.path.join(RUNTIME_DIR, "makine-live.dll"))
+        result["dll_loaded"] = plugin.is_loaded
+        rc = plugin.initialize(DATA_DIR)
+        result["init_rc"] = rc
+        if rc != 0:
+            result["error"] = plugin.last_error()
+        else:
+            root = tk.Tk()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            w, h = 760, 110
+            root.geometry(f"{w}x{h}+80+80")
+            img = Image.new("RGB", (w, h), (16, 16, 18))
+            try:
+                fnt = ImageFont.truetype(os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "segoeui.ttf"), 44)
+            except OSError:
+                fnt = ImageFont.load_default()
+            ImageDraw.Draw(img).text((30, 22), expected, font=fnt, fill=(255, 255, 255))
+            photo = ImageTk.PhotoImage(img)
+            tk.Label(root, image=photo, bd=0).pack()
+            root.update()
+            time.sleep(0.4)
+            root.update()
+            r = ctypes.wintypes.RECT()
+            user32.GetWindowRect(root.winfo_id(), ctypes.byref(r))
+            text = ""
+            t0 = time.perf_counter()
+            for _ in range(3):
+                text = plugin.capture_and_ocr(r.left, r.top, r.right - r.left, r.bottom - r.top)
+                if "Jason" in text:
+                    break
+                time.sleep(0.2)
+            result["ocr_ms"] = round((time.perf_counter() - t0) * 1000)
+            result["ocr_text"] = text
+            result["ocr_model"] = plugin.get_setting("_ocrModel")
+            result["ok"] = "Jason" in text
+            root.destroy()
+        plugin.shutdown()
+        # Oyun kütüphanesi paketten de okunabiliyor mu (kayıt defteri, Steam appinfo.vdf); ağa çıkılmaz
+        lib = get_library()
+        lib.classifier = None
+        t0 = time.perf_counter()
+        lib.refresh()
+        result["games"] = lib.summary()
+        result["games_ms"] = round((time.perf_counter() - t0) * 1000)
+        # Konsol / TV modu: "TV'ye kur" için gömülü APK ve ADB kütüphanesi pakette mi
+        result["tv_apk"] = bool(tv_install.apk_path())
+        result["tv_ipk"] = bool(tv_install.ipk_path())
+        try:
+            from adb_shell.adb_device import AdbDeviceTcp  # noqa: F401
+            from adb_shell.auth.sign_pythonrsa import PythonRSASigner  # noqa: F401
+            result["tv_adb"] = True
+        except ImportError as e:
+            result["tv_adb"] = f"yok: {e}"
+        try:
+            import paramiko  # noqa: F401
+            result["tv_ssh"] = True
+        except ImportError as e:
+            result["tv_ssh"] = f"yok: {e}"
+    except Exception as e:  # noqa: BLE001 — selftest her hatayı rapora yazar
+        result["error"] = f"{type(e).__name__}: {e}"
+    result["total_ms"] = round((time.perf_counter() - t_start) * 1000)
+    os.makedirs(app_data_dir(), exist_ok=True)
+    with open(os.path.join(app_data_dir(), "selftest.json"), "w", encoding="utf-8") as fh:
+        json.dump(result, fh, ensure_ascii=False, indent=2)
+    return 0 if result["ok"] else 1
+
+
+def main() -> int:
+    log_path = _setup_file_log()
+    _install_crash_handlers(log_path)
+    if "--selftest" in sys.argv:
+        return run_selftest()
+    mutex = _acquire_single_instance()
+    if mutex is None:
+        return 0
+    try:
+        app = MakineGameLiveApp()
+    except Exception:  # noqa: BLE001 — açılış hatası dosyaya yazılır, sonra PyInstaller penceresi gösterilir
+        _FILE_LOG.error("AÇILIŞ HATASI\n%s", traceback.format_exc())
+        raise
+    _install_crash_handlers(log_path, app)
+    app.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

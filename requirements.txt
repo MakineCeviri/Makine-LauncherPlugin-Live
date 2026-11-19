@@ -1,0 +1,8 @@
+# Makine Live masaüstü uygulaması (Python test koşucusu), testler ve paketleme.
+# Nihai ürün C++ DLL'idir; bunlar DLL'i derlemek için gerekmez.
+pillow>=12.0          # oyun içi altyazı kutusu (overlay_render.py), logo/ikon üretimi
+numpy>=2.0            # kutunun piksel bazında alfa çizimi (overlay_render.py)
+adb-shell>=0.4.4      # Makine TV'yi Android TV'ye ağ üzerinden kurma (tv_install.py)
+rsa>=4.9              # adb-shell anahtar imzası
+paramiko>=3.5         # Makine TV'yi LG webOS'a geliştirici modu SSH ile kurma (tv_install.py)
+pyinstaller>=6.10     # tek dosyalık dist/MakineLive.exe (build_exe.py)

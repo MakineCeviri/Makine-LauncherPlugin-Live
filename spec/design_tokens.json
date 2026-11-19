@@ -1,0 +1,106 @@
+{
+  "_doc": "Makine Live ortak tasarım dili ('altyazı stüdyosu'). Çevirmen portalı (makineceviri.org/live/portal), test paneli ve oyun içi kutu (game_overlay.py) ve ileride native C++ overlay bu değerleri kullanır. Değiştirirseniz üç arayüzü birlikte güncelleyin.",
+  "concept": "Video düzenleme / altyazı stüdyosu: mürekkep koyusu çalışma alanı, tek imza rengi klasik altyazı sarısı. Diyaloglar 'altyazı şeridi' olarak gösterilir. Süs yok; hareket yalnızca bir durumu anlatmak için.",
+  "color": {
+    "dark": {
+      "bg": "#0f1012",
+      "surface": "#16171a",
+      "surface2": "#1d1f23",
+      "raised": "#24262b",
+      "line": "#2a2c31",
+      "lineStrong": "#3a3d44",
+      "text": "#ecebe6",
+      "text2": "#a9a8a2",
+      "text3": "#86868b"
+    },
+    "light": {
+      "bg": "#f4f1ea",
+      "surface": "#fffdf8",
+      "surface2": "#ece8de",
+      "raised": "#ffffff",
+      "line": "#ddd8cc",
+      "lineStrong": "#c6c0b2",
+      "text": "#16171a",
+      "text2": "#55534d",
+      "text3": "#6f6c64"
+    },
+    "accent": "#f2c230",
+    "accentInk": "#16171a",
+    "accentOnLight": "#8a6300",
+    "status": {
+      "verified": "#3fae72",
+      "disputed": "#e2674a",
+      "pending": "#8a8f98",
+      "api": "#ecebe6"
+    },
+    "forbidden": "Mor/indigo, neon camgöbeği, gradyan, cam efekti (blur), parlama (glow), emoji."
+  },
+  "type": {
+    "web": {
+      "ui": "Onest",
+      "mono": "JetBrains Mono",
+      "weights": [
+        400,
+        500,
+        600
+      ]
+    },
+    "desktop": {
+      "ui": "Segoe UI Variable Text",
+      "display": "Segoe UI Variable Display",
+      "mono": "Cascadia Mono"
+    },
+    "subtitle": {
+      "family": "Segoe UI Variable Display",
+      "weight": "Semibold",
+      "sizePx": 26,
+      "sourceScale": 0.58
+    }
+  },
+  "shape": {
+    "radiusSm": 4,
+    "radius": 6,
+    "radiusLg": 10,
+    "stroke": 1
+  },
+  "icon": {
+    "grid": 24,
+    "strokeWidth": 1.75,
+    "cap": "round",
+    "join": "round",
+    "motion": "Her ikonun tek, anlamlı bir mikro animasyonu olur (onay çizilerek gelir, çöp kutusu kapağı kalkar, yenile döner, arama merceği sallanır, göz kırpar). 150–400 ms, yalnızca hover/focus/durum değişiminde; prefers-reduced-motion'da kapalı."
+  },
+  "motion": {
+    "fast": 120,
+    "base": 200,
+    "slow": 320,
+    "easing": "cubic-bezier(.2,.7,.2,1)"
+  },
+  "overlay": {
+    "band": {
+      "bg": "#0f1012",
+      "alpha": 0.78,
+      "radius": 10,
+      "paddingX": 22,
+      "paddingY": 12,
+      "shadowBlur": 18,
+      "shadowAlpha": 0.35
+    },
+    "text": {
+      "color": "#ffffff",
+      "outline": "#000000",
+      "outlinePx": 1.5
+    },
+    "source": {
+      "color": "#c9c8c2"
+    },
+    "statusBar": "Bandın sol kenarında 3 px dikey şerit: verified=yeşil, pending=sarı(accent), raw/bekliyor=gri, api=yok",
+    "fadeMs": 160,
+    "maxWidthRatio": 0.62
+  },
+  "brand": {
+    "logo": "logo_white-96.webp",
+    "rule": "Logo gereken her yerde bu dosya kullanılır; yeniden çizilmez. Koyu zeminde beyaz, açık zeminde metin rengine boyanır (CSS mask). İkonlarda koyu yuvarlak kare (surface-2) üzerinde beyaz logo.",
+    "generated_by": "tools/brand_assets.py"
+  }
+}

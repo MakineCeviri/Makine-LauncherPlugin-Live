@@ -1,0 +1,110 @@
+[
+  {
+    "input": "Press X.",
+    "expected": "press x"
+  },
+  {
+    "input": "Press X",
+    "expected": "press x"
+  },
+  {
+    "input": "  I was going to—  ",
+    "expected": "i was going to"
+  },
+  {
+    "input": "I was going to –",
+    "expected": "i was going to"
+  },
+  {
+    "input": "Wait…",
+    "expected": "wait"
+  },
+  {
+    "input": "Wait...",
+    "expected": "wait"
+  },
+  {
+    "input": "…and then he left.",
+    "expected": "and then he left"
+  },
+  {
+    "input": "“Where are you?”",
+    "expected": "where are you"
+  },
+  {
+    "input": "‘Fine,’ she said.",
+    "expected": "fine,’ she said"
+  },
+  {
+    "input": "«Bonjour!»",
+    "expected": "bonjour"
+  },
+  {
+    "input": "- I know, I know!",
+    "expected": "i know, i know"
+  },
+  {
+    "input": "— Who's there?",
+    "expected": "who's there"
+  },
+  {
+    "input": "Hello    there\n\nfriend",
+    "expected": "hello there friend"
+  },
+  {
+    "input": "Tabs\tand\r\nnewlines here",
+    "expected": "tabs and newlines here"
+  },
+  {
+    "input": "IŞIK ŞÖYLE DEDİ: ÇOK GÜZEL!",
+    "expected": "işik şöyle dedi̇: çok güzel"
+  },
+  {
+    "input": "Größe STRASSE Äpfel?!",
+    "expected": "größe strasse äpfel"
+  },
+  {
+    "input": "(Sighs) Alright]",
+    "expected": "sighs) alright"
+  },
+  {
+    "input": "",
+    "expected": ""
+  },
+  {
+    "input": "   ",
+    "expected": ""
+  },
+  {
+    "input": "...!?",
+    "expected": ""
+  },
+  {
+    "input": "\"'`",
+    "expected": ""
+  },
+  {
+    "input": "Don't touch that!",
+    "expected": "don't touch that"
+  },
+  {
+    "input": "Mid-sentence - dash stays",
+    "expected": "mid-sentence - dash stays"
+  },
+  {
+    "input": "Ellipsis… inside stays",
+    "expected": "ellipsis… inside stays"
+  },
+  {
+    "input": "[Ethan] Shaun?!",
+    "expected": "ethan] shaun"
+  },
+  {
+    "input": "  Hello there. ",
+    "expected": "hello there"
+  },
+  {
+    "input": "\u000bWait\u000b\u000bwhat?\u000b",
+    "expected": "wait what"
+  }
+]

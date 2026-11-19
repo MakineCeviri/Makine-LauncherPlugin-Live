@@ -1,0 +1,226 @@
+[
+  {
+    "source": "Hi",
+    "translation": "Selam",
+    "garbage": true,
+    "note": "çok kısa"
+  },
+  {
+    "source": "aaaa",
+    "translation": "bbbb",
+    "garbage": true,
+    "note": "tekrarlayan harf"
+  },
+  {
+    "source": "12:45 / 03:20",
+    "translation": "12:45 / 03:20",
+    "garbage": true,
+    "note": "harf yok"
+  },
+  {
+    "source": "HP 120/250 MP 40/40",
+    "translation": "HP 120/250 MP 40/40",
+    "garbage": true,
+    "note": "sembol/rakam ağırlıklı"
+  },
+  {
+    "source": "https://store.steampowered.com/app/960910",
+    "translation": "https://store.steampowered.com/app/960910",
+    "garbage": true,
+    "note": "adres"
+  },
+  {
+    "source": "Visit www.quanticdream.com for more",
+    "translation": "Daha fazlası için www.quanticdream.com",
+    "garbage": true,
+    "note": "adres"
+  },
+  {
+    "source": "C:\\Games\\HeavyRain\\HeavyRain.exe",
+    "translation": "C:\\Games\\HeavyRain\\HeavyRain.exe",
+    "garbage": true,
+    "note": "dosya yolu"
+  },
+  {
+    "source": "screenshot_2026.png",
+    "translation": "ekran_görüntüsü_2026.png",
+    "garbage": true,
+    "note": "dosya adı"
+  },
+  {
+    "source": "a b c d e f",
+    "translation": "a b c d e f",
+    "garbage": true,
+    "note": "tek harfler"
+  },
+  {
+    "source": "I l l t I r",
+    "translation": "I l l t I r",
+    "garbage": true,
+    "note": "tek harfler"
+  },
+  {
+    "source": "tnkdttrs xvbnm prtsk",
+    "translation": "tnkdttrs xvbnm prtsk",
+    "garbage": true,
+    "note": "sesli harfsiz dizi"
+  },
+  {
+    "source": "Jason!",
+    "translation": "Jason!",
+    "garbage": true,
+    "note": "çevrilmemiş"
+  },
+  {
+    "source": "Press X to call Jason.",
+    "translation": "PressXto call Jason",
+    "garbage": true,
+    "note": "çevrilmemiş (yalnızca boşluk/noktalama farkı)"
+  },
+  {
+    "source": "I was going to find you, Shaun.",
+    "translation": "Seni bulacaktım, Shaun.",
+    "garbage": false
+  },
+  {
+    "source": "Iwas going to find you, Shaun.",
+    "translation": "Seni bulacaktım, Shaun.",
+    "garbage": false,
+    "note": "boşluk kaybı çöp değildir; anahtar boşluksuz eşleşir"
+  },
+  {
+    "source": "Where were you last night? I called you four times.",
+    "translation": "Dün gece neredeydin? Seni dört kez aradım.",
+    "garbage": false
+  },
+  {
+    "source": "Press X to call Jason.",
+    "translation": "Jason'a seslenmek için X'e bas.",
+    "garbage": false
+  },
+  {
+    "source": "Is anybody there?",
+    "translation": "Kimse var mı?",
+    "garbage": false
+  },
+  {
+    "source": "A.I. detected. Proceed?",
+    "translation": "Yapay zekâ algılandı. Devam edilsin mi?",
+    "garbage": false
+  },
+  {
+    "source": "Lieutenant: Hank, we need to go.",
+    "translation": "Komiser: Hank, gitmemiz lazım.",
+    "garbage": false
+  },
+  {
+    "source": "Try",
+    "translation": "Dene",
+    "garbage": false
+  },
+  {
+    "source": "Mmm, I don't know.",
+    "translation": "Hmm, bilmiyorum.",
+    "garbage": false
+  },
+  {
+    "source": "Shh! Psst, over here.",
+    "translation": "Şşt! Pst, buraya.",
+    "garbage": false
+  },
+  {
+    "source": "Chapter 3: The Origami Killer",
+    "translation": "Bölüm 3: Origami Katili",
+    "garbage": false
+  },
+  {
+    "source": "园图B",
+    "translation": "园图B",
+    "garbage": true,
+    "note": "Çince OCR gürültüsü (İngilizce oyunda)"
+  },
+  {
+    "source": "Jason 图园 is here",
+    "translation": "Jason burada",
+    "garbage": true,
+    "note": "cümlede CJK parçası"
+  },
+  {
+    "source": "プレイ",
+    "translation": "oyna",
+    "garbage": true,
+    "note": "katakana"
+  },
+  {
+    "source": "！？！",
+    "translation": "!?!",
+    "garbage": true,
+    "note": "tam genişlik semboller"
+  },
+  {
+    "source": "Café crème, señor. Ça va?",
+    "translation": "Kahve, bayım. Nasılsın?",
+    "garbage": false,
+    "note": "Latin aksanları çöp değil"
+  },
+  {
+    "source": "Iueunt rent Itueat notient Motop",
+    "translation": "x",
+    "garbage": true,
+    "note": "anlamsız kelimeler (OCR gürültüsü)"
+  },
+  {
+    "source": "tnkedattetres",
+    "translation": "x",
+    "garbage": true,
+    "note": "tek anlamsız kelime"
+  },
+  {
+    "source": "Kamski told Jericho to run.",
+    "translation": "Kamski Jericho'ya kaçmasını söyledi.",
+    "garbage": false,
+    "note": "isimli cümle"
+  },
+  {
+    "source": "What didI do with Shaun?I...",
+    "translation": "Shaun'a ne yaptım? Ben...",
+    "garbage": false,
+    "note": "OCR hatalı ama gerçek satır: kopya olarak birleşir, silinmez"
+  },
+  {
+    "source": "What did I do with Shaun? Il...",
+    "translation": "Shaun'a ne yaptım? Ben...",
+    "garbage": false,
+    "note": "aynı satırın başka okuması"
+  },
+  {
+    "source": "Whoa, whoa, whoa!",
+    "translation": "Dur, dur, dur!",
+    "garbage": false,
+    "note": "ünlem"
+  },
+  {
+    "source": "Mmm-hmm.",
+    "translation": "Hı-hı.",
+    "garbage": false,
+    "note": "ünlem"
+  },
+  {
+    "source": "Hmph.",
+    "translation": "Hıh.",
+    "garbage": false,
+    "note": "ünlem"
+  },
+  {
+    "source": "lIlI llI",
+    "translation": "lIlI llI",
+    "garbage": true,
+    "note": "çizgi gürültüsü"
+  },
+  {
+    "source": "I'll kill him.",
+    "translation": "Onu öldüreceğim.",
+    "garbage": false,
+    "note": "l/I içeren gerçek satır"
+  }
+]
