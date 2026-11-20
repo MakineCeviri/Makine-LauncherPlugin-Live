@@ -107,6 +107,11 @@ class ActivityTests(unittest.TestCase):
         self.assertIn("konsolda", dp.build_activity("GTA VI", 0, 3, console=True)["details"])
         self.assertTrue(dp.build_activity("Fallout", 0, 1, steam_appid="377160")["assets"]["large_image"]
                         .endswith("/377160/header.jpg"))
+        self.assertNotIn("small_image", a["assets"])               # sağ altta küçük ikon yok
+        gta = dp.build_activity("Grand Theft Auto VI", 0, 1, console=True, steam_appid="3240220",
+                                slug="grand-theft-auto-vi")
+        self.assertEqual(gta["assets"]["large_image"], dp.GTA6_ART_URL)
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "assets", "discord", "gta6.png")))
 
     def test_no_app_id_does_nothing(self):
         p = dp.DiscordPresence(client_id="")

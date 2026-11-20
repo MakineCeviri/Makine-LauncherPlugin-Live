@@ -41,7 +41,7 @@ from PIL import Image, ImageTk
 from makine_live.games.game_detector import detect_game, capture_block_reason, foreground_window_info, get_library
 from makine_live.games.console_mode import (ConsoleTarget, find_console_source, console_block_reason, region_to_screen,
                                             screen_to_region, valid_region, client_rect, window_has_image, DEFAULT_REGION,
-                                            DEFAULT_GAME, CONSOLE_LABELS)
+                                            DEFAULT_GAME, CONSOLE_SLUG, CONSOLE_LABELS)
 from makine_live.tv.subtitle_web import SubtitleWeb
 from makine_live.tv.tv_link import TvLink, TvInfo, discover as discover_tvs, TCP_PORT as TV_TCP_PORT
 from makine_live.tv import tv_install
@@ -1488,8 +1488,9 @@ class MakineGameLiveApp(tk.Tk):
         if not name:
             self.discord.clear()
             return
+        slug = self.detected_game_slug or (CONSOLE_SLUG if konsol else "")
         self.discord.set(build_activity(name, self._started_at or time.time(), self._session_lines, console=konsol,
-                                        steam_appid=self.detected_appid))
+                                        steam_appid=self.detected_appid, slug=slug))
 
     def _build_tab_account(self, tag):
         c, u, f = self.c, self.u, self.fonts

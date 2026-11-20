@@ -3,7 +3,8 @@
 Discord'da "Makine Live ile Türkçe oynuyor" (Rich Presence). Bağımlılık yok: Discord masaüstü uygulamasının yerel
 IPC kanalı (\\\\.\\pipe\\discord-ipc-0..9) ile konuşur; ağa çıkmaz, Discord'a kullanıcı adı / jeton gitmez.
 
-Görünen:  büyük görsel  oyunun Steam kapağı (Steam numarası varsa) ya da Makine Live logosu
+Görünen:  görsel        GTA VI'da Makine × GTA VI logosu (assets/discord/gta6.png), diğer oyunlarda Steam kapağı
+                        (Steam numarası varsa) ya da Makine Live logosu; sağ altta küçük ikon yok
           ayrıntı       "Grand Theft Auto VI · Türkçe oynuyor"
           durum         "Bu oturumda 124 diyalog çevrildi"
           süre          oturumun başından beri (Discord "01:23:45 geçti" gösterir)
@@ -31,6 +32,10 @@ DISCORD_APP_ID = "1573370697676488765"   # Discord Developer Portal → Makine L
 PIPE = r"\\.\pipe\discord-ipc-{}"
 DOWNLOAD_URL = "https://makineceviri.org/live/"
 LOGO_URL = "https://makineceviri.org/images/icon-512.png"
+# Depo herkese açık: görsel GitHub'dan sunulur (değiştirilirse adı da değişmeli; Discord adrese göre önbellekler)
+GTA6_SLUG = "grand-theft-auto-vi"
+GTA6_ART_URL = ("https://raw.githubusercontent.com/MakineCeviri/Makine-LauncherPlugin-Live/main/"
+                "assets/discord/gta6.png")
 
 OP_HANDSHAKE, OP_FRAME, OP_CLOSE = 0, 1, 2
 
@@ -42,19 +47,23 @@ def app_id() -> str:
 
 
 def build_activity(game: str, started_at: float, lines: int, console: bool = False,
-                   steam_appid: str = "") -> dict:
+                   steam_appid: str = "", slug: str = "") -> dict:
     """Discord'a gidecek etkinlik (saf fonksiyon: test edilir)."""
     game = (game or "Bir oyun").strip()
     details = f"{game} · {'konsolda ' if console else ''}Türkçe oynuyor"
     state = f"Bu oturumda {lines} diyalog çevrildi" if lines else "Türkçe altyazı açık"
-    large = (f"https://cdn.cloudflare.steamstatic.com/steam/apps/{steam_appid}/header.jpg"
-             if str(steam_appid).isdigit() else LOGO_URL)
+    if slug == GTA6_SLUG:
+        large = GTA6_ART_URL
+    elif str(steam_appid).isdigit():
+        large = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{steam_appid}/header.jpg"
+    else:
+        large = LOGO_URL
     return {
         "type": 0,
         "details": details[:128],
         "state": state[:128],
         "timestamps": {"start": int(started_at)},
-        "assets": {"large_image": large, "large_text": game[:128], "small_image": LOGO_URL, "small_text": "Makine Live"},
+        "assets": {"large_image": large, "large_text": game[:128]},
         "buttons": [{"label": "Makine Live'ı indir", "url": DOWNLOAD_URL}],
         "instance": False,
     }
