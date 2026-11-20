@@ -70,6 +70,7 @@ graph TD
 ```
 ├── README.md, SECURITY.md, LICENSE
 ├── build.cmd                   # tek adımda sürüm (tools/build.py; çift tıklanınca sürüm numarasını sorar)
+├── test.cmd                    # sunucusuz deneme: yerel sahte sunucu + uygulama (tools/offline.py)
 ├── CMakeLists.txt              # DLL derlemesi; OCR çalışma dosyalarını build/release'e kopyalar
 ├── manifest.json               # Launcher eklenti manifesti (sürüm burada; plugin.cpp ile aynı tutulur)
 ├── include/makine/plugin/      # Launcher ile ortak ABI başlıkları
@@ -135,6 +136,7 @@ graph TD
 │
 ├── tools/
 │   ├── build.py                # sürüm numarası → DLL → testler → exe → selftest → SHA-256 (build.cmd bunu çağırır)
+│   ├── offline.py              # sahte /api/live sunucusu (127.0.0.1) + uygulama; veriler build/offline (test.cmd)
 │   ├── build_exe.py            # tek dosyalık dist/MakineLive.exe (PyInstaller)
 │   ├── pack.py                 # build/release → makine-live.makine (eksik dosya varsa reddeder)
 │   ├── brand_assets.py         # logodan türetilenleri üretir: eklenti ikonu, app.ico, Makine TV ikon ve afişi
@@ -388,6 +390,10 @@ bu uygulamanın yerini Launcher alır.
   `src/`'den eskiyse ya da manifest sürümü uyuşmuyorsa reddeder. **Her DLL derlemesinden sonra `.exe` yeniden derlenmelidir.**
   Boyut yaklaşık 53 MB, ilk açılış yaklaşık 3 sn (tek dosyalık paketin açılması).
 - Geliştirmede sunucu adresi `MAKINE_LIVE_SERVER` ortam değişkeniyle değiştirilebilir (yerel test sunucusu için).
+  `test.cmd` (`tools/offline.py`) bunu kullanır: 127.0.0.1'de sahte bir `/api/live` açar (giriş kendiliğinden onaylanır,
+  ekip girişi her adı kabul eder; çeviri `spec/sample_quotes.json`'dan ya da `[Test] …`; yerel havuz kullanıcının indirdiği
+  dosyalardan kopyalanır; bir test duyurusu) ve uygulamayı `APPDATA=build/offline/appdata` ile açar, gerçek oturuma
+  dokunmaz. Adres modül yüklenirken okunur: ortam değişkeni süreç başlamadan verilmelidir.
 - **Discord'da göster** (`net/discord_presence.py`, Hesap sekmesi, `prefs.discord_presence`, varsayılan açık): okuma açıkken
   Discord profilinde "Makine Live oynuyor": oyunun adı ("… · Türkçe oynuyor"; konsolda "konsolda"), oturumun başından beri
   geçen süre ve bu oturumda (F9'dan beri) çevrilen diyalog sayısı, Steam kapağı (yoksa logo), "Makine Live'ı indir" düğmesi.

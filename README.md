@@ -131,6 +131,10 @@ build.cmd 0.3.1                  # sürümü her yerde 0.3.1 yapar, sonra derler
 build.cmd --hizli                # testleri atlar
 ```
 
+Sunucuya bağlanmadan denemek için `test.cmd`: bilgisayarda küçük bir sahte sunucu açar ve uygulamayı ona bağlar
+(giriş kendiliğinden onaylanır, çeviriler örnek repliklerden ya da indirilmiş onaylı havuzdan gelir). Gerçek oturuma ve
+ayarlara dokunmaz; `test.cmd --exe` derlenmiş exe'yi, `test.cmd --temiz` ilk açılışı (bağış penceresi) dener.
+
 Adım adım:
 
 ```powershell
@@ -174,7 +178,8 @@ Uygulama varsayılan olarak `https://makineceviri.org` ile konuşur. Yerel bir s
 ├── tools/                exe ve eklenti paketleme, ikon üretimi, LG paketleyici, TV emülatör testi
 ├── tests/                bütün testler
 ├── docs/                 teknik mimari, kullanıcı rehberleri, sürüm notları
-└── build.cmd             tek adımda sürüm: DLL → testler → exe → selftest (tools/build.py)
+├── build.cmd             tek adımda sürüm: DLL → testler → exe → selftest (tools/build.py)
+└── test.cmd              sunucusuz deneme: yerel sahte sunucuyla uygulamayı açar (tools/offline.py)
 ```
 
 ## Gizlilik ve güvenlik
