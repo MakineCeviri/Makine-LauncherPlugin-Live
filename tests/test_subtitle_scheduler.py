@@ -121,6 +121,41 @@ class SchedulerTests(unittest.TestCase):
         d = s.tick(1.35)
         self.assertEqual(d.id, 1)
 
+    def test_fast_scene_does_not_accumulate_delay(self):
+        """GTA sahnesi: 12 uzun replik, her biri 2.5 sn ekranda, çeviri 1 sn gecikmeli. Gecikme birikmez."""
+        s = SubtitleScheduler()
+        text = "Hey, yeah! Use the fucking gun, Jason, shoot it before it gets us!"   # okuma süresi ~4.2 sn
+        for i in range(12):
+            t = i * 2.5
+            s.source_new(i + 1, t)
+            s.source_gone(i + 1, t + 2.5)
+        tl = []
+        t = 0.0
+        while t <= 40.0:
+            k = int(t // 2.5)
+            for i in range(12):                     # çeviriler zamanında gelir (gecikme 1 sn)
+                if abs(t - (i * 2.5 + 1.0)) < 1e-6:
+                    s.translation_ready(i + 1, text, "api", t)
+            d = s.tick(t)
+            tl.append((round(t, 3), d.id if d else None))
+            t = round(t + 0.05, 3)
+        for i in range(12):
+            st, _ = shown_interval(tl, i + 1)
+            self.assertLessEqual(st - i * 2.5, 1.0 + 0.11, f"satır {i + 1} {st - i * 2.5:.2f} sn geride")
+
+    def test_long_late_translation_is_not_shown(self):
+        s = SubtitleScheduler()
+        s.source_new(1, 0.0); s.source_gone(1, 1.0)
+        s.translation_ready(1, "Çok geç gelen çeviri.", "api", 5.5)   # kaynak 4.5 sn önce kalktı
+        self.assertIsNone(s.tick(5.5))
+
+    def test_untranslated_entries_are_forgotten(self):
+        s = SubtitleScheduler()
+        for i in range(50):                         # çöp / titreme: çevirisi hiç gelmeyen satırlar
+            s.source_new(i + 1, i * 0.1); s.source_gone(i + 1, i * 0.1 + 0.05)
+        s.tick(30.0)
+        self.assertLessEqual(len(s.entries), 1)
+
     def test_failed_translation_does_not_block(self):
         s = SubtitleScheduler()
         s.source_new(1, 0.0); s.source_gone(1, 0.5)
@@ -177,6 +212,31 @@ class TrackerTests(unittest.TestCase):
         disp = [e for e in ev if e[1] == "dispatch"]
         self.assertEqual(disp[-1][3], full)
         self.assertEqual([e[1] for e in ev].count("new"), 1)
+
+    def test_slow_typewriter_sent_once_complete(self):
+        """Harf harf yazılan uzun satır: ardışık okumalar %97 benzer olsa da yarım hâli gönderilmez."""
+        tr = LineTracker()
+        full = "You gotta help him, Jason! He's bleeding out and we need to move right now."
+        seq = [full[:n] for n in range(20, len(full) + 1, 2)] + [full] * 4    # 100 ms'de 2 harf
+        ev = self.feed(tr, seq)
+        disp = [e for e in ev if e[1] == "dispatch"]
+        self.assertEqual([d[3] for d in disp], [full])
+
+    def test_very_slow_typewriter_sends_rest_when_done(self):
+        """5 sn süren daktilo: 3 sn'de yarım hâli gider (oyuncu beklemesin), bitince tamamı."""
+        tr = LineTracker()
+        full = "I dunno if you ever paid for it, but somebody did, and now they want it back from us tonight."
+        seq = [full[:n] for n in range(10, len(full) + 1, 2)] + [full] * 4
+        disp = [e for e in self.feed(tr, seq) if e[1] == "dispatch"]
+        self.assertGreaterEqual(len(disp), 2)
+        self.assertEqual(disp[-1][3], full)
+
+    def test_same_text_not_sent_twice(self):
+        tr = LineTracker()
+        a = "Hang in there, Dobbs. Help is coming, I promise you that."
+        b = "Hang in there, Dobbs. Help is coming, I promise you that"      # OCR noktayı kaçırdı
+        ev = self.feed(tr, [a] * 3 + [b, a] * 8)
+        self.assertEqual([e[1] for e in ev].count("dispatch"), 1)
 
     def test_new_line_replaces_old(self):
         tr = LineTracker()

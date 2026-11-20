@@ -47,6 +47,7 @@ from makine_live.tv.tv_link import TvLink, TvInfo, discover as discover_tvs, TCP
 from makine_live.tv import tv_install
 import socket
 from makine_live.net.local_pool import LocalPool
+from makine_live.net.pool_client import HTTP, HttpPool
 from makine_live.net import app_update
 from makine_live.net.pool_client import (ServerClient, SessionStore, AuthRequired, NetworkError, ServerError, SERVER_URL,
                                          compact_pool_key, app_data_dir)
@@ -72,7 +73,7 @@ from makine_live.ui.region import RegionSelector               # noqa: E402
 from makine_live.ui.widgets import HistoryList                 # noqa: E402
 from makine_live.ui.login import LoginView                     # noqa: E402
 from makine_live.core.dll import PluginWrapper                 # noqa: E402
-from makine_live.core.garbage import clean_ocr_text, is_valid_dialogue_text  # noqa: E402
+from makine_live.core.garbage import filter_ocr                # noqa: E402
 from makine_live.ui.hud_ui import (BG, SURFACE, RAISED, LINE, LINE_STRONG, TEXT, TEXT2, TEXT3,  # noqa: E402
                                    ACCENT, VERIFIED, mix)
 from makine_live.ui.overlay_render import SubtitleOverlay, OverlayContent, STYLES  # noqa: E402
@@ -96,7 +97,10 @@ ROLE_LABELS = {"admin": "yönetici", "translator": "çevirmen", "tester": "teste
 STYLE_LABELS = [("altyazi", "Altyazı"), ("yalin", "Yalın"), ("sinema", "Sinema")]
 POSITION_LABELS = [("alt", "Alt"), ("ust", "Üst"), ("serbest", "Serbest")]
 
-POOL_SYNC_S = 60          # yerel havuzun sunucuyla karşılaştırılma aralığı (oyun açıkken)
+POOL_SYNC_S = 180         # yerel havuzun sunucuyla karşılaştırılma aralığı (okuma açıkken)
+POOL_IDLE_SYNC_S = 600    # okuma kapalıyken (oyun açık) aynı karşılaştırma
+POOL_TICK_S = 60          # eşitleme zamanı geldi mi diye bakma aralığı
+TR_CACHE_TTL_S = 900      # onaylanmamış satırın çevirisi oturumda bu kadar tutulur (oy sunucuda zaten kayıtlı)
 STATUS_POLL_S = 300       # bakım / yeni sürüm / duyuru kontrolü (oturum açıkken)
 
 
@@ -178,6 +182,7 @@ class MakineGameLiveApp(tk.Tk):
         self.profile = None                   # app_me / app_login yanıtı; None = giriş yapılmamış
         self._notice = None                   # (metin, tür) — kota / anahtar yok / bağlantı
         self._skip_keys = set()               # 422: sunucunun çöp saydığı satırlar (yeniden sorulmaz)
+        self._gate_poll_armed = False         # bakım ekranının tek yoklama zinciri
 
         # Yalnızca oyunlar algılanır (game_library): oyun yoksa hedef boştur ve hiçbir şey okunmaz
         self.detected_game_name = ""
@@ -201,13 +206,17 @@ class MakineGameLiveApp(tk.Tk):
         self._flash_id = 10 ** 9
         self._line_t0 = {}                    # satır id -> ilk görüldüğü an (algılama→gösterim süresi)
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ceviri")
-        self._tr_cache = OrderedDict()        # boşluksuz anahtar -> (çeviri, tür); oturum içi
+        self._tr_cache = OrderedDict()        # boşluksuz anahtar -> (çeviri, tür, an); oturum içi
         self._tr_lock = threading.Lock()
+        self._inflight = {}                   # boşluksuz anahtar -> threading.Event (aynı satır iki kez gönderilmez)
+        self._dispatch_seq = {}               # satır id -> son gönderim no (büyüyen satırın eski işi atlanır)
+        self._gone_at = {}                    # satır id -> ekrandan kalktığı an (bayat iş gönderilmez)
         # Yerel havuz: algılanan oyunun ONAYLI çevirileri bilgisayara iner (kullanıcı onaylayınca), satırlar önce oradan
         self.local_pool = LocalPool(app_data_dir())
         self._pool_slug = ""                  # yerel havuzu etkin oyun
         self._pool_prompt_slug = ""           # "oynayacağınız oyun bu mu?" sorusu açık olan oyun
         self._pool_busy = False
+        self._pool_synced_at = 0.0
         self._pool_offline_logged = False
         self._pool_retry_slug = ""            # soru sorulamadı (ağ / eski sunucu): bir sonraki turda yeniden denenir
         self.target = None                    # game_detector.TargetWindow
@@ -424,7 +433,7 @@ class MakineGameLiveApp(tk.Tk):
             self.after(STATUS_POLL_S * 1000, self._status_tick)
         if not getattr(self, "_pool_tick_started", False):
             self._pool_tick_started = True
-            self.after(POOL_SYNC_S * 1000, self._pool_tick)
+            self.after(POOL_TICK_S * 1000, self._pool_tick)
         if not profile.get("translation_ready", True):
             self._set_notice("Sunucuda çeviri anahtarı yok · yalnızca havuzdaki satırlar gelir", "no_key")
 
@@ -1454,7 +1463,8 @@ class MakineGameLiveApp(tk.Tk):
             vi, si = self.stat_items[key]
             self.c.itemconfigure(vi, text=v)
             self.c.itemconfigure(si, text=sub)
-        self.c.itemconfigure(self.spark, image=ui.sparkline_image(lat, INNER, 30))
+        self._spark_img = ui.sparkline_image(lat, INNER, 30)      # tuval görseli yalnızca referans tutuldukça yaşar
+        self.c.itemconfigure(self.spark, image=self._spark_img)
         n = len(self.history.rows)
         self.c.itemconfigure(self.hist_count, text=str(n) if n else "")
 
@@ -1814,6 +1824,7 @@ class MakineGameLiveApp(tk.Tk):
         """
         our_pids = {os.getpid()}
         next_pick = 0.0
+        last_raw, last_text = None, ""            # değişmeyen karede DLL aynı metni döndürür: süzgeç bir kez çalışır
         self._panel_hwnd = self._toplevel_hwnd()
         while self.is_running:
             loop_t0 = time.monotonic()
@@ -1867,7 +1878,11 @@ class MakineGameLiveApp(tk.Tk):
             t0 = time.monotonic()
             raw = self.plugin.capture_and_ocr(rx, ry, rw, rh, hwnd)
             ocr_ms = (time.monotonic() - t0) * 1000
-            text = clean_ocr_text(raw) if is_valid_dialogue_text(raw) else ""
+            # Satır satır süzgeç: gürültü, oyun arayüzü (HUD, araç adı, konuşan adı), tuş simgeleri, sunucunun
+            # reddedeceği satırlar (core/garbage.py). Geriye bir şey kalmazsa ekranda satır yok sayılır.
+            if raw != last_raw:
+                last_raw, last_text = raw, filter_ocr(raw, cfg["src"])
+            text = last_text
             now = time.monotonic()
             if ocr_ms > 40:
                 self.stage_ms["ocr"].append(ocr_ms)
@@ -1921,17 +1936,32 @@ class MakineGameLiveApp(tk.Tk):
             self._post(self._update_capture_visibility)
         return local
 
+    STALE_JOB_S = 2.0      # kaynağı bu kadar önce ekrandan kalkmış satırın çevirisi artık istenmez
+
     def _emit(self, events, cfg=None):
         """Takip olaylarını işle: zamanlayıcı ana thread'de, çeviri iş havuzunda."""
         for ev in events:
             kind, line_id, arg = ev
             if kind == "new":
                 self._post(self._on_line_new, line_id, arg)
+                # Satır sabitlenene kadar (~200–600 ms) bağlantıyı hazırla: sessiz bir aradan sonra Cloudflare boşta
+                # bağlantıyı kapatmış olur; TLS el sıkışması çeviri isteğini beklemesin. Sunucuya istek gitmez.
+                if HTTP.idle_age(self.server.base_url) > HttpPool.IDLE_MAX_S * 0.75:
+                    threading.Thread(target=self.server.warm, daemon=True, name="baglanti").start()
             elif kind == "gone":
+                self._gone_at[line_id] = arg
+                if len(self._gone_at) > 400:
+                    for k in list(self._gone_at)[:200]:
+                        self._gone_at.pop(k, None)
                 self._post(self.scheduler.source_gone, line_id, arg)
             elif kind == "dispatch" and cfg is not None:
+                seq = self._dispatch_seq.get(line_id, 0) + 1
+                self._dispatch_seq[line_id] = seq
+                if len(self._dispatch_seq) > 400:
+                    for k in list(self._dispatch_seq)[:200]:
+                        self._dispatch_seq.pop(k, None)
                 self._executor.submit(self._translate_job, line_id, arg, cfg, self.detected_game_slug,
-                                      self.detected_game_name)
+                                      self.detected_game_name, seq)
 
     def _on_line_new(self, line_id, t):
         self.scheduler.source_new(line_id, t)
@@ -1944,26 +1974,40 @@ class MakineGameLiveApp(tk.Tk):
     # ── Çeviri işi (iş havuzu thread'i) ──
 
     def _tr_cache_get(self, key):
+        """(çeviri, tür) ya da None. Onaylı satır oturum boyunca, diğerleri TR_CACHE_TTL_S boyunca tutulur."""
         with self._tr_lock:
             v = self._tr_cache.get(key)
-            if v:
-                self._tr_cache.move_to_end(key)
-            return v
-
-    def _tr_cache_put(self, key, value):
-        with self._tr_lock:
-            self._tr_cache[key] = value
+            if not v:
+                return None
+            if v[1] != "verified" and time.monotonic() - v[2] > TR_CACHE_TTL_S:
+                del self._tr_cache[key]
+                return None
             self._tr_cache.move_to_end(key)
-            while len(self._tr_cache) > 500:
+            return v[0], v[1]
+
+    def _tr_cache_put(self, key, translated, kind):
+        with self._tr_lock:
+            self._tr_cache[key] = (translated, kind, time.monotonic())
+            self._tr_cache.move_to_end(key)
+            while len(self._tr_cache) > 1000:
                 self._tr_cache.popitem(last=False)
 
-    def _translate_job(self, line_id, text, cfg, game_slug, game_name=""):
+    def _translate_job(self, line_id, text, cfg, game_slug, game_name="", seq=0):
         """
         Tek sunucu isteği: /api/live/translate havuza bakar, yoksa sunucunun DeepL anahtarıyla çevirir ve havuza yazar.
-        Ağ / DeepL hatasında bir kez kısa bir beklemeden sonra yeniden denenir.
+        Önce yerel havuz ve oturum önbelleği; aynı satır zaten soruluyorsa o yanıt beklenir (ikinci istek gitmez).
+        Satırın daha yeni bir hâli gönderildiyse ya da satır çoktan ekrandan kalktıysa iş atlanır.
+        Yalnızca geçici hatalarda (ağ, 502 / 504) bir kez hemen yeniden denenir.
         """
+        if seq and self._dispatch_seq.get(line_id, seq) != seq:
+            return                                     # büyüyen satırın yeni hâli zaten kuyrukta
+        gone = self._gone_at.get(line_id)
+        if gone is not None and time.monotonic() - gone > self.STALE_JOB_S:
+            self._post(self.scheduler.translation_failed, line_id)
+            return
         key = compact_pool_key(text)
         self._post(self._on_flight, True)
+        owner = None
         try:
             # 0. Yerel havuz: bu oyunun onaylı çevirileri bilgisayarda (ağa çıkılmaz)
             t0 = time.monotonic()
@@ -1973,19 +2017,30 @@ class MakineGameLiveApp(tk.Tk):
                 self._post(self._on_translation, line_id, text, local[1], "verified", "yerel", ms,
                            {"exact": local[2]})
                 return
-            # 1. Bu oturumda onaylı olarak geldi. Onaylanmamış satırlar her seferinde sunucuya gider:
-            #    oy sunucuda kayıtlı kalır, satır bu arada onaylandıysa onaylı çeviri gelir.
-            hit = self._tr_cache_get(key)
-            if hit and hit[1] == "verified":
-                self._post(self._on_translation, line_id, text, hit[0], hit[1], "önbellek", 0, {})
-                return
             if key in self._skip_keys:
+                self._post(self.scheduler.translation_failed, line_id)
+                return
+            # 1. Bu oturumda geldi: onaylıysa her zaman, değilse bir süre (oy sunucuda zaten kayıtlı; satır bu arada
+            #    onaylanırsa yerel havuz eşitlemesi getirir). Aynı satır şu an soruluyorsa o yanıt beklenir.
+            for _ in (1, 2):
+                hit = self._tr_cache_get(key)
+                if hit:
+                    self._post(self._on_translation, line_id, text, hit[0], hit[1], "önbellek", 0, {})
+                    return
+                with self._tr_lock:
+                    pending = self._inflight.get(key)
+                    if pending is None:
+                        owner = self._inflight[key] = threading.Event()
+                        break
+                pending.wait(timeout=12.0)
+            if owner is None:
                 self._post(self.scheduler.translation_failed, line_id)
                 return
 
             res = None
             for attempt in (1, 2):
                 t0 = time.monotonic()
+                retry = False
                 try:
                     res = self.server.translate(game_slug, game_name, text, cfg["src"], cfg["tgt"],
                                                 steam_appid=self.detected_appid if game_slug == self.detected_game_slug else "")
@@ -1996,6 +2051,7 @@ class MakineGameLiveApp(tk.Tk):
                 except NetworkError as e:
                     self._post(self.log, f"hata   sunucuya ulaşılamadı ({e}) · deneme {attempt}")
                     self._post(self._set_notice, "Sunucuya ulaşılamıyor · yeniden deneniyor", "network")
+                    retry = True
                 except ServerError as e:
                     if e.status == 422:
                         self._skip_keys.add(key)
@@ -2016,9 +2072,17 @@ class MakineGameLiveApp(tk.Tk):
                                    "no_key")
                         break
                     self._post(self.log, f"hata   sunucu {e.status}: {e} · deneme {attempt}")
-                    self._post(self._set_notice, "Çeviri servisi yanıt vermedi · yeniden deneniyor", "upstream")
+                    retry = e.status in (502, 504)
+                    if retry:
+                        self._post(self._set_notice, "Çeviri servisi yanıt vermedi · yeniden deneniyor", "upstream")
+                if not retry:
+                    break
                 if attempt == 1:
-                    time.sleep(1.0)
+                    # Satır bu arada ekrandan kalktıysa yeniden denemeye değmez
+                    gone = self._gone_at.get(line_id)
+                    if gone is not None and time.monotonic() - gone > self.STALE_JOB_S:
+                        break
+                    time.sleep(0.3)
             if not res or not res.get("translated"):
                 self._post(self.scheduler.translation_failed, line_id)
                 return
@@ -2032,9 +2096,13 @@ class MakineGameLiveApp(tk.Tk):
             else:
                 kind = "api"
                 self.stage_ms["api"].append(req_ms)
-            self._tr_cache_put(key, (res["translated"], kind))
+            self._tr_cache_put(key, res["translated"], kind)
             self._post(self._on_translation, line_id, text, res["translated"], kind, origin, req_ms, res)
         finally:
+            if owner is not None:
+                with self._tr_lock:
+                    self._inflight.pop(key, None)
+                owner.set()
             self._post(self._on_flight, False)
 
     # ── Sonuçlar (ana thread) ──
@@ -2277,21 +2345,28 @@ class MakineGameLiveApp(tk.Tk):
         self.toast("Yanlış oyun algılandıysa kartta Oyun değil'e basın")
 
     def _pool_tick(self):
-        """Oyun açıkken yerel havuzu düzenli olarak sunucuyla karşılaştır (onay / düzenleme / silme)."""
+        """
+        Oyun açıkken yerel havuzu sunucuyla karşılaştır (onay / düzenleme / silme): okuma açıkken POOL_SYNC_S'de,
+        kapalıyken POOL_IDLE_SYNC_S'de bir. Aynı sürümdeyse sunucu tek satır okur ve "değişmedi" der.
+        """
         try:
             t = self.target
+            due = POOL_SYNC_S if self.is_running else POOL_IDLE_SYNC_S
             if self._pool_slug and t is not None and t.slug == self._pool_slug:
-                self._pool_sync_async()
+                if time.monotonic() - self._pool_synced_at >= due:
+                    self._pool_sync_async()
             elif self._pool_retry_slug and t is not None and t.slug == self._pool_retry_slug:
                 self._pool_on_game(t)
         finally:
-            self.after(POOL_SYNC_S * 1000, self._pool_tick)
+            self.after(POOL_TICK_S * 1000, self._pool_tick)
 
     def _pool_sync_async(self, hits_only=False):
         slug = self._pool_slug
         if not slug or self._pool_busy or self.profile is None:
             return
         self._pool_busy = True
+        if not hits_only:
+            self._pool_synced_at = time.monotonic()
 
         def worker():
             try:
@@ -2437,11 +2512,17 @@ class MakineGameLiveApp(tk.Tk):
         self.login.show_gate("lock", ACCENT, "Bakım çalışması",
                              (message or "Makine Live şu an bakımda.") + "\n\nBakım bitince uygulama kendiliğinden açılır.",
                              primary=("Tekrar dene", lambda: self._fetch_status(self._on_gate_status)))
-        self.log("bakım  sunucu bakımda · uygulama bekliyor")
-        self.after(30000, self._gate_poll)
+        if not self._gate_poll_armed:
+            # Tek zincir: bakım ekranı her yeniden çizildiğinde (Tekrar dene, çeviri isteğinin bakım yanıtı) yeni bir
+            # yoklama zinciri başlamaz; eskiden her biri ayrı zincir açıyor, istekler 30 sn'de bir ikiye katlanıyordu.
+            self._gate_poll_armed = True
+            self.log("bakım  sunucu bakımda · uygulama bekliyor")
+            self.after(30000, self._gate_poll)
 
     def _gate_poll(self):
+        self._gate_poll_armed = False
         if self._gate == "maintenance":
+            self._gate_poll_armed = True
             self._fetch_status(self._on_gate_status)
             self.after(30000, self._gate_poll)
 

@@ -66,11 +66,17 @@ class HttpPool:
     Host başına yeniden kullanılan bağlantılar (keep-alive). urllib her istekte yeni TCP + TLS açar
     (yeni TLS el sıkışması ~100–250 ms); açık bağlantıyla aynı istek ~30 ms.
     Bir bağlantıyı aynı anda tek thread kullanır. http:// yalnızca yerel testler içindir.
+
+    Cloudflare boşta kalan bağlantıyı bir süre sonra sessizce kapatır; böyle bir soketle gönderilen istek
+    "Remote end closed connection" ile düşer. Bu yüzden IDLE_MAX_S'den uzun boşta kalan soket kullanılmaz, kapanmış
+    çıkan soketten sonra da yeniden deneme her zaman YENİ bir bağlantıyla yapılır (havuzdan bir bayat soket daha
+    alınmaz).
     """
     MAX_IDLE = 4
+    IDLE_MAX_S = 20.0
 
     def __init__(self):
-        self._idle: Dict[Tuple[str, str], list] = {}
+        self._idle: Dict[Tuple[str, str], list] = {}     # anahtar → [(bağlantı, boşa çıktığı an)]
         self._lock = threading.Lock()
         self._ctx = ssl.create_default_context()
 
@@ -79,14 +85,24 @@ class HttpPool:
             return http.client.HTTPConnection(host, timeout=timeout)
         return http.client.HTTPSConnection(host, timeout=timeout, context=self._ctx)
 
-    def _take(self, key, timeout: float):
-        with self._lock:
-            idle = self._idle.get(key)
-            if idle:
-                conn = idle.pop()
+    def _take(self, key, timeout: float, fresh: bool = False):
+        if not fresh:
+            stale = []
+            conn = None
+            with self._lock:
+                idle = self._idle.get(key) or []
+                now = time.monotonic()
+                while idle:
+                    c, since = idle.pop()
+                    if now - since <= self.IDLE_MAX_S and c.sock is not None:
+                        conn = c
+                        break
+                    stale.append(c)
+            for c in stale:
+                c.close()
+            if conn is not None:
                 conn.timeout = timeout
-                if conn.sock is not None:
-                    conn.sock.settimeout(timeout)
+                conn.sock.settimeout(timeout)
                 return conn
         return self._new(key[0], key[1], timeout)
 
@@ -94,9 +110,16 @@ class HttpPool:
         with self._lock:
             idle = self._idle.setdefault(key, [])
             if len(idle) < self.MAX_IDLE:
-                idle.append(conn)
+                idle.append((conn, time.monotonic()))
                 return
         conn.close()
+
+    def idle_age(self, url: str) -> float:
+        """Bu sunucuya açık en taze boşta bağlantının yaşı (sn); yoksa sonsuz."""
+        u = urllib.parse.urlsplit(url)
+        with self._lock:
+            idle = self._idle.get((u.scheme or "https", u.netloc)) or []
+            return min((time.monotonic() - since for _, since in idle), default=float("inf"))
 
     def request(self, method: str, url: str, body: bytes = None, headers: dict = None,
                 timeout: float = 3.0) -> Tuple[int, bytes]:
@@ -105,7 +128,7 @@ class HttpPool:
         key = (u.scheme or "https", u.netloc)
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")
         for attempt in (1, 2):
-            conn = self._take(key, timeout)
+            conn = self._take(key, timeout, fresh=attempt == 2)
             reused = conn.sock is not None
             try:
                 conn.request(method, path, body=body, headers=headers or {})
@@ -132,9 +155,8 @@ class HttpPool:
         """Bağlantıyı (TLS el sıkışması dahil) önceden kur; ilk istek beklemesin. Arka planda çağırın."""
         u = urllib.parse.urlsplit(url)
         key = (u.scheme or "https", u.netloc)
-        with self._lock:
-            if self._idle.get(key):
-                return
+        if self.idle_age(url) < self.IDLE_MAX_S / 2:
+            return
         conn = self._new(key[0], key[1], timeout)
         try:
             conn.connect()
@@ -298,6 +320,7 @@ class ServerClient:
         return data
 
     def warm(self):
+        """TCP + TLS bağlantısını önceden kur (sunucuya HTTP isteği gitmez). Boşta taze bağlantı varsa bir şey yapmaz."""
         HTTP.warm(self.base_url)
 
     # ── oturum ──
@@ -364,8 +387,8 @@ class ServerClient:
         değilse {"rev", "count", "items": [[id, anahtar, kaynak, çeviri], ...]}. Yalnızca ONAYLI satırlar.
         """
         q = {"action": "sync", "game": game_slug}
-        if rev:
-            q["rev"] = rev
+        if rev or not head:
+            q["rev"] = rev or "r0"     # hiç onaylı satırı olmayan oyun: "değişmedi" yanıtı gelebilsin
         if head:
             q["head"] = "1"
         if steam_appid:
@@ -430,7 +453,7 @@ class ServerClient:
     def check_connection(self, timeout: float = 2.0) -> bool:
         """Sunucu yanıt veriyor mu (bağlantı havuzda açık kalır; ilk çeviri el sıkışma beklemez)."""
         try:
-            status, _ = HTTP.request("GET", f"{self.base_url}/api/live/games?action=stats",
+            status, _ = HTTP.request("GET", f"{self.base_url}/api/live/ping",
                                      headers={"User-Agent": USER_AGENT}, timeout=timeout)
             return status < 500
         except OSError:

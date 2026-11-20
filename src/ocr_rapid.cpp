@@ -174,17 +174,15 @@ std::vector<OcrBox> RapidOcrEngine::recognize(
     m_fnGetResult(m_handle, result.data(), resultLen);
     result.resize(std::strlen(result.c_str()));
 
-    // RapidOCR output: recognized text lines mixed with box/score diagnostics.
+    // OcrGetResult returns only the recognized lines, one per box ("\n"); box and score diagnostics go to RapidOCR's
+    // own log, not here (checked against the DLL). Lines starting with "-" or containing "score" are real dialogue
+    // ("- Wait!", "What's the score?"); the noise filter for the app is in makine_live/core/garbage.py.
     std::vector<OcrBox> boxes;
     std::istringstream iss(result);
     std::string line;
     while (std::getline(iss, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.empty() || line[0] == '-') continue;
-        if (line.find("boxCount") != std::string::npos
-            || line.find("×") != std::string::npos
-            || line.find("score") != std::string::npos)
-            continue;
+        if (line.empty()) continue;
         OcrBox box;
         box.text = line;
         box.confidence = 0.9f;  // RapidOcrOnnx text output carries no per-line score

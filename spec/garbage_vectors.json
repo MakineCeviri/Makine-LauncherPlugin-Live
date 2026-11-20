@@ -222,5 +222,47 @@
     "translation": "Onu öldüreceğim.",
     "garbage": false,
     "note": "l/I içeren gerçek satır"
+  },
+  {
+    "source": "ee id n na do rs error a ra",
+    "translation": "",
+    "garbage": true,
+    "note": "kısa parçalı OCR gürültüsü (gerçek oyun kaydı)"
+  },
+  {
+    "source": "ikpuew oas on er ay non ue",
+    "translation": "",
+    "garbage": true,
+    "note": "kısa parçalı OCR gürültüsü (gerçek oyun kaydı)"
+  },
+  {
+    "source": "Yo, yo, hold up, th-there's something",
+    "translation": "",
+    "garbage": false,
+    "note": "kısa kelimeler ve kekeleme gerçek"
+  },
+  {
+    "source": "Uh.. is that a shark?",
+    "translation": "",
+    "garbage": false,
+    "note": "kısa kelimeler gerçek"
+  },
+  {
+    "source": "Go on their website and write to us",
+    "translation": "",
+    "garbage": false,
+    "note": "iki harfli kelimeler gerçek"
+  },
+  {
+    "source": "Oh, we totally could!",
+    "translation": "",
+    "garbage": false,
+    "note": "ünlem + kısa kelime"
+  },
+  {
+    "source": "Is he gonna be ok?",
+    "translation": "",
+    "garbage": false,
+    "note": "iki harfli kelimeler gerçek"
   }
 ]

@@ -16,6 +16,7 @@ py tests/test_normalization.py
 | `test_game_library.py` | yalnızca oyunların tanınması (sahte Steam / Epic klasörleri, `appinfo.vdf`) | — |
 | `test_local_pool.py` | yerel havuz: arama, benzer satır, eşitleme farkları, kalıcılık | — |
 | `test_subtitle_scheduler.py` | satır takibi ve altyazı zamanlayıcısı | — |
+| `test_garbage.py` | OCR süzgeci: sunucuyla aynı çöp kararı (`spec/garbage_vectors.json`), oyun arayüzü / gürültü / tuş simgeleri | — |
 | `test_console_mode.py` | konsol modu: 16:9 alan, oransal bölge, kaynak eşleme, gerçek pencereyle bulma | Tk |
 | `test_tv_link.py` | PC → Makine TV: keşif, eşleşme kodu, satır, en yeni kazanır, yeniden bağlanma (sahte TV) | — |
 | `test_subtitle_web.py` | telefon / OBS sayfaları ve SSE akışı (gerçek HTTP) | — |

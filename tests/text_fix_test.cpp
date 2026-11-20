@@ -50,6 +50,10 @@ int main(int argc, char** argv)
         {"Wait...what?", "Wait...what?"},
         {"HP 120/250  Level 12", "HP 120/250  Level 12"},
         {"Kamski", "Kamski"},
+        // names the list does not know are not chopped into letters (real GTA VI log: "G or di K")
+        {"and you suspect Gordi Kavanagh?", "and you suspect Gordi Kavanagh?"},
+        {"Gordi has the time.", "Gordi has the time."},
+        {"Jasn, get in the car.", "Jasn, get in the car."},
         {"tnkedattetres", "tnkedattetres"},
         {"Ok", "Ok"},
         {"Line one\nLinetwo", "Line one\nLine two"},

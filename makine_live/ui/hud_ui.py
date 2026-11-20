@@ -925,7 +925,7 @@ class Tabs:
 
 
 def sparkline_image(points, w, h):
-    """points: [(ms, kind)] — pool noktaları yeşil, api noktaları açık gri; çizgi soluk."""
+    """points: [(ms, kind)] — pool noktaları yeşil, api noktaları açık gri; çizgi soluk. Yeni bir PhotoImage."""
     def build():
         W, H = w * _SS, h * _SS
         im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -944,8 +944,9 @@ def sparkline_image(points, w, h):
             r = 1.8 * _SS
             d.ellipse((x - r, y - r, x + r, y + r), fill=col + (255,))
         return im.resize((w, h), Image.LANCZOS)
-    key = ("spark", w, h, tuple(points))
-    return _photo(key, build)
+    # Önbelleğe girmez: her çeviride değişir. Eskiden her biri ayrı girdi olarak birikiyor (saatlerce oynayınca
+    # ~150 MB), önbellek dolunca da ekrandaki diğer görsellerle birlikte siliniyordu. Çağıran referansı tutar.
+    return ImageTk.PhotoImage(build())
 
 
 def checker_image(w, h, radius=6):

@@ -28,6 +28,17 @@ static bool isLower(char c) { return c >= 'a' && c <= 'z'; }
 static bool isCoreChar(char c) { return isAsciiAlpha(c) || c == '\''; }
 static bool isSplitPunct(char c) { return c == '.' || c == '!' || c == '?' || c == ',' || c == ';' || c == ':'; }
 
+// Two-letter pieces of a split must be real short words. The frequency list holds almost every letter pair
+// ("di", "ae", "na"), so a name the list does not know was chopped into letters: "Gordi" → "G or di".
+static bool isShortWord(const std::string& p)
+{
+    static const char* const kShort[] = {"to", "of", "in", "is", "it", "on", "at", "be", "do", "go", "he", "me", "my",
+                                         "no", "so", "up", "us", "we", "an", "as", "by", "if", "or", "oh", "ok", "am"};
+    for (const char* w : kShort)
+        if (p == w) return true;
+    return false;
+}
+
 static std::string lower(const std::string& s)
 {
     std::string out = s;
@@ -83,6 +94,7 @@ bool SpacingFixer::splitCore(const std::string& core, const std::string& origina
             if (r < 0 || r >= limit) continue;
             // Single letters only for "a"/"I" or an uppercase letter in the original ("Xto" → "X to")
             if (k == 1 && piece != "a" && piece != "i" && !isUpper(original[i - k])) continue;
+            if (k == 2 && !isShortWord(piece)) continue;
             const double c = best[i - k] + std::log((r + 1.0) * logN);
             if (c < best[i]) { best[i] = c; back[i] = k; }
         }

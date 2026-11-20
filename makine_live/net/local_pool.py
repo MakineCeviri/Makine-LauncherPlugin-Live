@@ -192,7 +192,7 @@ class LocalPool:
             return p
         d = self._read_json(self._file(slug))
         if not isinstance(d, dict):
-            return None
+            d = {}       # henüz indirilmedi: boş havuz (her satırda diske bakılmasın; eşitleme doldurur)
         p = GamePool(slug, d.get("name", ""), d.get("rev", ""), d.get("items"), d.get("synced_at", 0.0))
         with self._lock:
             self._pools.setdefault(slug, p)
