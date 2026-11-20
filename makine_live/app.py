@@ -49,6 +49,7 @@ import socket
 from makine_live.net.local_pool import LocalPool
 from makine_live.net.pool_client import HTTP, HttpPool
 from makine_live.net import app_update
+from makine_live.net.discord_presence import DiscordPresence, build_activity
 from makine_live.net.pool_client import (ServerClient, SessionStore, AuthRequired, NetworkError, ServerError, SERVER_URL,
                                          compact_pool_key, app_data_dir)
 from makine_live.core.subtitle_timing import LineTracker, SubtitleScheduler
@@ -202,6 +203,8 @@ class MakineGameLiveApp(tk.Tk):
         self._notice = None                   # (metin, tür) — kota / anahtar yok / bağlantı
         self._skip_keys = set()               # 422: sunucunun çöp saydığı satırlar (yeniden sorulmaz)
         self._gate_poll_armed = False         # bakım ekranının tek yoklama zinciri
+        self.discord = DiscordPresence()      # Discord'da gösterme (yerel IPC; Discord kapalıysa bekler)
+        self._session_lines = 0               # bu oturumda (F9'dan beri) çevrilen diyalog
 
         # Yalnızca oyunlar algılanır (game_library): oyun yoksa hedef boştur ve hiçbir şey okunmaz
         self.detected_game_name = ""
@@ -246,6 +249,8 @@ class MakineGameLiveApp(tk.Tk):
                       "lat": deque(maxlen=30)}
         self.stage_ms = {"ocr": deque(maxlen=50), "pool": deque(maxlen=50), "api": deque(maxlen=50)}
         self.prefs = {**LOOK_DEFAULTS, "custom_anchor": None, "tab": "canli", "look_sec": "yazi",
+                      # Discord profilinde "Makine Live ile Türkçe oynuyor" (Hesap sekmesi; kimlik yoksa gizli)
+                      "discord_presence": True,
                       # Konsol / TV modu: oyun konsolda, görüntü Remote Play / yakalama penceresinden okunur
                       # Konsol modu yalnızca GTA VI içindir (console_mode.console_game). Altyazı nerede görünür:
                       # tv = Makine TV, pc = bu bilgisayarın ekranı (monitörde oynayanlar), web = telefon / tablet
@@ -439,6 +444,8 @@ class MakineGameLiveApp(tk.Tk):
 
     def _on_signed_in(self, profile):
         self.profile = profile
+        if self.prefs["discord_presence"]:
+            self.discord.start()
         self.login.c.pack_forget()
         self.c.pack(fill="both", expand=True)
         self._update_account()
@@ -1443,6 +1450,32 @@ class MakineGameLiveApp(tk.Tk):
 
     # ── Hesap sekmesi ──
 
+    def _set_discord(self, value):
+        self.prefs["discord_presence"] = bool(value)
+        self._save_hud_prefs()
+        if value:
+            self.discord.start()
+            self._discord_update()
+            self.toast("Discord'da gösterilecek" + ("" if self.is_running else " · okumayı başlatınca"))
+        else:
+            self.discord.stop()
+            self.toast("Discord'da gösterilmiyor")
+
+    def _discord_update(self):
+        """Okuma açıkken oyun, oturum süresi ve çevrilen diyalog sayısı; değilse temizle (hız sınırı bileşende)."""
+        if not self.discord.available or not self.prefs.get("discord_presence"):
+            return
+        if not (self.is_running and self.profile is not None):
+            self.discord.clear()
+            return
+        konsol = self.prefs["mode"] == "konsol"
+        name = self.detected_game_name or (DEFAULT_GAME if konsol else "")
+        if not name:
+            self.discord.clear()
+            return
+        self.discord.set(build_activity(name, self._started_at or time.time(), self._session_lines, console=konsol,
+                                        steam_appid=self.detected_appid))
+
     def _build_tab_account(self, tag):
         c, u, f = self.c, self.u, self.fonts
         y = CONTENT_Y
@@ -1461,6 +1494,14 @@ class MakineGameLiveApp(tk.Tk):
         y += 56
         self.btn_logout = ui.Button(u, PAD, y, INNER, 40, text="Çıkış yap", icon="lock", kind="secondary",
                                     command=self.logout, font=f.ui(13, semi=True), tags=(tag,))
+        if self.discord.available:
+            y += 62
+            c.create_line(PAD, y - 14, W - PAD, y - 14, fill=LINE, tags=tag)
+            self.tg_discord = ui.Toggle(u, PAD, y, INNER, "Discord'da göster", self.prefs["discord_presence"],
+                                        command=self._set_discord, tags=(tag,), icon="game")
+            c.create_text(PAD, y + 30, anchor="nw", font=f.ui(11), fill=TEXT3, tags=tag, width=INNER,
+                          text="Okuma açıkken Discord profilinizde hangi oyunu Makine Live ile Türkçe oynadığınız, "
+                               "ne zamandır oynadığınız ve bu oturumda kaç diyalog çevrildiği görünür.")
 
     # ── Sekme geçişi ──
 
@@ -1724,6 +1765,7 @@ class MakineGameLiveApp(tk.Tk):
         elif prefs.get("pc_box") and not p["tv"]:         # 0.2.0 öncesi: "bu bilgisayarda da göster"
             p["console_out"] = "pc"
         p["stream_visible"] = bool(prefs.get("stream_visible", False))
+        p["discord_presence"] = bool(prefs.get("discord_presence", True))
         p["obs_source"] = bool(prefs.get("obs_source", False))
         if prefs.get("tv_kind") in ("android", "lg"):
             p["tv_kind"] = prefs["tv_kind"]
@@ -1928,6 +1970,7 @@ class MakineGameLiveApp(tk.Tk):
             self._shown_disp = None
             self._block_reason = None
             self.is_running = True
+            self._session_lines = 0
             self._set_state(True)
             if not self.is_locked and self._pc_box_on():
                 self.overlay.show()
@@ -1950,6 +1993,7 @@ class MakineGameLiveApp(tk.Tk):
             self._update_capture_visibility()
             self.log(f"durdu  ·  {self._stage_summary()}")
             self._pool_sync_async(hits_only=True)
+        self._discord_update()
 
     def toggle_lock(self):
         self.is_locked = not self.is_locked
@@ -2302,6 +2346,8 @@ class MakineGameLiveApp(tk.Tk):
 
     def _on_translation(self, line_id, raw, translated, kind, source, stage_ms, res):
         now = time.monotonic()
+        self._session_lines += 1
+        self._discord_update()
         self.scheduler.translation_ready(line_id, translated, kind, now)
         t0 = self._line_t0.get(line_id)
         total_ms = round((now - t0) * 1000) if t0 else round(stage_ms)
@@ -2418,6 +2464,7 @@ class MakineGameLiveApp(tk.Tk):
             if prev is not None:
                 self.log("oyun   " + ("konsol görüntüsü yok" if konsol else "algılanan oyun yok") + " · okuma bekliyor")
         self._refresh_console_cards()
+        self._discord_update()
 
     def _store_label(self, t) -> str:
         if isinstance(t, ConsoleTarget):
@@ -2936,6 +2983,7 @@ class MakineGameLiveApp(tk.Tk):
 
     def destroy(self):
         self.is_running = False
+        self.discord.stop()
         self._executor.shutdown(wait=False, cancel_futures=True)
         self._close_sheet()
         self.tv_link.clear()

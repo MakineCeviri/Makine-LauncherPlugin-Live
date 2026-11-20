@@ -148,6 +148,7 @@ graph TD
     ├── test_subtitle_scheduler.py  # zamanlayıcı
     ├── test_console_mode.py, test_tv_link.py  # konsol modu ve TV bağlantısı (sahte TV ile)
     ├── test_subtitle_web.py    #   telefon / OBS sayfaları ve SSE akışı (gerçek HTTP)
+    ├── test_discord_presence.py  # Discord'da gösterme (sahte Discord IPC kanalı)
     ├── test_webos_service.py, test_webos_install.py  # LG servisi (Node + sahte webos-service), geliştirici modu kurulumu (sahte TV)
     ├── webos_mock/, webos_preview.html  # sahte 'webos-service' modülü; LG arayüzünü tarayıcıda görme sayfası
     ├── text_fix_test.cpp       #   boşluk düzeltici (ctest --test-dir build)
@@ -352,8 +353,8 @@ bu uygulamanın yerini Launcher alır.
   **Vazgeç**); uygulama `interval` (3 sn) arayla `device_poll` sorar, onaylanınca jetonu alır (10 dk'da onaylanmazsa
   süre doldu der). İkinci yol **Ekip hesabıyla giriş**: kullanıcı adı + şifre (`app_login`). Jeton `%APPDATA%\MakineLive\session.dat` içinde DPAPI ile şifreli
   saklanır, sonraki açılışlarda `app_me` ile doğrulanır. 401 gelirse oturum silinip giriş ekranına dönülür; ağ hatasında
-  jeton korunur ve "Tekrar dene" çıkar. Oturum yokken F9 çalışmaz. **Hesap** sekmesinde yalnızca kullanıcı adı, rol, sürüm ve çıkış bulunur;
-  sunucu adresi ve karakter kullanımı uygulamanın hiçbir yerinde gösterilmez (ürün kararı).
+  jeton korunur ve "Tekrar dene" çıkar. Oturum yokken F9 çalışmaz. **Hesap** sekmesinde yalnızca kullanıcı adı, rol, sürüm, çıkış ve
+  **Discord'da göster** anahtarı bulunur; sunucu adresi ve karakter kullanımı uygulamanın hiçbir yerinde gösterilmez (ürün kararı).
 - **Sabit ayarlar (ürün kararı):** Dil yalnızca İngilizce → Türkçe (`SOURCE_LANG`, `TARGET_LANG`; seçim yok).
   Okuma her zaman yalnızca algılanan oyun öndeyken yapılır (`only_focus` daima açık; anahtar yok).
 - **Yerel havuz** (`local_pool.py`): Oyun algılanınca sunucuya o oyunun kaç onaylı satırı olduğu sorulur (`sync&head=1`).
@@ -381,6 +382,13 @@ bu uygulamanın yerini Launcher alır.
   `src/`'den eskiyse ya da manifest sürümü uyuşmuyorsa reddeder. **Her DLL derlemesinden sonra `.exe` yeniden derlenmelidir.**
   Boyut yaklaşık 53 MB, ilk açılış yaklaşık 3 sn (tek dosyalık paketin açılması).
 - Geliştirmede sunucu adresi `MAKINE_LIVE_SERVER` ortam değişkeniyle değiştirilebilir (yerel test sunucusu için).
+- **Discord'da göster** (`net/discord_presence.py`, Hesap sekmesi, `prefs.discord_presence`, varsayılan açık): okuma açıkken
+  Discord profilinde "Makine Live oynuyor": oyunun adı ("… · Türkçe oynuyor"; konsolda "konsolda"), oturumun başından beri
+  geçen süre ve bu oturumda (F9'dan beri) çevrilen diyalog sayısı, Steam kapağı (yoksa logo), "Makine Live'ı indir" düğmesi.
+  Durdurunca, çıkışta ve ayar kapanınca temizlenir. Discord masaüstü uygulamasının yerel IPC kanalı (`discord-ipc-0..9`)
+  kullanılır; bağımlılık yok, ağa çıkılmaz. Discord kapalıysa 20 sn'de bir yeniden denenir; güncellemeler Discord'un hız
+  sınırına göre en az 15 sn arayla birleştirilerek gider. Discord Developer Portal'daki "Makine Live" uygulamasının kimliği
+  `DISCORD_APP_ID`'dedir (gizli değildir; geliştirmede `MAKINE_DISCORD_APP_ID`); kimlik boşsa ayar görünmez.
 
 - **Logo:** `ui/brand.py` (`logo_image()` / `app_mark_image()`) `assets/logo_white-96.webp`'den çizer (giriş ekranı, pencere ikonu,
   `.exe` ikonu). Logo `.exe`'ye gömülür (`tools/build_exe.py --add-data`). Büyük boyutlarda alfa yumuşak büyütülüp keskinleştirilir.
@@ -533,6 +541,7 @@ py tests/test_subtitle_scheduler.py  # satır takibi ve altyazı zamanlayıcıs�
 py tests/test_console_mode.py    # konsol modu: 16:9 alan, oransal bölge, kaynak eşleme, gerçek pencereyle bulma
 py tests/test_tv_link.py         # TV bağlantısı: sahte TV ile keşif, kod, satır, en yeni kazanır, yeniden bağlanma
 py tests/test_subtitle_web.py    # telefon / OBS sayfaları ve SSE akışı
+py tests/test_discord_presence.py  # Discord'da gösterme: sahte Discord IPC kanalıyla el sıkışma, içerik, hız sınırı
 py tests/test_webos_service.py   # LG servisi gerçek Node ile (sahte webos-service): keşif, eşleşme, satır, kod kilidi
 py tests/test_webos_install.py   # LG geliştirici modu kurulumu, sahte TV'ye (anahtar, parola, SSH, kurulum yanıtları)
 ctest --test-dir build           # C++ boşluk düzeltici (tests/text_fix_test.cpp)
