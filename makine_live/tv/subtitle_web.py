@@ -132,9 +132,21 @@ class SubtitleWeb:
             self._line = None
             self._bump()
 
-    def set_style(self, size: int, opacity: int) -> None:
+    def set_style(self, size: int, opacity: int, **extra) -> None:
+        """
+        Panelin kutu ayarları. extra (OBS sayfası kutuyla aynı görünsün diye): text, band (#rrggbb), font (CSS ailesi),
+        outline (px), shadow (bool), width (ekranın %'si), pos ("alt" | "ust"), offset (kenardan %).
+        """
         with self._cond:
             style = {"size": int(size), "opacity": int(opacity)}
+            for k in ("text", "band", "font", "pos"):
+                if isinstance(extra.get(k), str):
+                    style[k] = extra[k][:120]
+            for k in ("outline", "width", "offset"):
+                if isinstance(extra.get(k), (int, float)):
+                    style[k] = float(extra[k])
+            if "shadow" in extra:
+                style["shadow"] = bool(extra["shadow"])
             if style != self._style:
                 self._style = style
                 self._bump()
@@ -368,6 +380,7 @@ OBS_HTML = r"""<!doctype html>
   .wrap { position:absolute; left:0; right:0; display:flex; justify-content:center; padding:0 4vw; }
   .wrap.alt { bottom:8vh; }
   .wrap.ust { top:6vh; }
+  @media (prefers-reduced-motion: reduce) { .band { transition:none; } }
   .band { max-width:62vw; padding:.46em .85em; border-radius:10px; color:#fff; font-weight:600; line-height:1.3;
           text-align:center; border-left:3px solid transparent; opacity:0; transform:translateY(2px);
           transition:opacity .16s cubic-bezier(.2,.7,.2,1), transform .16s cubic-bezier(.2,.7,.2,1);
@@ -388,13 +401,28 @@ OBS_HTML = r"""<!doctype html>
     var p = kv.split('='); if (p[0]) q[decodeURIComponent(p[0])] = decodeURIComponent(p[1] || '');
   });
   var band = document.getElementById('band'), wrap = document.getElementById('wrap');
-  if (q.pos === 'ust') wrap.className = 'wrap ust';
   var shown = null;
+  function rgba(hex, a) {
+    var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '') || [0, '0f', '10', '12'];
+    return 'rgba(' + parseInt(m[1], 16) + ',' + parseInt(m[2], 16) + ',' + parseInt(m[3], 16) + ',' + a + ')';
+  }
   function style(s) {
-    var size = parseInt(q.size || s.size || 26, 10), op = parseInt(q.opacity || s.opacity || 78, 10) / 100;
+    var size = parseInt(q.size || s.size || 26, 10);
+    var op = parseInt(q.opacity !== undefined ? q.opacity : (s.opacity !== undefined ? s.opacity : 78), 10) / 100;
+    var pos = q.pos || s.pos || 'alt', off = s.offset || (pos === 'ust' ? 6 : 8);
     // Panelin kutusu 1080p ekrana göre ölçülür; OBS kaynağının genişliği farklıysa aynı oranda büyür
     band.style.fontSize = 'calc(' + size + 'px * 100vh / 1080)';
-    band.style.background = 'rgba(15,16,18,' + Math.max(0, Math.min(1, op)) + ')';
+    band.style.background = rgba(s.band, Math.max(0, Math.min(1, op)));
+    band.style.color = s.text || '#fff';
+    if (s.font) band.style.fontFamily = s.font;
+    band.style.maxWidth = (s.width || 62) + 'vw';
+    var o = s.outline === undefined ? 1 : s.outline;
+    band.style.textShadow = o > 0 ? [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(function (d) {
+      return (d[0] * o) + 'px ' + (d[1] * o) + 'px 0 #000'; }).join(',') : 'none';
+    band.style.boxShadow = s.shadow === false || op === 0 ? 'none' : '0 6px 18px rgba(0,0,0,.35)';
+    wrap.className = 'wrap ' + (pos === 'ust' ? 'ust' : 'alt');
+    wrap.style.top = pos === 'ust' ? Math.max(2, off - 2) + 'vh' : '';
+    wrap.style.bottom = pos === 'ust' ? '' : off + 'vh';
   }
   function render(s) {
     style(s.style || {});

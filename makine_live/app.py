@@ -76,7 +76,8 @@ from makine_live.core.dll import PluginWrapper                 # noqa: E402
 from makine_live.core.garbage import filter_ocr                # noqa: E402
 from makine_live.ui.hud_ui import (BG, SURFACE, RAISED, LINE, LINE_STRONG, TEXT, TEXT2, TEXT3,  # noqa: E402
                                    ACCENT, VERIFIED, mix)
-from makine_live.ui.overlay_render import SubtitleOverlay, OverlayContent, STYLES  # noqa: E402
+from makine_live.ui.overlay_render import (SubtitleOverlay, OverlayContent, STYLES, FONTS, OUTLINE_PX,  # noqa: E402
+                                           available_fonts)
 
 
 user32 = ctypes.windll.user32
@@ -94,8 +95,26 @@ VK_F10 = 0x79
 SOURCE_LANG = "en"                       # şimdilik yalnızca İngilizceden Türkçeye
 TARGET_LANG = "tr"                      # sunucu şimdilik yalnızca Türkçeye çeviriyor
 ROLE_LABELS = {"admin": "yönetici", "translator": "çevirmen", "tester": "tester", "player": "oyuncu"}
-STYLE_LABELS = [("altyazi", "Altyazı"), ("yalin", "Yalın"), ("sinema", "Sinema")]
+STYLE_LABELS = [("altyazi", "Altyazı"), ("yalin", "Yalın"), ("sinema", "Sinema"), ("kontrast", "Kontrast")]
 POSITION_LABELS = [("alt", "Alt"), ("ust", "Üst"), ("serbest", "Serbest")]
+LOOK_SECTIONS = [("yazi", "Yazı"), ("kutu", "Kutu"), ("konum", "Konum ve yayın")]
+OUTLINE_LABELS = [("yok", "Yok"), ("ince", "İnce"), ("kalin", "Kalın")]
+LINES_LABELS = [(2, "2"), (3, "3"), (4, "4")]
+# Renkler tasarım dilinin içinde: neon / mor yok; yazı rengi koyu bantta, bant rengi beyaz yazıyla okunur
+TEXT_COLORS = [("#ffffff", "Beyaz"), ("#f5ecd7", "Krem"), ("#f2c230", "Sarı"), ("#a9dcef", "Açık mavi"),
+               ("#b9e3b0", "Açık yeşil")]
+BAND_COLORS = [("#0f1012", "Mürekkep"), ("#000000", "Siyah"), ("#24262b", "Grafit"), ("#142033", "Lacivert"),
+               ("#2b2115", "Kahve")]
+# Hazır stiller: seçilince renkler / opaklık / kontur bununla başlar, sonra tek tek değiştirilebilir
+STYLE_PRESETS = {
+    "altyazi": {"text_color": "#ffffff", "band_color": "#0f1012", "opacity": 78, "outline": "ince", "shadow": True},
+    "yalin": {"text_color": "#ffffff", "outline": "kalin", "shadow": True},
+    "sinema": {"text_color": "#ffffff", "band_color": "#000000", "opacity": 85, "outline": "ince", "shadow": False},
+    "kontrast": {"text_color": "#f2c230", "band_color": "#000000", "opacity": 92, "outline": "kalin", "shadow": True},
+}
+LOOK_DEFAULTS = {"style": "altyazi", "font": "segoe", "font_px": 26, "opacity": 78, "text_color": "#ffffff",
+                 "band_color": "#0f1012", "outline": "ince", "shadow": True, "max_lines": 4, "width": 62, "offset": 8,
+                 "position": "alt", "min_show_ms": 1200}
 
 POOL_SYNC_S = 180         # yerel havuzun sunucuyla karşılaştırılma aralığı (okuma açıkken)
 POOL_IDLE_SYNC_S = 600    # okuma kapalıyken (oyun açık) aynı karşılaştırma
@@ -226,8 +245,7 @@ class MakineGameLiveApp(tk.Tk):
         self.stats = {"lines": 0, "pool": 0, "verified": 0, "api": 0, "chars_saved": 0,
                       "lat": deque(maxlen=30)}
         self.stage_ms = {"ocr": deque(maxlen=50), "pool": deque(maxlen=50), "api": deque(maxlen=50)}
-        self.prefs = {"style": "altyazi", "font_px": 26, "opacity": 78, "position": "alt",
-                      "custom_anchor": None, "min_show_ms": 1200, "tab": "canli",
+        self.prefs = {**LOOK_DEFAULTS, "custom_anchor": None, "tab": "canli", "look_sec": "yazi",
                       # Konsol / TV modu: oyun konsolda, görüntü Remote Play / yakalama penceresinden okunur
                       # Konsol modu yalnızca GTA VI içindir (console_mode.console_game). Altyazı nerede görünür:
                       # tv = Makine TV, pc = bu bilgisayarın ekranı (monitörde oynayanlar), web = telefon / tablet
@@ -710,43 +728,152 @@ class MakineGameLiveApp(tk.Tk):
     # ── Görünüm sekmesi ──
 
     def _build_tab_look(self, tag):
+        """
+        Üç bölüm (sekme dolu olduğu için): Yazı (stil, yazı tipi, boyut, satır, süre), Kutu (renkler, opaklık,
+        kontur, gölge, genişlik), Konum ve yayın. Her değişiklik önizlemede ve oyundaki kutuda anında görünür.
+        """
         c, u, f = self.c, self.u, self.fonts
         p = self.prefs
         y = CONTENT_Y
-        c.create_text(PAD, y + 8, anchor="w", text="Stil", font=f.ui(12, semi=True), fill=TEXT2, tags=tag)
-        self.seg_style = ui.Segmented(u, PAD, y + 22, INNER, 34, STYLE_LABELS, p["style"],
-                                      command=lambda v: self._set_pref("style", v), tags=(tag,))
-        y += 64
-        self.sl_size = ui.Slider(u, PAD, y, INNER, "Yazı boyutu", 16, 44, p["font_px"], "{} px",
-                                 command=lambda v, fin: self._set_pref("font_px", v, fin), tags=(tag,))
-        y += 46
-        self.sl_opacity = ui.Slider(u, PAD, y, INNER, "Bant opaklığı", 40, 100, p["opacity"], "%{}",
-                                    command=lambda v, fin: self._set_pref("opacity", v, fin), tags=(tag,))
-        y += 46
+        self.seg_look = ui.Segmented(u, PAD, y, INNER, 30, LOOK_SECTIONS, p["look_sec"],
+                                     command=self._switch_look_section, tags=(tag,))
+        y0 = y + 44
+
+        # ── Yazı ──
+        t = (tag, "look_yazi")
+        y = y0
+        c.create_text(PAD, y + 8, anchor="w", text="Hazır stil", font=f.ui(12, semi=True), fill=TEXT2, tags=t)
+        self.seg_style = ui.Segmented(u, PAD, y + 22, INNER, 32, STYLE_LABELS, p["style"],
+                                      command=self._apply_preset, tags=t)
+        y += 66
+        c.create_text(PAD, y + 15, anchor="w", text="Yazı tipi", font=f.ui(13), fill=TEXT, tags=t)
+        self._font_opts = available_fonts()
+        # Her seçenek kendi yazı tipiyle görünür (Tk'nın aile adları; Segoe paneldeki yazı tipi)
+        tk_family = {"segoe": f.display, "trebuchet": "Trebuchet MS"}
+        self.dd_font = ui.Dropdown(u, W - PAD - 190, y, 190, 30, [lab for _, lab in self._font_opts],
+                                   FONTS.get(p["font"], FONTS["segoe"])[0],
+                                   command=lambda lab: self._set_pref("font", next(k for k, v in self._font_opts if v == lab)),
+                                   tags=t, fonts={lab: (tk_family.get(k, lab), -14, "bold") for k, lab in self._font_opts})
+        y += 42
+        self.sl_size = ui.Slider(u, PAD, y, INNER, "Yazı boyutu", 16, 48, p["font_px"], "{} px",
+                                 command=lambda v, fin: self._set_pref("font_px", v, fin), tags=t)
+        y += 48
+        c.create_text(PAD, y + 15, anchor="w", text="En fazla satır", font=f.ui(13), fill=TEXT, tags=t)
+        self.seg_lines = ui.Segmented(u, W - PAD - 150, y, 150, 30, LINES_LABELS, p["max_lines"],
+                                      command=lambda v: self._set_pref("max_lines", v), tags=t)
+        y += 44
         self.sl_hold = ui.Slider(u, PAD, y, INNER, "En kısa gösterim", 0.6, 3.0, p["min_show_ms"] / 1000,
                                  "{:.1f} sn", step=0.2,
-                                 command=lambda v, fin: self._set_pref("min_show_ms", int(v * 1000), fin), tags=(tag,))
+                                 command=lambda v, fin: self._set_pref("min_show_ms", int(v * 1000), fin), tags=t)
+
+        # ── Kutu ──
+        t = (tag, "look_kutu")
+        y = y0
+        self.sw_text = ui.Swatches(u, PAD, y, INNER, "Yazı rengi", TEXT_COLORS, p["text_color"],
+                                   command=lambda v: self._set_pref("text_color", v), tags=t)
+        y += 40
+        self.sw_band = ui.Swatches(u, PAD, y, INNER, "Bant rengi", BAND_COLORS, p["band_color"],
+                                   command=lambda v: self._set_pref("band_color", v), tags=t)
+        y += 44
+        self.sl_opacity = ui.Slider(u, PAD, y, INNER, "Bant opaklığı", 40, 100, p["opacity"], "%{}",
+                                    command=lambda v, fin: self._set_pref("opacity", v, fin), tags=t)
         y += 50
-        c.create_text(PAD, y + 8, anchor="w", text="Konum", font=f.ui(12, semi=True), fill=TEXT2, tags=tag)
-        self.seg_pos = ui.Segmented(u, PAD, y + 22, INNER, 34, POSITION_LABELS, p["position"],
-                                    command=lambda v: self._set_pref("position", v), tags=(tag,))
-        c.create_text(PAD, y + 70, anchor="w", font=f.ui(11), fill=TEXT3, tags=tag,
+        c.create_text(PAD, y + 15, anchor="w", text="Yazı konturu", font=f.ui(13), fill=TEXT, tags=t)
+        self.seg_outline = ui.Segmented(u, W - PAD - 200, y, 200, 30, OUTLINE_LABELS, p["outline"],
+                                        command=lambda v: self._set_pref("outline", v), tags=t)
+        y += 44
+        self.tg_shadow = ui.Toggle(u, PAD, y, INNER, "Gölge", p["shadow"],
+                                   command=lambda v: self._set_pref("shadow", v), tags=t)
+        y += 32
+        self.sl_width = ui.Slider(u, PAD, y, INNER, "En fazla genişlik (ekranın)", 40, 90, p["width"], "%{}",
+                                  command=lambda v, fin: self._set_pref("width", v, fin), tags=t)
+
+        # ── Konum ve yayın ──
+        t = (tag, "look_konum")
+        y = y0
+        c.create_text(PAD, y + 8, anchor="w", text="Konum", font=f.ui(12, semi=True), fill=TEXT2, tags=t)
+        self.seg_pos = ui.Segmented(u, PAD, y + 22, INNER, 32, POSITION_LABELS, p["position"],
+                                    command=lambda v: self._set_pref("position", v), tags=t)
+        y += 64
+        self.sl_offset = ui.Slider(u, PAD, y, INNER, "Kenardan uzaklık", 2, 30, p["offset"], "%{}",
+                                   command=lambda v, fin: self._set_pref("offset", v, fin), tags=t)
+        y += 46
+        c.create_text(PAD, y + 4, anchor="w", font=f.ui(11), fill=TEXT3, tags=t,
                       text="Serbest: kilit açıkken kutuyu oyunda sürükleyin.")
-        y += 88
-        c.create_line(PAD, y, W - PAD, y, fill=LINE, tags=tag)
-        y += 10
+        y += 22
+        c.create_line(PAD, y, W - PAD, y, fill=LINE, tags=t)
+        y += 12
         # Yayın: OBS'nin ekran yakalaması ve Discord / Teams ekran paylaşımı kutuyu ancak bu açıkken görür.
         self.tg_stream = ui.Toggle(u, PAD, y, INNER, "Yayında ve ekran paylaşımında göster", p["stream_visible"],
-                                   command=self._set_stream_visible, tags=(tag,))
+                                   command=self._set_stream_visible, tags=t)
         y += 30
         self.tg_obs = ui.Toggle(u, PAD, y, INNER, "OBS tarayıcı kaynağı", p["obs_source"],
-                                command=self._set_obs_source, tags=(tag,))
+                                command=self._set_obs_source, tags=t)
         y += 28
         self.obs_url_txt = c.create_text(PAD, y + 12, anchor="w", text="", font=f.code(11), fill=TEXT3,
-                                         tags=(tag, "obs_row"))
+                                         tags=t + ("obs_row",))
         self.btn_obs_copy = ui.Button(u, W - PAD - 76, y, 76, 24, text="Kopyala", kind="ghost", font=f.ui(12),
                                       command=lambda: self._copy_text(self.web.obs_url, "OBS adresi kopyalandı"),
-                                      tags=(tag, "obs_row"))
+                                      tags=t + ("obs_row",))
+        y += 38
+        ui.Button(u, PAD, y, INNER, 32, text="Görünümü varsayılana döndür", icon="refresh", kind="ghost",
+                  command=self._reset_look, font=f.ui(12), icon_size=16, tags=t)
+
+    def _switch_look_section(self, key, animate=True):
+        self.prefs["look_sec"] = key
+        self._show_look_section(animate=animate)
+        self._save_hud_prefs()
+
+    def _show_look_section(self, animate=False):
+        cur = self.prefs["look_sec"]
+        visible = self._tab_now == "gorunum"
+        for k, _ in LOOK_SECTIONS:
+            self.c.itemconfigure(f"look_{k}", state="normal" if visible and k == cur else "hidden")
+        if visible and cur == "konum":
+            self._show_items("obs_row", self.prefs["obs_source"] and self.web.running)
+        else:
+            self._show_items("obs_row", False)
+        if animate and visible:
+            tag = f"look_{cur}"
+            moved = [8]
+            self.c.move(tag, 0, 8)
+
+            def step(e):
+                target = round(8 * (1 - e))
+                self.c.move(tag, 0, target - moved[0])
+                moved[0] = target
+            ui.Tween(self, 180, step)
+
+    def _apply_preset(self, style):
+        """Hazır stil: biçim (bant / yalın / sinema) ve onunla gelen renk, opaklık, kontur, gölge."""
+        self.prefs["style"] = style
+        self.prefs.update(STYLE_PRESETS.get(style, {}))
+        self._sync_look_controls()
+        self._set_pref("style", style)
+
+    def _reset_look(self):
+        anchor = self.prefs.get("custom_anchor")
+        self.prefs.update(LOOK_DEFAULTS)
+        self.prefs["custom_anchor"] = anchor
+        self._sync_look_controls()
+        self._set_pref("style", self.prefs["style"])
+        self.toast("Görünüm varsayılana döndü")
+
+    def _sync_look_controls(self):
+        p = self.prefs
+        self.seg_style.set(p["style"], animate=True)
+        self.dd_font.set(FONTS.get(p["font"], FONTS["segoe"])[0])
+        self.sl_size.set(p["font_px"])
+        self.seg_lines.set(p["max_lines"], animate=True)
+        self.sl_hold.set(p["min_show_ms"] / 1000)
+        self.sw_text.set(p["text_color"], animate=True)
+        self.sw_band.set(p["band_color"], animate=True)
+        self.sl_opacity.set(p["opacity"])
+        self.seg_outline.set(p["outline"], animate=True)
+        self.tg_shadow.set(p["shadow"], animate=True)
+        self.sl_width.set(p["width"])
+        self.seg_pos.set(p["position"], animate=True)
+        self.sl_offset.set(p["offset"])
 
     # ── Konsol / TV sekmesi ──
 
@@ -1052,15 +1179,36 @@ class MakineGameLiveApp(tk.Tk):
         top.bind("<Escape>", lambda e: self._close_sheet())
         top.focus_force()
         self._sheet_top = top
+        # Açılış: saydamdan belirir, 8 px aşağıdan yerine oturur (pencerenin kendi alfası; içerik yeniden çizilmez)
+        gx, gy = self.winfo_rootx() + PAD, self.winfo_rooty() + CONTENT_Y - 200
+        top.attributes("-alpha", 0.0)
+
+        def step(e):
+            try:
+                top.attributes("-alpha", e)
+                top.geometry(f"+{gx}+{gy + round(8 * (1 - e))}")
+            except tk.TclError:
+                pass
+        ui.Tween(self, 180, step)
         return top, cv, su, w
 
     def _close_sheet(self):
-        if self._sheet_top is not None:
+        top, self._sheet_top = self._sheet_top, None
+        if top is None:
+            return
+
+        def gone():
             try:
-                self._sheet_top.destroy()
+                top.destroy()
             except tk.TclError:
                 pass
-            self._sheet_top = None
+
+        def step(e):
+            try:
+                top.attributes("-alpha", 1 - e)
+            except tk.TclError:
+                pass
+        ui.Tween(self, 120, step, done=gone)
 
     # TV: bul, eşleş, kur
 
@@ -1325,10 +1473,13 @@ class MakineGameLiveApp(tk.Tk):
         for k, _ in TABS:
             self.c.itemconfigure(f"tab_{k}", state="normal" if k == key else "hidden")
         self._tab_now = key
+        if key != "gorunum":
+            for k, _ in LOOK_SECTIONS:
+                self.c.itemconfigure(f"look_{k}", state="hidden")
         if key == "konsol":
             self._refresh_console_cards()           # duruma göre gizli düğmeler
         elif key == "gorunum":
-            self._show_items("obs_row", self.prefs["obs_source"] and self.web.running)
+            self._show_look_section()
         log_on = key == "canli" and self._log_visible
         self.c.itemconfigure(self.log_win, state="normal" if log_on else "hidden")
         if log_on:
@@ -1376,16 +1527,24 @@ class MakineGameLiveApp(tk.Tk):
     def _set_pref(self, key, value, final=True):
         self.prefs[key] = value
         self._apply_look()
-        if key in ("font_px", "opacity"):
-            self.web.set_style(self.prefs["font_px"], self.prefs["opacity"])
         if final:
             self._save_hud_prefs()
 
     def _apply_look(self):
+        """Görünüm tercihleri → oyundaki kutu, panel önizlemesi, telefon / OBS sayfası ve Makine TV."""
         p = self.prefs
         self.overlay.configure_look(style=p["style"], font_px=p["font_px"], opacity=p["opacity"] / 100.0,
-                                    position=p["position"], custom_anchor=p.get("custom_anchor"))
+                                    position=p["position"], custom_anchor=p.get("custom_anchor"), font=p["font"],
+                                    text_rgb=ui.rgb(p["text_color"]), band_rgb=ui.rgb(p["band_color"]),
+                                    outline=OUTLINE_PX[p["outline"]], shadow=p["shadow"], max_lines=p["max_lines"],
+                                    width_ratio=p["width"] / 100.0, offset=p["offset"] / 100.0)
         self.scheduler.min_base = p["min_show_ms"] / 1000.0
+        band = 0 if p["style"] == "yalin" else p["opacity"]
+        self.web.set_style(p["font_px"], band, text=p["text_color"], band=p["band_color"],
+                           font=FONTS.get(p["font"], FONTS["segoe"])[1], outline=OUTLINE_PX[p["outline"]],
+                           shadow=p["shadow"], width=p["width"], pos="ust" if p["position"] == "ust" else "alt",
+                           offset=p["offset"])
+        self.tv_link.set_style(p["font_px"], "ust" if p["position"] == "ust" else "alt", band)
         self._schedule_preview()
 
     def _on_overlay_moved(self, anchor):
@@ -1489,7 +1648,23 @@ class MakineGameLiveApp(tk.Tk):
             moved[0] = target
 
         ui.Tween(self, 180, step)
-        self.after(1800, lambda: [self.c.delete(i) for i in (bg, tx)])
+
+        def leave():
+            # Kayboluş: yazı zemine doğru solar, 6 px aşağı kayar (tuval öğelerinin alfası yok: renk karıştırılır)
+            if self._toast_items != [bg, tx]:
+                return
+            fill0 = RAISED
+
+            def out(e):
+                q = round(e * 6) / 6                   # renk adımları önbellekte sınırlı kalsın
+                self.c.itemconfigure(tx, fill=mix(TEXT, BG, q))
+                self.c.itemconfigure(bg, image=ui.rrect_image(round(tw), 32, 6, fill=mix(fill0, BG, q),
+                                                              outline=mix(ACCENT if warn else LINE_STRONG, BG, q)))
+                for it in (bg, tx):
+                    self.c.move(it, 0, 1 if e < 0.99 else 0)
+
+            ui.Tween(self, 200, out, done=lambda: [self.c.delete(i) for i in (bg, tx)])
+        self.after(1800, leave)
 
     # ─────────────────────────────────────────────────────────
     # Ayarlar
@@ -1505,11 +1680,26 @@ class MakineGameLiveApp(tk.Tk):
         if prefs.get("style") in STYLES:
             p["style"] = prefs["style"]
         try:
-            p["font_px"] = min(44, max(16, int(prefs.get("font_px", 26))))
+            p["font_px"] = min(48, max(16, int(prefs.get("font_px", 26))))
             p["opacity"] = min(100, max(40, int(prefs.get("opacity", 78))))
             p["min_show_ms"] = min(3000, max(600, int(prefs.get("min_show_ms", 1200))))
+            p["width"] = min(90, max(40, int(prefs.get("width", 62))))
+            p["offset"] = min(30, max(2, int(prefs.get("offset", 8))))
+            if int(prefs.get("max_lines", 4)) in (2, 3, 4):
+                p["max_lines"] = int(prefs.get("max_lines", 4))
         except (TypeError, ValueError):
             pass
+        if prefs.get("font") in FONTS:
+            p["font"] = prefs["font"]
+        if prefs.get("text_color") in dict(TEXT_COLORS):
+            p["text_color"] = prefs["text_color"]
+        if prefs.get("band_color") in dict(BAND_COLORS):
+            p["band_color"] = prefs["band_color"]
+        if prefs.get("outline") in OUTLINE_PX:
+            p["outline"] = prefs["outline"]
+        p["shadow"] = bool(prefs.get("shadow", True))
+        if prefs.get("look_sec") in dict(LOOK_SECTIONS):
+            p["look_sec"] = prefs["look_sec"]
         if prefs.get("position") in ("alt", "ust", "serbest"):
             p["position"] = prefs["position"]
         ca = prefs.get("custom_anchor")
@@ -1553,10 +1743,13 @@ class MakineGameLiveApp(tk.Tk):
         self._save_hud_prefs()
 
     def _save_hud_prefs(self):
+        """Atomik: yazarken kapanan uygulama hud.json'ı bozmaz (geçici dosya + os.replace)."""
         try:
             os.makedirs(self.data_path, exist_ok=True)
-            with open(self.hud_prefs_path, "w", encoding="utf-8") as fh:
+            tmp = self.hud_prefs_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self.prefs, fh)
+            os.replace(tmp, self.hud_prefs_path)
         except OSError:
             pass
 
@@ -2934,7 +3127,19 @@ def main() -> int:
         _FILE_LOG.error("AÇILIŞ HATASI\n%s", traceback.format_exc())
         raise
     _install_crash_handlers(log_path, app)
-    app.mainloop()
+    # Windows zamanlayıcısı varsayılan 15,6 ms: Tk'nın after(16) animasyonları takılır. Uygulama açıkken 1 ms
+    # (oyunlar da aynısını yapar); kapanınca eski hâline döner.
+    try:
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except (AttributeError, OSError):
+        pass
+    try:
+        app.mainloop()
+    finally:
+        try:
+            ctypes.windll.winmm.timeEndPeriod(1)
+        except (AttributeError, OSError):
+            pass
     return 0
 
 

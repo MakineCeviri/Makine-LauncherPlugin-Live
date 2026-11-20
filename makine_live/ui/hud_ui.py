@@ -56,7 +56,34 @@ VERIFIED = _S.get("verified", "#3fae72")
 DISPUTED = _S.get("disputed", "#e2674a")
 PENDING = _S.get("pending", "#8a8f98")
 
-EASE = lambda t: 1 - (1 - t) ** 3            # noqa: E731  ease-out cubic
+def cubic_bezier(x1: float, y1: float, x2: float, y2: float):
+    """CSS cubic-bezier(x1, y1, x2, y2) eğrisi: t (zaman) → ilerleme. Portal ve OBS sayfasıyla aynı hareket."""
+    def coord(t, a, b):
+        return 3 * a * (1 - t) ** 2 * t + 3 * b * (1 - t) * t * t + t ** 3
+
+    def ease(x):
+        if x <= 0 or x >= 1:
+            return max(0.0, min(1.0, x))
+        lo, hi = 0.0, 1.0
+        for _ in range(18):                      # x(t) tekdüze: ikiye bölme yeter
+            mid = (lo + hi) / 2
+            if coord(mid, x1, x2) < x:
+                lo = mid
+            else:
+                hi = mid
+        return coord((lo + hi) / 2, y1, y2)
+    return ease
+
+
+def _token_bezier() -> tuple:
+    """spec/design_tokens.json → motion.easing ("cubic-bezier(.2,.7,.2,1)")."""
+    import re
+    nums = re.findall(r"[-+]?\d*\.?\d+", str(_TOK.get("motion", {}).get("easing", "")))
+    return tuple(float(n) for n in nums) if len(nums) == 4 else (0.2, 0.7, 0.2, 1.0)
+
+
+# Tasarım belgesindeki eğri: hızlı başlar, yumuşak oturur (portal ve OBS sayfasıyla aynı)
+EASE = cubic_bezier(*_token_bezier())
 EASE_IO = lambda t: 3 * t * t - 2 * t * t * t  # noqa: E731
 
 
@@ -604,19 +631,25 @@ class Toggle:
         self.knob = c.create_image(0, cy, tags=tags)
         self._pos = 1.0 if self.value else 0.0
         self._tw = None
+        self._hover = False
         self._paint()
         c.tag_bind(self.tag, "<Button-1>", self._click)
-        c.tag_bind(self.tag, "<Enter>", lambda e: c.configure(cursor="hand2"))
-        c.tag_bind(self.tag, "<Leave>", lambda e: c.configure(cursor=""))
+        c.tag_bind(self.tag, "<Enter>", lambda e: (c.configure(cursor="hand2"), self._set_hover(True)))
+        c.tag_bind(self.tag, "<Leave>", lambda e: (c.configure(cursor=""), self._set_hover(False)))
+
+    def _set_hover(self, on):
+        self._hover = on
+        self._paint()
 
     def _paint(self):
         p = self._pos
         sx = self.x + self.w - self.TW
         fill = mix(SURFACE2, ACCENT, p)
-        outline = mix(LINE_STRONG, ACCENT, p)
+        outline = mix(mix(LINE_STRONG, TEXT3, 0.6) if self._hover else LINE_STRONG, ACCENT, p)
         self.ui.c.itemconfigure(self.track, image=rrect_image(self.TW, self.TH, 10, fill=fill, outline=outline))
         kx = sx + 10 + p * (self.TW - 20)
-        self.ui.c.coords(self.knob, kx, self.y + self.TH / 2)
+        ty = self.ui.c.coords(self.track)[1]          # sekme kayarken de doğru yer
+        self.ui.c.coords(self.knob, kx, ty + self.TH / 2)
         self.ui.c.itemconfigure(self.knob, image=circle_image(14, mix(TEXT2, ACCENT_INK, p)))
 
     def _click(self, _=None):
@@ -648,7 +681,7 @@ class Segmented:
         self.tag = ui.tag("seg")
         tags = tuple(tags) + (self.tag,)
         self.seg_w = (w - 4) / len(options)
-        c.create_image(x, y, anchor="nw", image=rrect_image(w, h, 6, fill=SURFACE2, outline=LINE), tags=tags)
+        self.bg = c.create_image(x, y, anchor="nw", image=rrect_image(w, h, 6, fill=SURFACE2, outline=LINE), tags=tags)
         self.pill = c.create_image(x + 2, y + 2, anchor="nw",
                                    image=rrect_image(round(self.seg_w), h - 4, 4, fill=RAISED, outline=LINE_STRONG),
                                    tags=tags)
@@ -659,10 +692,21 @@ class Segmented:
             self.labels.append(t)
         self._pos = self._index(value)
         self._tw = None
+        self._hover = None
         self._paint()
         c.tag_bind(self.tag, "<Button-1>", self._click)
         c.tag_bind(self.tag, "<Enter>", lambda e: c.configure(cursor="hand2"))
-        c.tag_bind(self.tag, "<Leave>", lambda e: c.configure(cursor=""))
+        c.tag_bind(self.tag, "<Motion>", self._motion)
+        c.tag_bind(self.tag, "<Leave>", lambda e: (c.configure(cursor=""), self._set_hover(None)))
+
+    def _motion(self, e):
+        i = int((e.x - self.x - 2) // self.seg_w)
+        self._set_hover(i if 0 <= i < len(self.options) else None)
+
+    def _set_hover(self, i):
+        if i != self._hover:
+            self._hover = i
+            self._paint()
 
     def _index(self, value):
         for i, (v, _) in enumerate(self.options):
@@ -672,10 +716,11 @@ class Segmented:
 
     def _paint(self):
         c = self.ui.c
-        c.coords(self.pill, self.x + 2 + self._pos * self.seg_w, self.y + 2)
+        c.coords(self.pill, self.x + 2 + self._pos * self.seg_w, c.coords(self.bg)[1] + 2)
         for i, t in enumerate(self.labels):
             near = max(0.0, 1 - abs(self._pos - i))
-            c.itemconfigure(t, fill=mix(TEXT3, TEXT, near))
+            base = TEXT2 if i == self._hover else TEXT3
+            c.itemconfigure(t, fill=mix(base, TEXT, near))
 
     def _click(self, e):
         i = int((e.x - self.x - 2) // self.seg_w)
@@ -735,7 +780,7 @@ class Slider:
         fw = max(4, round(self.w * f))
         c.itemconfigure(self.fill, image=rrect_image(fw, 4, 2, fill=ACCENT))
         kx = self.x + self.w * f
-        c.coords(self.knob, kx, self.ty)
+        c.coords(self.knob, kx, c.coords(self.track)[1] + 2)   # sekme kayarken de çizginin üstünde
         c.itemconfigure(self.knob, image=circle_image(16 if self._hover else 14, TEXT, outline=BG, width=2))
         c.itemconfigure(self.val_txt, text=self.fmt.format(self.value))
 
@@ -753,6 +798,92 @@ class Slider:
     def set(self, v):
         self.value = v
         self._paint()
+
+
+class Swatches:
+    """Renk seçimi: solda etiket, sağda yuvarlak renk örnekleri; seçilinin çevresinde vurgu halkası kayar."""
+
+    D = 20
+    GAP = 10
+
+    def __init__(self, ui: UI, x, y, w, label, options, value, command=None, tags=()):
+        self.ui, self.x, self.y, self.w = ui, x, y, w
+        self.options, self.value, self.command = options, value, command      # options: [(renk, ad)]
+        c = ui.c
+        self.tag = ui.tag("sw")
+        tags = tuple(tags) + (self.tag,)
+        cy = y + self.D / 2 + 4
+        self.cy = cy
+        c.create_text(x, cy, text=label, anchor="w", font=ui.f.ui(13), fill=TEXT, tags=tags)
+        self.name_txt = c.create_text(x + w - len(options) * (self.D + self.GAP) - 4, cy, anchor="e",
+                                      font=ui.f.ui(12), fill=TEXT3, tags=tags)
+        self.xs = []
+        for i, (col, _name) in enumerate(options):
+            sx = x + w - (len(options) - i) * (self.D + self.GAP) + self.GAP + self.D / 2
+            self.xs.append(sx)
+            c.create_image(sx, cy, image=circle_image(self.D, col, outline=mix(col, LINE_STRONG, 0.6), width=1), tags=tags)
+        self.ring = c.create_image(self.xs[0], cy, image=_ring_image(self.D + 10), tags=tags)
+        self._rx = self.xs[self._index(value)]
+        self._tw = None
+        self._paint()
+        c.tag_bind(self.tag, "<Button-1>", self._click)
+        c.tag_bind(self.tag, "<Motion>", self._motion)
+        c.tag_bind(self.tag, "<Leave>", lambda e: (c.configure(cursor=""), self._show_name(None)))
+
+    def _index(self, value):
+        for i, (v, _) in enumerate(self.options):
+            if v.lower() == str(value).lower():
+                return i
+        return 0
+
+    def _at(self, x):
+        for i, sx in enumerate(self.xs):
+            if abs(x - sx) <= self.D / 2 + self.GAP / 2:
+                return i
+        return None
+
+    def _paint(self):
+        self.ui.c.coords(self.ring, self._rx, self.ui.c.coords(self.name_txt)[1])
+        self._show_name(None)
+
+    def _show_name(self, i):
+        name = self.options[i][1] if i is not None else self.options[self._index(self.value)][1]
+        self.ui.c.itemconfigure(self.name_txt, text=name, fill=TEXT2 if i is not None else TEXT3)
+
+    def _motion(self, e):
+        i = self._at(e.x)
+        self.ui.c.configure(cursor="hand2" if i is not None else "")
+        self._show_name(i)
+
+    def _click(self, e):
+        i = self._at(e.x)
+        if i is None or self.options[i][0] == self.value:
+            return
+        self.set(self.options[i][0], animate=True)
+        if self.command:
+            self.command(self.value)
+
+    def set(self, value, animate=False):
+        self.value = value
+        target = self.xs[self._index(value)]
+        if self._tw:
+            self._tw.cancel()
+        if not animate:
+            self._rx = target
+            self._paint()
+            return
+        start = self._rx
+        self._tw = Tween(self.ui.root, 200, lambda e: (setattr(self, "_rx", start + (target - start) * e), self._paint()))
+
+
+def _ring_image(d):
+    def build():
+        D = d * _SS
+        im = Image.new("RGBA", (D, D), (0, 0, 0, 0))
+        w = round(1.75 * _SS)
+        ImageDraw.Draw(im).ellipse((w / 2, w / 2, D - w / 2 - 1, D - w / 2 - 1), outline=rgb(ACCENT) + (255,), width=w)
+        return im.resize((d, d), Image.LANCZOS)
+    return _photo(("ring", d), build)
 
 
 class Field:
@@ -797,14 +928,16 @@ class Field:
 
 
 class Dropdown:
-    def __init__(self, ui: UI, x, y, w, h, options, value, command=None, tags=()):
+    def __init__(self, ui: UI, x, y, w, h, options, value, command=None, tags=(), fonts=None):
         self.ui, self.x, self.y, self.w, self.h = ui, x, y, w, h
         self.options, self.value, self.command = options, value, command
+        self.fonts = fonts or {}                       # seçenek → Tk yazı tipi (yoksa kod yazı tipi)
         c = ui.c
         self.tag = ui.tag("dd")
         tags = tuple(tags) + (self.tag,)
         self.bg = c.create_image(x, y, anchor="nw", image=rrect_image(w, h, 6, fill=SURFACE2, outline=LINE), tags=tags)
-        self.txt = c.create_text(x + 10, y + h / 2, anchor="w", text=value, font=ui.f.code(12), fill=TEXT, tags=tags)
+        self.txt = c.create_text(x + 10, y + h / 2, anchor="w", text=value, font=self.fonts.get(value, ui.f.code(12)),
+                                 fill=TEXT, tags=tags)
         self.chev = AnimatedIcon(ui, x + w - 14, y + h / 2, "chevron", 14, TEXT3, tags=tags)
         self.popup = None
         c.tag_bind(self.tag, "<Button-1>", lambda e: self.open())
@@ -815,7 +948,7 @@ class Dropdown:
 
     def set(self, value):
         self.value = value
-        self.ui.c.itemconfigure(self.txt, text=value)
+        self.ui.c.itemconfigure(self.txt, text=value, font=self.fonts.get(value, self.ui.f.code(12)))
 
     def open(self):
         if self.popup:
@@ -823,7 +956,7 @@ class Dropdown:
             return
         c = self.ui.c
         self.chev.animate(1.0, 180)
-        row_h = 26
+        row_h = 30 if self.fonts else 26
         ph = row_h * len(self.options) + 8
         top = tk.Toplevel(c)
         top.overrideredirect(True)
@@ -838,7 +971,7 @@ class Dropdown:
         hl = pc.create_image(4, 4, anchor="nw", image=rrect_image(self.w - 8, row_h, 4, fill=SURFACE2), state="hidden")
         for i, opt in enumerate(self.options):
             yy = 4 + i * row_h + row_h / 2
-            pc.create_text(14, yy, anchor="w", text=opt, font=self.ui.f.code(12),
+            pc.create_text(14, yy, anchor="w", text=opt, font=self.fonts.get(opt, self.ui.f.code(12)),
                            fill=ACCENT if opt == self.value else TEXT)
 
         def motion(e):

@@ -88,38 +88,55 @@ STATUS_RGB = {
 SS = 2              # süper örnekleme katsayısı
 MARGIN = 28         # gölge için görüntü kenar boşluğu (1×)
 CHROME_H = 26       # taşıma modunda üstteki etiket şeridi (1×)
-MAX_LINES = 4       # uzun metin bu kadar satıra sığsın diye yazı küçültülür
-FIT_SCALES = (1.0, 0.9, 0.82, 0.74)
+FIT_SCALES = (1.0, 0.9, 0.82, 0.74)   # uzun metin satır sınırına sığsın diye yazı en fazla %74'e küçülür
 
-STYLES = ("altyazi", "yalin", "sinema")
+# altyazi: yuvarlak köşeli bant · yalin: bant yok, gölgeli yazı · sinema: tam genişlik şerit
+# kontrast: altyazı bandı + sarı yazı + kalın kontur (parlak sahnelerde okunurluk)
+STYLES = ("altyazi", "yalin", "sinema", "kontrast")
+OUTLINE_PX = {"yok": 0.0, "ince": 1.5, "kalin": 3.0}
 
 # ─────────────────────────────────────────────────────────────
 # Yazı tipleri
 # ─────────────────────────────────────────────────────────────
 
 _FONT_DIR = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-_FONT_CANDIDATES = [
-    ("SegUIVar.ttf", True),     # Segoe UI Variable (Windows 11) — değişken font
-    ("seguisb.ttf", False),     # Segoe UI Semibold
-    ("segoeui.ttf", False),
-]
+# anahtar → (paneldeki ad, CSS ailesi (OBS sayfası), [(dosya, değişken yazı tipinin örneği | None)])
+# Yalnızca Windows'la gelen yazı tipleri; kalın / yarı kalın kesimler (altyazı ince yazıyla okunmaz).
+FONTS = {
+    "segoe": ("Segoe UI", '"Segoe UI Variable Display","Segoe UI",sans-serif',
+              [("SegUIVar.ttf", "Semibold Display"), ("seguisb.ttf", None), ("segoeui.ttf", None)]),
+    "bahnschrift": ("Bahnschrift", "Bahnschrift,sans-serif", [("bahnschrift.ttf", "SemiBold")]),
+    "arial": ("Arial", "Arial,sans-serif", [("arialbd.ttf", None)]),
+    "verdana": ("Verdana", "Verdana,sans-serif", [("verdanab.ttf", None)]),
+    "trebuchet": ("Trebuchet", '"Trebuchet MS",sans-serif', [("trebucbd.ttf", None)]),
+    "tahoma": ("Tahoma", "Tahoma,sans-serif", [("tahomabd.ttf", None)]),
+    "calibri": ("Calibri", "Calibri,sans-serif", [("calibrib.ttf", None)]),
+    "georgia": ("Georgia", "Georgia,serif", [("georgiab.ttf", None)]),
+}
 _font_cache: dict = {}
 
 
-def get_font(px: int, variation: str = "Semibold Display") -> ImageFont.FreeTypeFont:
-    key = (px, variation)
+def available_fonts() -> list:
+    """[(anahtar, ad)]: bu bilgisayarda dosyası olan yazı tipleri."""
+    return [(k, v[0]) for k, v in FONTS.items() if any(os.path.isfile(os.path.join(_FONT_DIR, f)) for f, _ in v[2])]
+
+
+def get_font(px: int, variation: str = "Semibold Display", family: str = "segoe") -> ImageFont.FreeTypeFont:
+    key = (px, variation, family)
     if key in _font_cache:
         return _font_cache[key]
     font = None
-    for name, is_var in _FONT_CANDIDATES:
+    cands = FONTS.get(family, FONTS["segoe"])[2] + (FONTS["segoe"][2] if family != "segoe" else [])
+    for name, var in cands:
         path = os.path.join(_FONT_DIR, name)
         if not os.path.isfile(path):
             continue
         try:
             font = ImageFont.truetype(path, px)
-            if is_var:
+            if var:
                 try:
-                    font.set_variation_by_name(variation)
+                    # Segoe'da panel "Semibold Text" ister (taşıma etiketi); diğer değişken yazı tiplerinde kendi kesimi
+                    font.set_variation_by_name(variation if name == "SegUIVar.ttf" else var)
                 except (OSError, ValueError):
                     pass
             break
@@ -137,10 +154,16 @@ def get_font(px: int, variation: str = "Semibold Display") -> ImageFont.FreeType
 
 @dataclass(frozen=True)
 class OverlayStyle:
-    style: str = "altyazi"       # altyazi | yalin | sinema
+    style: str = "altyazi"       # altyazi | yalin | sinema | kontrast
     font_px: int = 26
     opacity: float = 0.78        # bant opaklığı (metin her zaman tam opak)
-    max_width: int = 1100        # bant için en fazla genişlik (ekranın %62'si)
+    max_width: int = 1100        # bant için en fazla genişlik (ekranın width oranı)
+    font: str = "segoe"          # FONTS anahtarı
+    text_rgb: tuple = TEXT_RGB
+    band_rgb: tuple = BAND_RGB
+    outline: float = 1.5         # yazı konturu (px); 0 = yok
+    shadow: bool = True          # bandın (yalın stilde yazının) gölgesi
+    max_lines: int = 4           # uzun metin bu kadar satıra sığsın diye yazı küçültülür
 
 
 @dataclass(frozen=True)
@@ -199,17 +222,18 @@ def _metrics(style: OverlayStyle, scale: float = 1.0):
         "pad_y": 16 if sinema else 12,
         "radius": 4 if sinema else 10,
         "line_h": round(fp * 1.26),
-        "stroke": 2.0 if style.style == "yalin" else 1.5,
+        # Yalın stilde bant yok: kontur seçilmişse biraz kalın (yazı doğrudan oyunun üstünde)
+        "stroke": (max(style.outline, 2.0) if style.style == "yalin" and style.outline else style.outline) * scale ** 0.5,
     }
 
 
 def fit_text(text: str, style: OverlayStyle):
-    """Metni MAX_LINES satıra sığdıran en büyük yazı ölçeğini seçer; (metrikler, font, satırlar)."""
+    """Metni style.max_lines satıra sığdıran en büyük yazı ölçeğini seçer; (metrikler, font, satırlar)."""
     for scale in FIT_SCALES:
         m = _metrics(style, scale)
-        font = get_font(m["fp"] * SS, "Semibold Display")
+        font = get_font(m["fp"] * SS, "Semibold Display", style.font)
         lines = wrap_lines(text, font, (style.max_width - 2 * m["pad_x"]) * SS)
-        if len(lines) <= MAX_LINES:
+        if len(lines) <= max(1, style.max_lines):
             break
     return m, font, lines    # en küçük ölçekte de sığmazsa satır sayısı artar (kesilmez)
 
@@ -249,13 +273,16 @@ def render_overlay(content: OverlayContent, style: OverlayStyle, chrome: bool = 
     if content.placeholder and not content.text:
         fill = PLACEHOLDER_RGB + (255,)
     else:
-        fill = TEXT_RGB + (255,)
+        fill = tuple(style.text_rgb) + (255,)
     # Semibold Display'in görsel dikey merkezi için küçük düzeltme
     y_nudge = -round(m["fp"] * 0.06 * SS)
     for line in main_lines:
         lw = main_font.getlength(line)
-        d.text((cx - lw / 2, y + y_nudge), line, font=main_font, fill=fill,
-               stroke_width=stroke, stroke_fill=OUTLINE_RGB + (255,))
+        if stroke > 0:
+            d.text((cx - lw / 2, y + y_nudge), line, font=main_font, fill=fill,
+                   stroke_width=stroke, stroke_fill=OUTLINE_RGB + (255,))
+        else:
+            d.text((cx - lw / 2, y + y_nudge), line, font=main_font, fill=fill)
         y += m["line_h"] * SS
 
     # Premultiplied alanda küçült → kenarlarda koyu saçak oluşmaz
@@ -263,7 +290,7 @@ def render_overlay(content: OverlayContent, style: OverlayStyle, chrome: bool = 
 
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
-    if band:
+    if band and style.shadow:
         # Gölge: bant şeklinin bulanık kopyası
         shadow_cfg = _OV.get("band", {})
         mask = Image.new("L", (W, H), 0)
@@ -276,14 +303,15 @@ def render_overlay(content: OverlayContent, style: OverlayStyle, chrome: bool = 
         shadow.putalpha(mask)
         canvas = Image.alpha_composite(canvas, shadow)
 
+    if band:
         # Bant (2× çizip küçült: yumuşak köşeler)
         band_layer = Image.new("RGBA", (Ws, Hs), (0, 0, 0, 0))
         ImageDraw.Draw(band_layer).rounded_rectangle(
             (bx0 * SS, by0 * SS, bx1 * SS, by1 * SS), radius=m["radius"] * SS,
-            fill=BAND_RGB + (round(255 * style.opacity),))
+            fill=tuple(style.band_rgb) + (round(255 * style.opacity),))
         band_1x = band_layer.convert("RGBa").resize((W, H), Image.LANCZOS).convert("RGBA")
         canvas = Image.alpha_composite(canvas, band_1x)
-    else:
+    elif style.shadow:
         # Yalın: bant yok; metnin altına yumuşak bir gölge (okunabilirlik)
         a = text_1x.getchannel("A").filter(ImageFilter.GaussianBlur(3))
         a = a.point(lambda v: round(v * 0.55))
@@ -333,7 +361,7 @@ def _draw_chrome(img: Image.Image, box: tuple, radius: int) -> Image.Image:
         d.line((ax1, y, ax1, min(y + dash, ay1)), fill=col)
 
     # Etiket: "taşı · F8 kilitle"
-    f = get_font(12 * SS, "Semibold Text")
+    f = get_font(12 * SS, "Semibold Text", "segoe")
     label = "taşı  ·  F8 kilitle"
     lw = f.getlength(label) / SS
     lx0, ly1 = ax0, ay0 - 5
@@ -713,8 +741,10 @@ class SubtitleOverlay:
     """
 
     FADE_MS = int(_OV.get("fadeMs", 160))
+    CROSS_MS = 130        # satırdan satıra: kısa tut, yeni satır beklemesin
     FADE_OUT_MS = 220
     FRAME_MS = 16
+    RISE_PX = 6           # belirirken bu kadar aşağıdan gelir
 
     def __init__(self, tk_root, on_moved=None):
         self.root = tk_root
@@ -722,7 +752,9 @@ class SubtitleOverlay:
         self.win = LayeredWindow(on_moved=self._on_moved)
         sw, sh = screen_size()
         self.screen = (sw, sh)
-        self.style = OverlayStyle(max_width=round(sw * float(_OV.get("maxWidthRatio", 0.62))))
+        self.width_ratio = float(_OV.get("maxWidthRatio", 0.62))
+        self.offset = 0.08                 # alt / üst kenardan uzaklık (görüntü yüksekliğinin oranı)
+        self.style = OverlayStyle(max_width=round(sw * self.width_ratio))
         self.position = "alt"
         self.custom_anchor = None        # (cx, bottom)
         self.frame = None                # (sol, üst, sağ, alt): konsol görüntüsünün ekrandaki alanı; None = ekran
@@ -749,7 +781,9 @@ class SubtitleOverlay:
 
     # ── Ayarlar ──
 
-    def configure_look(self, style=None, font_px=None, opacity=None, position=None, custom_anchor=None):
+    def configure_look(self, style=None, font_px=None, opacity=None, position=None, custom_anchor=None,
+                       font=None, text_rgb=None, band_rgb=None, outline=None, shadow=None, max_lines=None,
+                       width_ratio=None, offset=None):
         kw = {}
         if style in STYLES:
             kw["style"] = style
@@ -757,6 +791,24 @@ class SubtitleOverlay:
             kw["font_px"] = int(font_px)
         if opacity is not None:
             kw["opacity"] = float(opacity)
+        if font in FONTS:
+            kw["font"] = font
+        if text_rgb is not None:
+            kw["text_rgb"] = tuple(text_rgb)
+        if band_rgb is not None:
+            kw["band_rgb"] = tuple(band_rgb)
+        if outline is not None:
+            kw["outline"] = float(outline)
+        if shadow is not None:
+            kw["shadow"] = bool(shadow)
+        if max_lines is not None:
+            kw["max_lines"] = int(max_lines)
+        if width_ratio is not None:
+            self.width_ratio = float(width_ratio)
+            width = (self.frame[2] - self.frame[0]) if self.frame else self.screen[0]
+            kw["max_width"] = round(width * self.width_ratio)
+        if offset is not None:
+            self.offset = float(offset)
         if kw:
             self.style = replace(self.style, **kw)
         if position in ("alt", "ust", "serbest"):
@@ -778,7 +830,7 @@ class SubtitleOverlay:
             return
         self.frame = frame
         width = (frame[2] - frame[0]) if frame else self.screen[0]
-        self.style = replace(self.style, max_width=round(width * float(_OV.get("maxWidthRatio", 0.62))))
+        self.style = replace(self.style, max_width=round(width * self.width_ratio))
         if self._shown:
             self._rerender(keep_visible=True)
 
@@ -791,8 +843,8 @@ class SubtitleOverlay:
         l, t, r, b = self.frame or (0, 0, *self.screen)
         cx, h = (l + r) // 2, b - t
         if self.position == "ust":
-            return cx, t + round(h * 0.06), "top"
-        return cx, b - round(h * 0.08), "bottom"
+            return cx, t + round(h * max(0.02, self.offset - 0.02)), "top"
+        return cx, b - round(h * self.offset), "bottom"
 
     def _origin_for(self, r: Rendered) -> tuple:
         cx, y, mode = self.anchor()
@@ -895,7 +947,7 @@ class SubtitleOverlay:
                 return
             self._prev = self._rendered
             self._rendered = new
-            self._start_anim("cross", self.FADE_MS)
+            self._start_anim("cross", self.CROSS_MS)
         else:
             self._prev = None
             self._rendered = new
@@ -921,6 +973,10 @@ class SubtitleOverlay:
         self._anim = (kind, time.perf_counter(), duration)
         if kind == "cross" and self._prev is not None:
             self._cross_frames = self._prepare_cross(self._prev, self._rendered)
+        elif kind == "in":
+            # Belirme yalnızca pencerenin sabit alfası ve konumuyla yapılır: görüntü bir kez yüklenir
+            # (eskiden her karede bütün tampon numpy'den yeniden kopyalanıyordu)
+            self.win.upload(self._rendered.premult)
         self._shown = True
         self._tick()
 
@@ -946,17 +1002,14 @@ class SubtitleOverlay:
         t = min(1.0, (time.perf_counter() - t0) * 1000 / dur)
         e = _ease_out(t)
         if kind == "in":
-            self._present_static(alpha=e, dy=round(2 * (1 - e)))
+            x, y = self._origin_for(self._rendered)
+            self.win.present(x, y + round(self.RISE_PX * (1 - e)), e)
         elif kind == "out":
             x, y = self.win._pos
             self.win.present(x, y, alpha=1 - e)
         elif kind == "cross":
             A, B, (x0, y0), _ = self._cross_frames
-            # B satırı 2 px aşağıdan gelir: kaydırmayı tamponda yap
-            shift = round(2 * (1 - e))
-            Bs = B if shift == 0 else np.concatenate([np.zeros((shift,) + B.shape[1:], np.float32), B[:-shift]])
-            frame = A * (1 - e) + Bs * e
-            self.win.upload(frame)
+            self.win.upload(A + (B - A) * e)
             self.win.present(x0, y0, 1.0)
         if t < 1.0:
             self._anim_job = self.root.after(self.FRAME_MS, self._tick)
