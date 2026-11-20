@@ -2,7 +2,7 @@
 Makine Live — eklenti paketleyici.
 build/release içeriğini (alt klasörler dahil) makine-live.makine arşivine koyar.
 
-Çalıştırma:  py pack.py
+Çalıştırma:  py tools/pack.py
 """
 
 import json
@@ -10,7 +10,7 @@ import os
 import sys
 import zipfile
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELEASE = os.path.join(ROOT, "build", "release")
 OUT = os.path.join(ROOT, "makine-live.makine")
 

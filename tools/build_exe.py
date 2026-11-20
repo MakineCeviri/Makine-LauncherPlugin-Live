@@ -1,10 +1,10 @@
 """
 Makine Live — kapalı beta uygulamasını tek bir .exe olarak paketler.
 
-    py build_exe.py          → dist/MakineLive.exe
+    py tools/build_exe.py    → dist/MakineLive.exe
 
-İçerik: game_overlay.py (uygulama) + makine-live.dll ve OCR çalışma dosyaları (build/release/*) +
-spec/design_tokens.json + Makine TV paketleri (runtime/makine-tv.apk Android TV, runtime/makine-tv.ipk LG webOS;
+İçerik: makine_live paketi (giriş noktası makine_live/__main__.py) + makine-live.dll ve OCR çalışma dosyaları
+(build/release/*) + spec/ (tasarım değerleri, örnek replikler) + assets/ (logo) + resources/en_words.txt + Makine TV paketleri (runtime/makine-tv.apk Android TV, runtime/makine-tv.ipk LG webOS;
 "TV'ye kur" bunları TV'ye yükler).
 Kullanıcı Python ya da başka bir şey kurmaz; exe'yi açar, test hesabıyla girer.
 
@@ -20,11 +20,11 @@ import subprocess
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELEASE = os.path.join(ROOT, "build", "release")
 WORK = os.path.join(ROOT, "build", "pyinstaller")
 DIST = os.path.join(ROOT, "dist")
-ICON = os.path.join(ROOT, "packaging", "app.ico")
+ICON = os.path.join(ROOT, "assets", "app.ico")
 NAME = "MakineLive"
 
 # Uygulamanın kullanmadığı standart kütüphane / paketler (exe küçülsün)
@@ -42,7 +42,6 @@ def fail(msg: str) -> int:
 
 def check_release() -> str:
     """build/release eksiksiz ve DLL kaynaklardan yeni mi? Sürümü döndürür."""
-    sys.path.insert(0, ROOT)
     from pack import REQUIRED  # .makine paketiyle aynı dosya listesi
     missing = [f for f in REQUIRED if not os.path.isfile(os.path.join(RELEASE, f))]
     if missing:
@@ -84,7 +83,6 @@ def ensure_pyinstaller():
 
 def webos_ipk() -> str:
     """Makine TV'nin LG paketi (tv-webos/ → .ipk; her derlemede yeniden üretilir, birkaç ms)."""
-    sys.path.insert(0, os.path.join(ROOT, "tools"))
     from build_webos import build
     return build(os.path.join(WORK, "makine-tv.ipk"))
 
@@ -112,9 +110,9 @@ def tv_apk() -> str:
 
 
 def make_icon():
-    """Uygulama ikonu: koyu yuvarlak karede Makine Çeviri logosu (logo_white-96.webp → game_overlay.app_mark_image)."""
+    """Uygulama ikonu: koyu yuvarlak karede Makine Çeviri logosu (assets/logo_white-96.webp → ui.brand.app_mark_image)."""
     sys.path.insert(0, ROOT)
-    from game_overlay import app_mark_image
+    from makine_live.ui.brand import app_mark_image
     os.makedirs(os.path.dirname(ICON), exist_ok=True)
     sizes = [16, 24, 32, 48, 64, 128, 256]
     images = [app_mark_image(s) for s in sizes]
@@ -166,7 +164,9 @@ def main() -> int:
         "--add-data", f"{RELEASE}{sep}runtime",
         "--add-data", f"{os.path.join(ROOT, 'spec', 'design_tokens.json')}{sep}spec",
         "--add-data", f"{os.path.join(ROOT, 'spec', 'sample_quotes.json')}{sep}spec",
-        "--add-data", f"{os.path.join(ROOT, 'logo_white-96.webp')}{sep}.",
+        "--add-data", f"{os.path.join(ROOT, 'assets', 'logo_white-96.webp')}{sep}assets",
+        "--add-data", f"{os.path.join(ROOT, 'resources', 'en_words.txt')}{sep}resources",
+        "--paths", ROOT,
         "--add-data", f"{apk}{sep}runtime",
         "--add-data", f"{ipk}{sep}runtime",
         # tv_install yalnızca "TV'ye kur"da içe aktarır; PyInstaller'ın kaçırmaması için açıkça eklenir
@@ -176,7 +176,7 @@ def main() -> int:
     ]
     for mod in EXCLUDES:
         args += ["--exclude-module", mod]
-    args.append(os.path.join(ROOT, "game_overlay.py"))
+    args.append(os.path.join(ROOT, "makine_live", "__main__.py"))
 
     print(f"Paketleniyor: Makine Live {version} → dist/{NAME}.exe")
     t0 = time.time()

@@ -1,5 +1,5 @@
 {
-  "_doc": "Makine Live ortak tasarım dili ('altyazı stüdyosu'). Çevirmen portalı (makineceviri.org/live/portal), test paneli ve oyun içi kutu (game_overlay.py) ve ileride native C++ overlay bu değerleri kullanır. Değiştirirseniz üç arayüzü birlikte güncelleyin.",
+  "_doc": "Makine Live ortak tasarım dili ('altyazı stüdyosu'). Çevirmen portalı (makineceviri.org/live/portal), test paneli ve oyun içi kutu (makine_live/ui/overlay_render.py) ve ileride native C++ overlay bu değerleri kullanır. Değiştirirseniz üç arayüzü birlikte güncelleyin.",
   "concept": "Video düzenleme / altyazı stüdyosu: mürekkep koyusu çalışma alanı, tek imza rengi klasik altyazı sarısı. Diyaloglar 'altyazı şeridi' olarak gösterilir. Süs yok; hareket yalnızca bir durumu anlatmak için.",
   "color": {
     "dark": {
@@ -99,7 +99,7 @@
     "maxWidthRatio": 0.62
   },
   "brand": {
-    "logo": "logo_white-96.webp",
+    "logo": "assets/logo_white-96.webp",
     "rule": "Logo gereken her yerde bu dosya kullanılır; yeniden çizilmez. Koyu zeminde beyaz, açık zeminde metin rengine boyanır (CSS mask). İkonlarda koyu yuvarlak kare (surface-2) üzerinde beyaz logo.",
     "generated_by": "tools/brand_assets.py"
   }

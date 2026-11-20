@@ -30,7 +30,7 @@ import socket
 import sys
 from typing import Callable, List, Optional
 
-from pool_client import app_data_dir
+from makine_live.paths import app_data_dir, bundled
 
 PACKAGE = "org.makineceviri.tv"
 ADB_PORT = 5555
@@ -39,21 +39,13 @@ REMOTE_APK = "/data/local/tmp/makine-tv.apk"
 
 def apk_path() -> str:
     """Pakete gömülü APK (exe) ya da geliştirmede Gradle çıktısı. Yoksa ''."""
-    root = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    for p in (os.path.join(root, "runtime", "makine-tv.apk"),
-              os.path.join(root, "tv", "app", "build", "outputs", "apk", "release", "app-release.apk")):
-        if os.path.isfile(p):
-            return p
-    return ""
+    return bundled(os.path.join("runtime", "makine-tv.apk"),
+                   os.path.join("tv", "app", "build", "outputs", "apk", "release", "app-release.apk"))
 
 
 def ipk_path() -> str:
     """Pakete gömülü LG paketi (exe) ya da geliştirmede tools/build_webos.py çıktısı. Yoksa ''."""
-    root = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    for p in (os.path.join(root, "runtime", "makine-tv.ipk"), os.path.join(root, "build", "webos", "makine-tv.ipk")):
-        if os.path.isfile(p):
-            return p
-    return ""
+    return bundled(os.path.join("runtime", "makine-tv.ipk"), os.path.join("build", "webos", "makine-tv.ipk"))
 
 
 def _local_networks() -> List[ipaddress.IPv4Network]:

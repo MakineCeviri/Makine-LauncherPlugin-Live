@@ -9,7 +9,7 @@ import os
 import unittest
 
 from _root import ROOT  # noqa: E402
-from pool_client import normalize_dialogue_text
+from makine_live.net.pool_client import normalize_dialogue_text
 
 VECTORS = os.path.join(ROOT, "spec", "normalization_vectors.json")
 

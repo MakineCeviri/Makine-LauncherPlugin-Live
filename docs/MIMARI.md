@@ -9,7 +9,7 @@
 > ## Python yalnızca test ve prototipleme içindir
 > - Nihai ürün C++23 ile derlenen **`makine-live.dll`** ve onu içeren **`makine-live.makine`** paketidir.
 > - Makine Launcher eklentiyi native C ABI üzerinden yükler (`manifest.json` → `"entry": "makine-live.dll"`).
-> - Python dosyaları (`game_overlay.py`, `game_detector.py`, `pool_client.py`) özellikleri gerçek oyunda denemek,
+> - Python paketi (`makine_live/`: `app.py`, `games/game_detector.py`, `net/pool_client.py`…) özellikleri gerçek oyunda denemek,
 >   hız ölçmek ve görselleştirmek için kullanılan bir **test koşucusudur** (test harness).
 > - Python'da doğrulanan her yetenek (havuz istemcisi, Alt+Tab koruması, çöp filtresi, tekrar engelleme,
 >   çeviri kutusu tasarımı) sonunda **C++ çekirdeğine** taşınır. Python'a kalıcı mimari kurmayın.
@@ -47,9 +47,9 @@ graph TD
         DLL -->|WinHTTP, makine motoru| Pool[(makineceviri.org /api/live)]
     end
     subgraph Test koşucusu / MakineLive.exe
-        Py[game_overlay.py] -->|ctypes| DLL
-        Py --> PC[pool_client.py] -->|HTTPS| Pool
-        Py --> Det[game_detector.py] --> Lib[game_library.py]
+        Py[makine_live/app.py] -->|ctypes| DLL
+        Py --> PC[net/pool_client.py] -->|HTTPS| Pool
+        Py --> Det[games/game_detector.py] --> Lib[games/game_library.py]
     end
     subgraph makineceviri.org Cloudflare Worker, Makine-WEB
         Pool --> LiveApi[src/live/app.ts]
@@ -86,7 +86,9 @@ graph TD
 ├── third_party/rapidocr/       # (git'te yok) RapidOcrOnnx.dll, onnxruntime.dll, models/
 ├── resources/en_words.txt      # İngilizce kelime sıklık listesi (wordninja, MIT) → build/release/resources/
 ├── resources/icon.png          # Launcher eklenti ikonu (manifest "icon"; logodan üretilir) → build/release/icon.png
-├── logo_white-96.webp          # Makine Çeviri logosu: her logo/ikonun TEK kaynağı (beyaz, saydam zemin, 96 px)
+├── assets/
+│   ├── logo_white-96.webp      # Makine Çeviri logosu: her logo/ikonun TEK kaynağı (beyaz, saydam zemin, 96 px)
+│   └── app.ico                 # .exe ikonu (logodan üretilir)
 ├── spec/                       # Python / sunucu / (C++) ortak test vektörleri ve tasarım dili
 │   ├── normalization_vectors.json  # metin normalizasyonu (sunucunun kopyası Makine-WEB tests/fixtures/live/)
 │   ├── garbage_vectors.json    #   sunucunun çöp kuralları
@@ -98,33 +100,46 @@ graph TD
 │   ├── GTA6_MAKINE_LIVE_REHBERI.md  # ayrıntılı kullanıcı rehberi: kurulum, giriş, konsol + TV, monitör, telefon, OBS
 │   └── surum-notlari/          # sürüm notları (vX.Y.Z.txt)
 │
-│   # ── Makine Live masaüstü uygulaması (Python test koşucusu, dist/MakineLive.exe) ──
-├── game_overlay.py             # [TEST] kontrol paneli + pipeline
-├── overlay_render.py           # [TEST→C++] oyun içi kutu: Pillow ile çizim + UpdateLayeredWindow
-├── hud_ui.py                   # [TEST] panel bileşenleri ve animasyonlu Canvas ikonları
-├── game_detector.py            # [TEST→C++] çalışan oyunu bulma (yalnızca oyunlar) + hedef pencere kilidi
-├── game_library.py             # [TEST→C++] kurulu oyunlar: Steam (appinfo.vdf türü), Epic, GOG, Ubisoft, EA, Xbox, Windows listesi
-├── local_pool.py               # [TEST→C++] yerel havuz: oyunun ONAYLI çevirileri bilgisayarda (arama, eşitleme, sayaçlar)
-├── subtitle_timing.py          # [TEST→C++] satır takibi + altyazı zamanlayıcısı (saf, zaman dışarıdan verilir)
-├── console_mode.py             # [TEST→C++] konsol modu: Remote Play / Xbox / yakalama penceresi, 16:9 oransal bölge
-├── tv_link.py                  # [TEST→C++] PC → Makine TV bağlantısı (UDP keşif + TCP satır-JSON, eşleşme kodu)
-├── tv_install.py               # [TEST] "TV'ye kur": Android TV'ye ADB, LG'ye geliştirici modu SSH ile kurulum
-├── subtitle_web.py             # [TEST→C++] yerel altyazı yayını: telefon / tablet (/) ve OBS tarayıcı kaynağı (/obs), SSE
-├── pool_client.py              # [TEST] sunucu istemcisi (makineceviri.org/api/live): hesapla giriş, oturum (DPAPI), translate, keep-alive
-├── app_update.py               # [TEST] .exe'nin kendini güncellemesi (indir → SHA-256 → kapanınca üzerine yaz → yeniden aç)
-├── build_exe.py, packaging/    # tek dosyalık dist/MakineLive.exe (PyInstaller) + uygulama ikonu
-├── pack.py                     # build/release → makine-live.makine (eksik dosya varsa reddeder)
+│   # ── Makine Live masaüstü uygulaması (Python test koşucusu, dist/MakineLive.exe; py -m makine_live) ──
+├── makine_live/
+│   ├── __main__.py             # giriş noktası (exe de buradan açılır)
+│   ├── app.py                  # [TEST] kontrol paneli + pipeline (MakineGameLiveApp), selftest
+│   ├── paths.py, version.py    #   bütün dosya yolları (geliştirme / exe) ve manifest'ten sürüm
+│   ├── ui/
+│   │   ├── hud_ui.py           # [TEST] panel bileşenleri ve animasyonlu Canvas ikonları
+│   │   ├── overlay_render.py   # [TEST→C++] oyun içi kutu: Pillow ile çizim + UpdateLayeredWindow
+│   │   ├── login.py, region.py, widgets.py, brand.py, layout.py  # giriş ekranı, F10 bölge, geçmiş, logo, yerleşim
+│   ├── core/
+│   │   ├── dll.py              #   makine-live.dll C ABI sarmalayıcısı (ctypes)
+│   │   ├── subtitle_timing.py  # [TEST→C++] satır takibi + altyazı zamanlayıcısı (saf, zaman dışarıdan verilir)
+│   │   └── garbage.py          # [TEST→C++] OCR süzgeçleri: satır başına gürültü / HUD, sunucunun çöp kuralının kopyası
+│   ├── games/
+│   │   ├── game_library.py     # [TEST→C++] kurulu oyunlar: Steam (appinfo.vdf türü), Epic, GOG, Ubisoft, EA, Xbox, Windows listesi
+│   │   ├── game_detector.py    # [TEST→C++] çalışan oyunu bulma (yalnızca oyunlar) + hedef pencere kilidi
+│   │   └── console_mode.py     # [TEST→C++] konsol modu: Remote Play / Xbox / yakalama penceresi, 16:9 oransal bölge
+│   ├── net/
+│   │   ├── pool_client.py      # [TEST] sunucu istemcisi (makineceviri.org/api/live): hesapla giriş, oturum (DPAPI), translate, keep-alive
+│   │   ├── local_pool.py       # [TEST→C++] yerel havuz: oyunun ONAYLI çevirileri bilgisayarda (arama, eşitleme, sayaçlar)
+│   │   ├── app_update.py       # [TEST] .exe'nin kendini güncellemesi (indir → SHA-256 → kapanınca üzerine yaz → yeniden aç)
+│   │   └── discord_presence.py #   Discord'da "Makine Live ile Türkçe oynuyor" (yerel IPC, bağımlılıksız)
+│   └── tv/
+│       ├── tv_link.py          # [TEST→C++] PC → Makine TV bağlantısı (UDP keşif + TCP satır-JSON, eşleşme kodu)
+│       ├── tv_install.py       # [TEST] "TV'ye kur": Android TV'ye ADB, LG'ye geliştirici modu SSH ile kurulum
+│       └── subtitle_web.py     # [TEST→C++] yerel altyazı yayını: telefon / tablet (/) ve OBS tarayıcı kaynağı (/obs), SSE
+├── requirements.txt            # Python bağımlılıkları (uygulama, testler, paketleme)
 │
 │   # ── Makine TV ──
 ├── tv/                         # Android TV / Google TV altyazı katmanı (Kotlin, bağımlılıksız; Gradle, tv\gradlew.bat)
 ├── tv-webos/                   # LG webOS (app/ web uygulaması: HDMI'ı içinde açar + altyazı; service/ JS servisi, ES5)
 │
 ├── tools/
+│   ├── build_exe.py            # tek dosyalık dist/MakineLive.exe (PyInstaller)
+│   ├── pack.py                 # build/release → makine-live.makine (eksik dosya varsa reddeder)
 │   ├── brand_assets.py         # logodan türetilenleri üretir: eklenti ikonu, app.ico, Makine TV ikon ve afişi
 │   ├── build_webos.py          # tv-webos → build/webos/makine-tv.ipk (LG'nin ares-package aracı gerekmez)
 │   └── tv_emulator_check.py    # Makine TV'yi resmî Android TV 8/9/12 + Google TV 14/16 emülatörlerinde uçtan uca dener
 └── tests/                      # bütün testler (çalıştırma: tests/README.md)
-    ├── _root.py                #   testler kök klasördeki modülleri bununla bulur
+    ├── _root.py                #   testler makine_live paketini bununla bulur
     ├── test_plugin.py          #   DLL ABI duman testi (gerçek OCR dahil)
     ├── test_dll_server.py      #   DLL'in "makine" motoru: jetonla /api/live/translate (küçük sahte sunucuyla)
     ├── test_normalization.py   #   Python normalizasyonu ↔ spec vektörleri
@@ -320,7 +335,7 @@ vektörler iki depoda birlikte güncellenir ve sunucudaki anahtarlar yeniden hes
 
 ## 5. Test koşucusu (Python) ve Makine Live uygulaması
 
-Bu test koşucusu oyunculara **tek bir `MakineLive.exe`** olarak verilir (`py build_exe.py`); herkese açık indirme
+Bu test koşucusu oyunculara **tek bir `MakineLive.exe`** olarak verilir (`py tools/build_exe.py`); herkese açık indirme
 `makineceviri.org/live/`. Python ya da başka bir şey kurmak gerekmez. Nihai ürün yine DLL'dir; Launcher entegrasyonunda
 bu uygulamanın yerini Launcher alır.
 
@@ -362,14 +377,14 @@ bu uygulamanın yerini Launcher alır.
   (1 MB × 3). Testerlar sorun bildirirken bu dosyayı gönderir.
 - **Doğrulama:** `MakineLive.exe --selftest` arayüz açmadan DLL'i yükler, bilinen bir satırı OCR ile okur, sonucu
   `%APPDATA%\MakineLive\selftest.json` dosyasına yazar.
-- **Derleme:** `py build_exe.py` (PyInstaller, tek dosya, pencereli, ikon ve sürüm bilgisiyle). `build/release` eksikse, DLL
+- **Derleme:** `py tools/build_exe.py` (PyInstaller, tek dosya, pencereli, ikon ve sürüm bilgisiyle). `build/release` eksikse, DLL
   `src/`'den eskiyse ya da manifest sürümü uyuşmuyorsa reddeder. **Her DLL derlemesinden sonra `.exe` yeniden derlenmelidir.**
   Boyut yaklaşık 53 MB, ilk açılış yaklaşık 3 sn (tek dosyalık paketin açılması).
 - Geliştirmede sunucu adresi `MAKINE_LIVE_SERVER` ortam değişkeniyle değiştirilebilir (yerel test sunucusu için).
 
-- **Logo:** `game_overlay.logo_image()` / `app_mark_image()` kökteki `logo_white-96.webp`'den çizer (giriş ekranı, pencere ikonu,
-  `.exe` ikonu). Logo `.exe`'ye gömülür (`build_exe.py --add-data`). Büyük boyutlarda alfa yumuşak büyütülüp keskinleştirilir.
-- `game_overlay.py` + `hud_ui.py`: koyu kontrol paneli (Canvas ile çizilen bileşenler ve animasyonlu ikonlar).
+- **Logo:** `ui/brand.py` (`logo_image()` / `app_mark_image()`) `assets/logo_white-96.webp`'den çizer (giriş ekranı, pencere ikonu,
+  `.exe` ikonu). Logo `.exe`'ye gömülür (`tools/build_exe.py --add-data`). Büyük boyutlarda alfa yumuşak büyütülüp keskinleştirilir.
+- `app.py` + `ui/hud_ui.py`: koyu kontrol paneli (Canvas ile çizilen bileşenler ve animasyonlu ikonlar).
   Sekmeler: Canlı (istatistikler, gecikme grafiği, geçmiş: tıkla = kopyala, çift tıkla = yeniden göster), Çeviri, Görünüm,
   Konsol (konsol / TV modu, aşağıda) ve Hesap.
   Kısayollar: **F8** kilitle/taşı (tıklama geçirgenliği), **F9** başlat/durdur, **F10** bölge seç.
@@ -398,7 +413,7 @@ bu uygulamanın yerini Launcher alır.
   Klasör eşleşmelerinde oyunun yardımcı programları (`HELPER_EXE`: crash, launcher, setup, anticheat, redist…) oyun sayılmaz.
   Birden çok oyun açıksa öndeki oyun, sonra Steam'in `RunningAppID`'si, sonra en büyük pencere seçilir. Java ile çalışan
   oyunlarda (Minecraft istemcileri) ad pencere başlığından gelir. Durdurulmuşken kart 3 sn'de bir, çalışırken hedef yoksa ya da
-  kapandıysa saniyede bir yeniden algılanır. Yenile düğmesi kütüphaneyi yeniden tarar. Kontrol: `py game_detector.py --steam`.
+  kapandıysa saniyede bir yeniden algılanır. Yenile düğmesi kütüphaneyi yeniden tarar. Kontrol: `py -m makine_live.games.game_detector --steam`.
 - **Hedef kilidi** (`capture_block_reason`): Okuma yalnızca algılanan oyunun penceresinden yapılır. Hedef ön planda değilse
   ya da z-sırasında üstündeki görünür bir pencere bölgeyle örtüşüyorsa o yoklama atlanır. Panelde oyun adı, kaynağı
   (Steam, Windows oyun listesi…) ve exe; bekleme sebebi durum satırında görünür.
@@ -522,24 +537,24 @@ py tests/test_webos_service.py   # LG servisi gerçek Node ile (sahte webos-serv
 py tests/test_webos_install.py   # LG geliştirici modu kurulumu, sahte TV'ye (anahtar, parola, SSH, kurulum yanıtları)
 ctest --test-dir build           # C++ boşluk düzeltici (tests/text_fix_test.cpp)
 py tools/tv_emulator_check.py    # Makine TV: Android TV 8/9/12 + Google TV 14/16 emülatörlerinde kurulum → eşleşme → katman
-py game_detector.py --steam      # bu makinedeki kütüphane ve Steam uygulama kararları
+py -m makine_live.games.game_detector --steam  # bu makinedeki kütüphane ve Steam uygulama kararları
 
 # Paket
-py pack.py                 # → makine-live.makine (Launcher → Ayarlar → Eklentiler)
+py tools/pack.py           # → makine-live.makine (Launcher → Ayarlar → Eklentiler)
 
 # Oyun içi canlı test (geliştirme)
-py game_overlay.py
+py -m makine_live
 
 # Makine Live uygulaması (tek dosya; önce DLL'i derleyin). Makine TV APK'sı eskiyse kendisi derler ve gömer.
-py build_exe.py            # → dist/MakineLive.exe
+py tools/build_exe.py      # → dist/MakineLive.exe
 dist\MakineLive.exe --selftest   # → %APPDATA%\MakineLive\selftest.json (tv_apk, tv_adb dahil)
 
 # Makine TV (Android TV) — Android SDK + JDK 17 gerekir; tv/local.properties → sdk.dir
 tv\gradlew.bat -p tv assembleRelease   # → tv/app/build/outputs/apk/release/app-release.apk
-py tv_install.py <TV-IP>               # APK'yı TV'ye kur + katman izni (TV'de hata ayıklama açık olmalı)
+py -m makine_live.tv.tv_install <TV-IP>  # APK'yı TV'ye kur + katman izni (TV'de hata ayıklama açık olmalı)
 
 # Makine TV (LG webOS)
-py tools/build_webos.py                # → build/webos/makine-tv.ipk (build_exe.py de üretip gömer)
+py tools/build_webos.py                # → build/webos/makine-tv.ipk (tools/build_exe.py de üretip gömer)
 # Arayüzü TV olmadan görmek: Edge/Chrome --allow-file-access-from-files ile tests/webos_preview.html?scene=menu|line|long|note
 ```
 

@@ -19,7 +19,7 @@ import time
 import unittest
 
 from _root import ROOT  # noqa: E402
-from tv_link import TvLink, TvInfo, discover
+from makine_live.tv.tv_link import TvLink, TvInfo, discover
 
 SERVICE = os.path.join(ROOT, "tv-webos", "service", "service.js")
 MOCK = os.path.join(ROOT, "tests", "webos_mock", "node_modules")

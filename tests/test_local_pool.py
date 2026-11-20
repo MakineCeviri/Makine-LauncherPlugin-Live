@@ -10,8 +10,8 @@ import tempfile
 import time
 
 from _root import ROOT  # noqa: E402,F401
-from local_pool import GamePool, LocalPool, bounded_levenshtein, keys_similar
-from pool_client import compact_pool_key
+from makine_live.net.local_pool import GamePool, LocalPool, bounded_levenshtein, keys_similar
+from makine_live.net.pool_client import compact_pool_key
 
 FAILS = 0
 

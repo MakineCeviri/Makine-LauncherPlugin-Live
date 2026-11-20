@@ -29,8 +29,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-import tv_install  # noqa: E402
-from tv_link import TvInfo, TvLink  # noqa: E402
+from makine_live.tv import tv_install  # noqa: E402
+from makine_live.tv.tv_link import TvInfo, TvLink  # noqa: E402
 
 SDK = os.environ.get("ANDROID_SDK_ROOT") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "Sdk")
 ADB = os.path.join(SDK, "platform-tools", "adb.exe")

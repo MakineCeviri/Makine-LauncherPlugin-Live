@@ -22,7 +22,7 @@ import unittest
 import paramiko
 
 from _root import ROOT  # noqa: E402
-import tv_install
+from makine_live.tv import tv_install
 
 PASS = "A1B2C3"
 

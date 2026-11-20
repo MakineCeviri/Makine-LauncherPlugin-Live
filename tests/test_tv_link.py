@@ -14,8 +14,8 @@ import time
 import unittest
 
 from _root import ROOT  # noqa: E402,F401
-import tv_link
-from tv_link import TvLink, TvInfo, discover
+from makine_live.tv import tv_link
+from makine_live.tv.tv_link import TvLink, TvInfo, discover
 
 
 class FakeTv:

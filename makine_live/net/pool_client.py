@@ -171,9 +171,7 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
         kernel32.LocalFree(out.pbData)
 
 
-def app_data_dir() -> str:
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "MakineLive")
+from makine_live.paths import app_data_dir  # noqa: E402,F401  (eski çağıranlar için buradan da)
 
 
 class SessionStore:

@@ -51,7 +51,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 # Tasarım değerleri
 # ─────────────────────────────────────────────────────────────
 
-_TOKENS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spec", "design_tokens.json")
+from makine_live.paths import DESIGN_TOKENS as _TOKENS_PATH  # noqa: E402
 
 
 def _load_tokens() -> dict:

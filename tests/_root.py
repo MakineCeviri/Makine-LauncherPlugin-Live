@@ -1,4 +1,4 @@
-"""Testler tests/ klasöründen çalışır. Bu modül kök klasörü (pool_client, tv_link, build/release…)
+"""Testler tests/ klasöründen çalışır. Bu modül deponun kökünü (makine_live paketi, build/release…)
 içe aktarma yoluna ekler ve Windows konsolunda Türkçe çıktının hata vermemesini sağlar.
 
     from _root import ROOT

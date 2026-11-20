@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -31,7 +30,7 @@ from PIL import Image, ImageDraw, ImageTk
 # Tema
 # ─────────────────────────────────────────────────────────────
 
-_TOK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spec", "design_tokens.json")
+from makine_live.paths import DESIGN_TOKENS as _TOK_PATH  # noqa: E402
 try:
     with open(_TOK_PATH, encoding="utf-8") as _f:
         _TOK = json.load(_f)

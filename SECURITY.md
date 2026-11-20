@@ -31,7 +31,7 @@ Yalnızca son yayımlanan sürüm desteklenir. Uygulama açılışta sürümün�
   "yayında göster" demedikçe).
 
 **Yerel ağ**
-- Telefon / OBS altyazı sayfası (`subtitle_web.py`) yalnızca açıkken çalışır: OBS için yalnızca `127.0.0.1`'e, telefon
+- Telefon / OBS altyazı sayfası (`makine_live/tv/subtitle_web.py`) yalnızca açıkken çalışır: OBS için yalnızca `127.0.0.1`'e, telefon
   seçiliyse ev ağına bağlanır. Sabit yollar dışında dosya sunmaz, dış kaynak yüklemez (CSP `'self'`), hesap ya da jeton taşımaz.
 - PC → Makine TV bağlantısı TV'de görünen 4 haneli eşleşme kodu olmadan kurulamaz. Yanlış kodda TV bekletir, 5 yanlıştan
   sonra kodu yeniler ve 60 sn hiçbir kodu kabul etmez; karşılaştırma sabit sürelidir. Makine TV sunucuya bağlanmaz ve

@@ -1,7 +1,7 @@
 # Testler
 
-Bütün testler bu klasördedir ve depo kökünden ya da bu klasörden çalıştırılabilir. Kök klasördeki modülleri
-(`pool_client`, `tv_link`, …) ve `build/release`'i `_root.py` bulur.
+Bütün testler bu klasördedir ve depo kökünden ya da bu klasörden çalıştırılabilir. Uygulamanın paketini
+(`makine_live`) ve `build/release`'i `_root.py` bulur.
 
 ```powershell
 py -m pip install -r requirements.txt     # bir kez

@@ -7,13 +7,16 @@ Nihai ürün makine-live.dll'dir. Bu betik; ekran yakalama + OCR'ı DLL üzerind
 havuz sorgusunu ve yedek çeviriyi Python tarafında çalıştırarak özellikleri
 gerçek bir oyunda denemek için kullanılır.
 
-Arayüz
+Arayüz (makine_live/ui/)
   - hud_ui.py         panel bileşenleri ve animasyonlu ikonlar (Canvas + Pillow)
   - overlay_render.py oyun içi çeviri kutusu (piksel bazında alfa, UpdateLayeredWindow)
+  - login.py, region.py, widgets.py  giriş ekranı, F10 bölge seçimi, geçmiş listesi
   - Tasarım dili      spec/design_tokens.json ("altyazı stüdyosu")
 
-Konsol / TV modu (PS5, Xbox): Remote Play ya da yakalama kartı penceresi okunur (console_mode.py), çeviri ev
-ağından TV'deki Makine TV uygulamasına gider (tv_link.py) ve HDMI görüntüsünün üstünde gösterilir.
+Konsol / TV modu (PS5, Xbox): Remote Play ya da yakalama kartı penceresi okunur (games/console_mode.py), çeviri ev
+ağından TV'deki Makine TV uygulamasına gider (tv/tv_link.py) ve HDMI görüntüsünün üstünde gösterilir.
+
+Çalıştırma: py -m makine_live
 
 Kısayollar: F8 kilitle/taşı · F9 başlat/durdur · F10 bölge seç
 """
@@ -27,52 +30,30 @@ import webbrowser
 import random
 import ctypes
 import ctypes.wintypes
-import re
 import threading
 from collections import deque, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from ctypes import c_char_p, c_uint32, c_int, c_void_p, c_bool, Structure
 import tkinter as tk
 import tkinter.font as tkfont
 
 from PIL import Image, ImageTk
 
-from game_detector import detect_game, capture_block_reason, foreground_window_info, get_library
-from console_mode import (ConsoleTarget, find_console_source, console_block_reason, region_to_screen,
-                          screen_to_region, valid_region, client_rect, window_has_image, DEFAULT_REGION,
-                          DEFAULT_GAME, CONSOLE_LABELS)
-from subtitle_web import SubtitleWeb
-from tv_link import TvLink, TvInfo, discover as discover_tvs, TCP_PORT as TV_TCP_PORT
-import tv_install
+from makine_live.games.game_detector import detect_game, capture_block_reason, foreground_window_info, get_library
+from makine_live.games.console_mode import (ConsoleTarget, find_console_source, console_block_reason, region_to_screen,
+                                            screen_to_region, valid_region, client_rect, window_has_image, DEFAULT_REGION,
+                                            DEFAULT_GAME, CONSOLE_LABELS)
+from makine_live.tv.subtitle_web import SubtitleWeb
+from makine_live.tv.tv_link import TvLink, TvInfo, discover as discover_tvs, TCP_PORT as TV_TCP_PORT
+from makine_live.tv import tv_install
 import socket
-from local_pool import LocalPool
-import app_update
-from pool_client import (ServerClient, SessionStore, AuthRequired, NetworkError, ServerError, SERVER_URL,
-                         compact_pool_key, app_data_dir)
-from subtitle_timing import LineTracker, SubtitleScheduler
+from makine_live.net.local_pool import LocalPool
+from makine_live.net import app_update
+from makine_live.net.pool_client import (ServerClient, SessionStore, AuthRequired, NetworkError, ServerError, SERVER_URL,
+                                         compact_pool_key, app_data_dir)
+from makine_live.core.subtitle_timing import LineTracker, SubtitleScheduler
 
-FROZEN = bool(getattr(sys, "frozen", False))
-# Kaynak kök: geliştirmede repo, tek dosya exe'de PyInstaller'ın açtığı geçici klasör (sys._MEIPASS)
-SRC_ROOT = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-# makine-live.dll + RapidOcrOnnx.dll + onnxruntime.dll + models/ + resources/
-RUNTIME_DIR = os.path.join(SRC_ROOT, "runtime") if FROZEN else os.path.join(SRC_ROOT, "build", "release")
-# Eklentinin veri klasörü (settings.cfg, hud.json): exe'de kullanıcı profili, geliştirmede build/test_data
-DATA_DIR = app_data_dir() if FROZEN else os.path.join(SRC_ROOT, "build", "test_data")
-
-
-def _app_version() -> str:
-    for p in (os.path.join(RUNTIME_DIR, "manifest.json"), os.path.join(SRC_ROOT, "manifest.json")):
-        try:
-            with open(p, encoding="utf-8") as fh:
-                return str(json.load(fh).get("version", "dev"))
-        except (OSError, ValueError):
-            continue
-    return "dev"
-
-
-APP_VERSION = _app_version()          # sürüm karşılaştırması bununla (sunucuya X-Makine-Version)
-APP_CHANNEL = "beta"
-APP_VERSION_LABEL = f"{APP_VERSION} {APP_CHANNEL}"   # ekranda: "0.1.0 beta"
+from makine_live.paths import FROZEN, RUNTIME_DIR, DATA_DIR, SPEC_DIR, LOGO_PATH
+from makine_live.version import APP_VERSION, APP_VERSION_LABEL
 
 # DPI farkındalığı: kutu ve bölge seçimi fiziksel piksellerle çalışır.
 # (Tk penceresi oluşturulmadan önce ayarlanmalı.)
@@ -84,50 +65,17 @@ except Exception:
     except Exception:
         pass
 
-import hud_ui as ui                                            # noqa: E402
-from hud_ui import (BG, SURFACE, SURFACE2, RAISED, LINE, LINE_STRONG, TEXT, TEXT2, TEXT3,  # noqa: E402
-                    ACCENT, ACCENT_INK, VERIFIED, mix)
-from overlay_render import SubtitleOverlay, OverlayContent, STYLES  # noqa: E402
-
-
-def clean_ocr_text(raw: str) -> str:
-    """OCR çıktısı: kutular "\n" ile gelir; çok satırlı altyazı tek cümle olarak çevrilir."""
-    return " ".join(raw.split())
-
-
-# Satırın TAMAMI bunlardan biriyse arayüz/sistem yazısıdır (alt dize aranmaz: "STARTED", "SPILL" geçerli)
-_SYSTEM_LINES = {
-    "start", "search", "taskbar", "widgets", "weather", "battery", "microsoft", "google chrome", "discord", "steam",
-    "başlat", "ara", "görev çubuğu", "hava durumu", "pil", "duraklat", "kilit", "alan seç", "taşıma",
-    "canlı çeviri", "havuz", "f8", "f9", "f10",
-}
-
-
-def is_valid_dialogue_text(text: str) -> bool:
-    """Çöp, grafik gürültüsü ve sistem yazılarını eler. Uzun / çok satırlı / boşluğu kaybolmuş cümleleri ELEMEZ."""
-    cleaned = clean_ocr_text(text)
-    if len(cleaned) < 3:
-        return False
-
-    # 1. Ardışık 3 veya daha fazla aynı harf (örn: 'aaa', 'epieanoaisanadeaaa,a')
-    if re.search(r'([a-zA-Z])\1{2,}', cleaned):
-        return False
-
-    # 2. Tek parça, boşluksuz, çok uzun dizi: doku/yağmur gürültüsü. (Eski kural her >13 harfli kelimeyi
-    #    eliyordu; OCR boşluk yuttuğunda uzun cümleler tamamen kayboluyordu.)
-    if " " not in cleaned and len(cleaned) > 28:
-        return False
-
-    # 3. Harf oranı: karakterlerin en az %60'ı harf olmalı
-    non_space = [c for c in cleaned if not c.isspace()]
-    letters = [c for c in non_space if c.isalpha()]
-    if not non_space or len(letters) < 2 or len(letters) / len(non_space) < 0.60:
-        return False
-
-    # 4. Arayüz / görev çubuğu yazıları (yalnızca satırın tamamı eşleşirse)
-    if cleaned.lower().strip(" .:") in _SYSTEM_LINES:
-        return False
-    return True
+from makine_live.ui import hud_ui as ui                        # noqa: E402
+from makine_live.ui.layout import W, PAD, INNER, H, TAB_Y, CONTENT_Y, GAME_BTN_W  # noqa: E402
+from makine_live.ui.brand import app_mark_image                # noqa: E402
+from makine_live.ui.region import RegionSelector               # noqa: E402
+from makine_live.ui.widgets import HistoryList                 # noqa: E402
+from makine_live.ui.login import LoginView                     # noqa: E402
+from makine_live.core.dll import PluginWrapper                 # noqa: E402
+from makine_live.core.garbage import clean_ocr_text, is_valid_dialogue_text  # noqa: E402
+from makine_live.ui.hud_ui import (BG, SURFACE, RAISED, LINE, LINE_STRONG, TEXT, TEXT2, TEXT3,  # noqa: E402
+                                   ACCENT, VERIFIED, mix)
+from makine_live.ui.overlay_render import SubtitleOverlay, OverlayContent, STYLES  # noqa: E402
 
 
 user32 = ctypes.windll.user32
@@ -136,316 +84,6 @@ user32 = ctypes.windll.user32
 VK_F8 = 0x77
 VK_F9 = 0x78
 VK_F10 = 0x79
-
-
-# ─────────────────────────────────────────────────────────────
-# 1. DLL C ABI Yapıları ve Eklenti Sarmalayıcısı
-# ─────────────────────────────────────────────────────────────
-
-class MakinePluginInfo(Structure):
-    _fields_ = [
-        ("id", c_char_p),
-        ("name", c_char_p),
-        ("version", c_char_p),
-        ("apiVersion", c_uint32),
-    ]
-
-
-class PluginWrapper:
-    def __init__(self, dll_path: str):
-        self.dll_path = os.path.abspath(dll_path)
-        self.dll = None
-        self.is_loaded = False
-        self._lock = threading.Lock()
-        self.load()
-
-    def load(self):
-        if not os.path.exists(self.dll_path):
-            return False
-        try:
-            self.dll = ctypes.CDLL(self.dll_path)
-            self.dll.makine_get_info.restype = MakinePluginInfo
-            self.dll.makine_get_info.argtypes = []
-            self.dll.makine_initialize.restype = c_int
-            self.dll.makine_initialize.argtypes = [c_char_p]
-            self.dll.makine_shutdown.restype = None
-            self.dll.makine_shutdown.argtypes = []
-            self.dll.makine_is_ready.restype = c_bool
-            self.dll.makine_is_ready.argtypes = []
-            self.dll.makine_get_last_error.restype = c_char_p
-            self.dll.makine_get_last_error.argtypes = []
-            self.dll.makine_get_setting.restype = c_char_p
-            self.dll.makine_get_setting.argtypes = [c_char_p]
-            self.dll.makine_set_setting.restype = None
-            self.dll.makine_set_setting.argtypes = [c_char_p, c_char_p]
-            self.dll.makine_capture_and_ocr.restype = c_char_p
-            self.dll.makine_capture_and_ocr.argtypes = [c_void_p, c_int, c_int, c_int, c_int]
-            self.dll.makine_capture_ocr_translate.restype = c_char_p
-            self.dll.makine_capture_ocr_translate.argtypes = [c_void_p, c_int, c_int, c_int, c_int]
-            self.dll.makine_get_last_ocr_text.restype = c_char_p
-            self.dll.makine_get_last_ocr_text.argtypes = []
-            self.is_loaded = True
-            return True
-        except Exception:
-            self.is_loaded = False
-            return False
-
-    def initialize(self, data_path: str) -> int:
-        with self._lock:
-            if not self.is_loaded:
-                return -2
-            os.makedirs(data_path, exist_ok=True)
-            return self.dll.makine_initialize(data_path.encode('utf-8'))
-
-    def last_error(self) -> str:
-        with self._lock:
-            if not self.is_loaded:
-                return "DLL yüklenemedi"
-            res = self.dll.makine_get_last_error()
-            return res.decode('utf-8', errors='replace') if res else ""
-
-    def shutdown(self):
-        with self._lock:
-            if self.is_loaded and self.dll:
-                self.dll.makine_shutdown()
-
-    def set_setting(self, key: str, val: str):
-        with self._lock:
-            if self.is_loaded:
-                self.dll.makine_set_setting(key.encode('utf-8'), val.encode('utf-8'))
-
-    def get_setting(self, key: str) -> str:
-        with self._lock:
-            if not self.is_loaded:
-                return ""
-            res = self.dll.makine_get_setting(key.encode('utf-8'))
-            return res.decode('utf-8', errors='replace') if res else ""
-
-    def capture_and_ocr(self, x: int, y: int, w: int, h: int, hwnd=None) -> str:
-        """hwnd yoksa ekran koordinatı (DXGI); varsa o pencerenin istemci koordinatı ve pencerenin kendi içeriği
-        (üstü kapalı olsa da: konsol modunda Remote Play / yakalama penceresi)."""
-        with self._lock:
-            if not self.is_loaded:
-                return ""
-            res = self.dll.makine_capture_and_ocr(hwnd, x, y, w, h)
-            return res.decode('utf-8', errors='replace') if res else ""
-
-
-# ─────────────────────────────────────────────────────────────
-# 2. Ekrandan bölge seçme aracı
-# ─────────────────────────────────────────────────────────────
-
-class RegionSelector(tk.Toplevel):
-    """
-    Ekranı karartır, seçilen alanı "delik" olarak açık bırakır (renk anahtarı), imleci vurgu
-    renginde artı işaretiyle izler ve canlı boyut etiketi gösterir.
-    """
-
-    KEY = "#010203"
-
-    def __init__(self, master, fonts, callback, current=None):
-        super().__init__(master)
-        self.callback = callback
-        self.f = fonts
-        self.overrideredirect(True)
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"{sw}x{sh}+0+0")
-        self.attributes("-topmost", True)
-        self.attributes("-alpha", 0.72)
-        self.attributes("-transparentcolor", self.KEY)
-        self.configure(bg="#000000", cursor="none")
-
-        self.c = tk.Canvas(self, bg="#08090a", highlightthickness=0, bd=0, cursor="none")
-        self.c.pack(fill="both", expand=True)
-        self.sw, self.sh = sw, sh
-        self.hole = self.c.create_rectangle(0, 0, 0, 0, fill=self.KEY, outline="", state="hidden")
-        self.frame = self.c.create_rectangle(0, 0, 0, 0, outline=ACCENT, width=2, state="hidden")
-        self.handles = [self.c.create_rectangle(0, 0, 0, 0, fill=ACCENT, outline="", state="hidden") for _ in range(4)]
-        self.vline = self.c.create_line(0, 0, 0, sh, fill=ACCENT, dash=(4, 4))
-        self.hline = self.c.create_line(0, 0, sw, 0, fill=ACCENT, dash=(4, 4))
-        self.size_bg = self.c.create_image(0, 0, anchor="nw", state="hidden")
-        self.size_txt = self.c.create_text(0, 0, anchor="w", font=fonts.code(13), fill=ACCENT_INK, state="hidden")
-
-        tip = "Diyalog alanını sürükleyerek seçin     Esc  vazgeç"
-        fnt = tkfont.Font(font=fonts.ui(14, semi=True))
-        tw = fnt.measure(tip) + 36
-        self.c.create_image(sw // 2 - tw // 2, 36, anchor="nw",
-                            image=ui.rrect_image(tw, 40, 8, fill=RAISED, outline=LINE_STRONG))
-        self.c.create_text(sw // 2, 56, text=tip, font=fonts.ui(14, semi=True), fill=TEXT)
-
-        if current:
-            x, y, w, h = current
-            self.c.create_rectangle(x, y, x + w, y + h, outline=TEXT3, dash=(6, 4))
-            self.c.create_text(x, y - 8, anchor="sw", text="mevcut bölge", font=fonts.ui(12), fill=TEXT2)
-
-        self.start = None
-        self.c.bind("<Motion>", self._motion)
-        self.c.bind("<ButtonPress-1>", self._press)
-        self.c.bind("<B1-Motion>", self._drag)
-        self.c.bind("<ButtonRelease-1>", self._release)
-        self.bind("<Escape>", lambda e: self.destroy())
-        self.focus_force()
-
-    def _motion(self, e):
-        self.c.coords(self.vline, e.x, 0, e.x, self.sh)
-        self.c.coords(self.hline, 0, e.y, self.sw, e.y)
-
-    def _press(self, e):
-        self.start = (e.x, e.y)
-        for it in (self.hole, self.frame, self.size_bg, self.size_txt, *self.handles):
-            self.c.itemconfigure(it, state="normal")
-        self._drag(e)
-
-    def _drag(self, e):
-        self._motion(e)
-        if not self.start:
-            return
-        x0, y0 = self.start
-        x1, y1 = e.x, e.y
-        l, t, r, b = min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
-        self.c.coords(self.hole, l, t, r, b)
-        self.c.coords(self.frame, l, t, r, b)
-        for hnd, (hx, hy) in zip(self.handles, ((l, t), (r, t), (l, b), (r, b))):
-            self.c.coords(hnd, hx - 3, hy - 3, hx + 3, hy + 3)
-        label = f"{r - l} × {b - t}"
-        lw = tkfont.Font(font=self.f.code(13)).measure(label) + 16
-        ly = t - 30 if t > 40 else b + 8
-        self.c.coords(self.size_bg, l, ly)
-        self.c.itemconfigure(self.size_bg, image=ui.rrect_image(lw, 22, 4, fill=ACCENT))
-        self.c.coords(self.size_txt, l + 8, ly + 11)
-        self.c.itemconfigure(self.size_txt, text=label)
-
-    def _release(self, e):
-        if not self.start:
-            return
-        x0, y0 = self.start
-        x, y, w, h = min(x0, e.x), min(y0, e.y), abs(e.x - x0), abs(e.y - y0)
-        self.destroy()
-        if w > 15 and h > 15:
-            self.callback(x, y, w, h)
-
-
-# ─────────────────────────────────────────────────────────────
-# 3. Geçmiş listesi
-# ─────────────────────────────────────────────────────────────
-
-class HistoryList(tk.Canvas):
-    """Son satırlar: tıkla = çeviriyi kopyala, çift tıkla = oyunda yeniden göster."""
-
-    ROW_H = 62
-    MAX = 50
-
-    def __init__(self, master, fonts, width, height, on_copy, on_replay):
-        super().__init__(master, width=width, height=height, bg=BG, highlightthickness=0, bd=0)
-        self.f = fonts
-        self.w = width
-        self.on_copy, self.on_replay = on_copy, on_replay
-        self.rows = deque(maxlen=self.MAX)
-        self._hover = None
-        self._fnt_main = tkfont.Font(font=fonts.ui(13))
-        self._fnt_src = tkfont.Font(font=fonts.ui(12))
-        self._fnt_badge = tkfont.Font(font=fonts.code(11))
-        self._ctx = ui.UI(master.winfo_toplevel(), self, fonts)
-        self.copy_icon = None
-        self.bind("<Motion>", self._motion)
-        self.bind("<Leave>", lambda e: self._set_hover(None))
-        self.bind("<Button-1>", self._click)
-        self.bind("<Double-Button-1>", self._dbl)
-        self.bind("<MouseWheel>", lambda e: self.yview_scroll(int(-e.delta / 40), "units"))
-        self.configure(yscrollincrement=8)
-        self.redraw()
-
-    def add(self, entry):
-        self.rows.appendleft(entry)
-        self.redraw()
-
-    def clear(self):
-        self.rows.clear()
-        self.redraw()
-
-    def _fit(self, text, font, width):
-        text = " ".join(text.split())
-        if font.measure(text) <= width:
-            return text
-        while text and font.measure(text + "…") > width:
-            text = text[:-1]
-        return text + "…"
-
-    def redraw(self):
-        self.delete("all")
-        self._hover = None
-        if not self.rows:
-            h = int(self.cget("height"))
-            ic = ui.AnimatedIcon(self._ctx, self.w / 2, h / 2 - 22, "subtitle", 28, TEXT3)
-            ic.set(t=1.0)
-            self.create_text(self.w / 2, h / 2 + 12, text="Henüz satır yok", font=self.f.ui(13, semi=True), fill=TEXT2)
-            self.create_text(self.w / 2, h / 2 + 32, text="F9 ile başlatın; çevrilen satırlar burada birikir.",
-                             font=self.f.ui(12), fill=TEXT3)
-            self.configure(scrollregion=(0, 0, self.w, h))
-            self.copy_icon = None
-            return
-        for i, r in enumerate(self.rows):
-            y = i * self.ROW_H
-            tag = f"row{i}"
-            self.create_image(0, y + 2, anchor="nw", tags=(tag, "rowbg"), state="hidden",
-                              image=ui.rrect_image(self.w, self.ROW_H - 4, 6, fill=SURFACE2))
-            self.create_text(12, y + 16, anchor="w", text=r["time"], font=self.f.code(11), fill=TEXT3, tags=tag)
-            label, color = r["badge"]
-            bw = self._fnt_badge.measure(label) + 12
-            self.create_image(76, y + 7, anchor="nw", tags=tag,
-                              image=ui.rrect_image(bw, 18, 4, fill=mix(BG, color, 0.14), outline=mix(BG, color, 0.45)))
-            self.create_text(76 + bw / 2, y + 16, text=label, font=self.f.code(11), fill=color, tags=tag)
-            if r.get("ms") is not None:
-                self.create_text(self.w - 12, y + 16, anchor="e", text=f"{r['ms']} ms", font=self.f.code(11),
-                                 fill=TEXT3, tags=tag)
-            self.create_text(12, y + 34, anchor="w", text=self._fit(r["raw"], self._fnt_src, self.w - 24),
-                             font=self.f.ui(12), fill=TEXT3, tags=tag)
-            self.create_text(12, y + 51, anchor="w", text=self._fit(r["translated"], self._fnt_main, self.w - 48),
-                             font=self.f.ui(13), fill=TEXT, tags=tag)
-            if i < len(self.rows) - 1:
-                self.create_line(12, y + self.ROW_H, self.w - 12, y + self.ROW_H, fill=LINE, tags=tag)
-        self.copy_icon = ui.AnimatedIcon(self._ctx, -100, -100, "copy", 16, TEXT2)
-        self.configure(scrollregion=(0, 0, self.w, len(self.rows) * self.ROW_H))
-
-    def _index_at(self, e):
-        i = int(self.canvasy(e.y) // self.ROW_H)
-        return i if 0 <= i < len(self.rows) else None
-
-    def _set_hover(self, i):
-        if i == self._hover:
-            return
-        if self._hover is not None:
-            for it in self.find_withtag(f"row{self._hover}"):
-                if "rowbg" in self.gettags(it):
-                    self.itemconfigure(it, state="hidden")
-        self._hover = i
-        if i is not None and self.copy_icon:
-            for it in self.find_withtag(f"row{i}"):
-                if "rowbg" in self.gettags(it):
-                    self.itemconfigure(it, state="normal")
-                    self.tag_lower(it)
-            self.copy_icon.move(self.w - 22, i * self.ROW_H + 51)
-            self.tag_raise(self.copy_icon.item)
-            self.configure(cursor="hand2")
-        else:
-            if self.copy_icon:
-                self.copy_icon.move(-100, -100)
-            self.configure(cursor="")
-
-    def _motion(self, e):
-        self._set_hover(self._index_at(e))
-
-    def _click(self, e):
-        i = self._index_at(e)
-        if i is not None:
-            if self.copy_icon:
-                self.copy_icon.play(320)
-            self.on_copy(self.rows[i])
-
-    def _dbl(self, e):
-        i = self._index_at(e)
-        if i is not None:
-            self.on_replay(self.rows[i])
 
 
 # ─────────────────────────────────────────────────────────────
@@ -458,9 +96,6 @@ ROLE_LABELS = {"admin": "yönetici", "translator": "çevirmen", "tester": "teste
 STYLE_LABELS = [("altyazi", "Altyazı"), ("yalin", "Yalın"), ("sinema", "Sinema")]
 POSITION_LABELS = [("alt", "Alt"), ("ust", "Üst"), ("serbest", "Serbest")]
 
-W = 440
-PAD = 20
-GAME_BTN_W = 92
 POOL_SYNC_S = 60          # yerel havuzun sunucuyla karşılaştırılma aralığı (oyun açıkken)
 STATUS_POLL_S = 300       # bakım / yeni sürüm / duyuru kontrolü (oturum açıkken)
 
@@ -486,15 +121,11 @@ def _same_target(a, b) -> bool:
     if a is None or b is None:
         return a is b
     return a.pid == b.pid and a.hwnd == b.hwnd
-INNER = W - 2 * PAD
-H = 836
-TAB_Y = 364
-CONTENT_Y = TAB_Y + 46
 
 def _load_samples():
     """Örnek altyazılar (spec/sample_quotes.json): oyunlarda gerçekten geçen replikler, her seferinde biri rastgele."""
     try:
-        with open(os.path.join(SRC_ROOT, "spec", "sample_quotes.json"), encoding="utf-8") as fh:
+        with open(os.path.join(SPEC_DIR, "sample_quotes.json"), encoding="utf-8") as fh:
             out = [(q["game"], q["source"], q["tr"]) for q in json.load(fh)["quotes"] if q.get("tr")]
         if out:
             return out
@@ -513,248 +144,6 @@ def _short(s: str, n: int = 28) -> str:
 
 def _fmt_int(n: int) -> str:
     return f"{n:,}".replace(",", " ")
-
-
-# Makine Çeviri logosu (tek kaynak; portal, .exe ikonu ve Launcher ikonu bundan üretilir: tools/brand_assets.py)
-LOGO_PATH = os.path.join(SRC_ROOT, "logo_white-96.webp")
-
-
-def logo_image(size: int, color=None) -> Image.Image:
-    """
-    Logo, size × size RGBA (saydam zemin, varsayılan beyaz). Kaynak 96 px olduğu için büyük boyutlarda alfa kanalı
-    yumuşak büyütülüp kenarları yeniden keskinleştirilir: tek renkli düz bir işaret olduğundan bulanıklaşmaz.
-    """
-    src = Image.open(LOGO_PATH).convert("RGBA")
-    alpha = src.getchannel("A")
-    if size > src.width:
-        big = alpha.resize((size * 2, size * 2), Image.BICUBIC)
-        big = big.point([max(0, min(255, (a - 128) * 3 + 128)) for a in range(256)])
-        alpha = big.resize((size, size), Image.LANCZOS)
-    else:
-        alpha = alpha.resize((size, size), Image.LANCZOS)
-    out = Image.new("RGBA", (size, size), (ui.rgb(color) if color else (255, 255, 255)) + (0,))
-    out.putalpha(alpha)
-    return out
-
-
-def app_mark_image(size: int) -> Image.Image:
-    """Uygulama ikonu: mürekkep koyusu yuvarlak karede beyaz logo (pencere ve exe ikonu; açık zeminde de görünür)."""
-    from PIL import ImageDraw
-    k = 4
-    s = size * k
-    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
-    d.rounded_rectangle((0, 0, s - 1, s - 1), radius=round(s * 0.22), fill=ui.rgb(SURFACE2) + (255,),
-                        outline=ui.rgb(LINE_STRONG) + (255,), width=max(1, round(s * 0.02)))
-    im = im.resize((size, size), Image.LANCZOS)
-    inner = max(8, round(size * (0.86 if size <= 32 else 0.78)))   # logonun kendi iç boşluğu var (96 px'te 5 px)
-    im.alpha_composite(logo_image(inner), ((size - inner) // 2, (size - inner) // 2))
-    return im
-
-
-class LoginView:
-    """
-    Giriş ekranı (panelle aynı tuval dili). Durumlar:
-      choice    Makine Çeviri hesabıyla giriş (ana yol) ya da ekip hesabı
-      device    kod gösterilir; kullanıcı tarayıcıda açılan makineceviri.org/live/baglan/ sayfasında onaylar
-      form      ekip hesabı: kullanıcı adı + şifre
-      checking  kayıtlı oturum sunucuda doğrulanıyor
-      offline   kayıtlı oturum var ama sunucuya ulaşılamadı (jeton silinmez; tekrar dene)
-    """
-
-    def __init__(self, root, fonts, on_submit, on_retry, on_switch, on_device=None, on_device_cancel=None,
-                 on_device_reopen=None):
-        self.root, self.f = root, fonts
-        self.on_submit, self.on_retry, self.on_switch = on_submit, on_retry, on_switch
-        self.on_device = on_device or (lambda: None)
-        self.on_device_cancel = on_device_cancel or (lambda: None)
-        self.on_device_reopen = on_device_reopen or (lambda: None)
-        self.c = tk.Canvas(root, width=W, height=H, bg=BG, highlightthickness=0, bd=0)
-        self.u = ui.UI(root, self.c, fonts)
-        c, u, f = self.c, self.u, fonts
-        cx = W / 2
-
-        self._mark = ImageTk.PhotoImage(logo_image(64))
-        c.create_image(cx, 170, image=self._mark)
-        c.create_text(cx, 236, text="Makine Live", font=f.disp(26), fill=TEXT)
-        if APP_CHANNEL:
-            chip_f = f.ui(11, semi=True)
-            cw = tkfont.Font(font=chip_f).measure(APP_CHANNEL.upper()) + 18
-            c.create_image(cx - cw / 2, 260, anchor="nw",
-                           image=ui.rrect_image(round(cw), 20, 10, fill=mix(BG, ACCENT, 0.12), outline=mix(BG, ACCENT, 0.5)))
-            c.create_text(cx, 270, text=APP_CHANNEL.upper(), font=chip_f, fill=ACCENT)
-
-        # ── Makine Çeviri hesabı (ana yol) ──
-        y = 318
-        c.create_text(PAD, y, anchor="nw", width=INNER, font=f.ui(13), fill=TEXT2, tags="choice",
-                      text="Makine Çeviri hesabınızla giriş yapın. Discord ya da e-posta adresiniz yeter; şifre gerekmez.")
-        self.btn_device = ui.Button(u, PAD, y + 62, INNER, 46, text="Makine Çeviri hesabıyla giriş yap", icon="arrow",
-                                    kind="primary", command=self._device, font=f.ui(14, semi=True), tags=("choice",))
-        self.err_choice = c.create_text(PAD, y + 120, anchor="nw", text="", font=f.ui(12), fill=ui.DISPUTED, width=INNER,
-                                        tags="choice")
-        c.create_text(cx, y + 176, text="Hesabınız yoksa açılan sayfada birkaç saniyede oluşturabilirsiniz.",
-                      font=f.ui(12), fill=TEXT3, width=INNER, justify="center", tags="choice")
-        ui.Button(u, PAD, y + 206, INNER, 38, text="Ekip hesabıyla giriş", kind="ghost",
-                  command=lambda: self.show_form(), font=f.ui(13), tags=("choice",))
-
-        # ── kod onayı ──
-        c.create_text(cx, 330, text="Tarayıcıda açılan sayfada bu kodu onaylayın", font=f.ui(13), fill=TEXT2,
-                      width=INNER, justify="center", tags="device")
-        self.dev_code = c.create_text(cx, 384, text="", font=f.code(30), fill=TEXT, tags="device")
-        self.dev_icon = ui.AnimatedIcon(u, cx, 440, "spinner", 22, ACCENT, tags=("device",))
-        self.dev_sub = c.create_text(cx, 474, anchor="n", text="", font=f.ui(12), fill=TEXT3, width=INNER, justify="center",
-                                     tags="device")
-        ui.Button(u, PAD, 540, INNER, 42, text="Sayfayı yeniden aç", kind="secondary",
-                  command=lambda: self.on_device_reopen(), font=f.ui(13, semi=True), tags=("device",))
-        ui.Button(u, PAD, 592, INNER, 38, text="Vazgeç", kind="ghost",
-                  command=lambda: self.on_device_cancel(), font=f.ui(13), tags=("device",))
-
-        # ── ekip hesabı ──
-        y = 318
-        c.create_text(PAD, y, anchor="w", text="Ekip hesabınızla giriş yapın.", font=f.ui(13), fill=TEXT2,
-                      tags="form")
-        y += 30
-        c.create_text(PAD, y + 8, anchor="w", text="Kullanıcı adı", font=f.ui(12, semi=True), fill=TEXT2, tags="form")
-        self.var_user = tk.StringVar()
-        self.fld_user = ui.Field(u, PAD, y + 22, INNER, 40, self.var_user, tags=("form",))
-        y += 76
-        c.create_text(PAD, y + 8, anchor="w", text="Şifre", font=f.ui(12, semi=True), fill=TEXT2, tags="form")
-        self.var_pass = tk.StringVar()
-        self._pass_visible = False
-        self.fld_pass = ui.Field(u, PAD, y + 22, INNER, 40, self.var_pass, show="•", tags=("form",), lead_icon="key",
-                                 trail=("eye_off", self._toggle_pass))
-        y += 78
-        self.err = c.create_text(PAD, y, anchor="nw", text="", font=f.ui(12), fill=ui.DISPUTED, width=INNER,
-                                 tags="form")
-        y += 34
-        self.btn = ui.Button(u, PAD, y, INNER, 46, text="Giriş yap", icon="arrow", kind="primary",
-                             command=self._submit, font=f.ui(14, semi=True), tags=("form",))
-        for e in (self.fld_user.entry, self.fld_pass.entry):
-            e.bind("<Return>", lambda ev: self._submit())
-        ui.Button(u, PAD, y + 62, INNER, 38, text="Makine Çeviri hesabıyla giriş", kind="ghost",
-                  command=lambda: self.show_choice(), font=f.ui(13), tags=("form",))
-
-        # ── doğrulanıyor / çevrimdışı ──
-        self.chk_icon = ui.AnimatedIcon(u, cx, 360, "spinner", 26, ACCENT, tags=("check",))
-        self.chk_title = c.create_text(cx, 400, text="", font=f.ui(15, semi=True), fill=TEXT, tags="check")
-        self.chk_sub = c.create_text(cx, 426, text="", font=f.ui(12), fill=TEXT3, width=INNER, justify="center",
-                                     tags="check")
-        self.btn_retry = ui.Button(u, PAD, 470, INNER, 44, text="Tekrar dene", icon="refresh", kind="primary",
-                                   command=lambda: self.on_retry(), font=f.ui(14, semi=True), tags=("offline",))
-        self.btn_switch = ui.Button(u, PAD, 524, INNER, 38, text="Başka hesapla giriş yap", kind="ghost",
-                                    command=lambda: self.on_switch(), font=f.ui(13), tags=("offline",))
-
-        c.create_text(cx, H - 34, text=f"sürüm {APP_VERSION_LABEL}", font=f.code(11), fill=TEXT3)
-        self.show_choice()
-
-    def _device(self):
-        self.set_error("")
-        self.btn_device.set_enabled(False)
-        self.btn_device.set_text("Bağlanılıyor…")
-        self.on_device()
-
-    def show_choice(self, error=""):
-        self.chk_icon.stop()
-        self.dev_icon.stop()
-        self._state(False, False, False, choice=True)
-        self.btn_device.set_enabled(True)
-        self.btn_device.set_text("Makine Çeviri hesabıyla giriş yap")
-        self.set_error(error)
-
-    def show_device(self, code, sub=""):
-        """Kod onayı: kod büyük, altında ne yapılacağı. sub: süre / bağlantı durumu."""
-        self.chk_icon.stop()
-        self._state(False, False, False, device=True)
-        self.c.itemconfigure(self.dev_code, text=code)
-        self.c.itemconfigure(self.dev_sub, text=sub or "Sayfa açılmadıysa “Sayfayı yeniden aç”a basın. "
-                                                       "Onaylayınca uygulama kendiliğinden giriş yapar.")
-        self.dev_icon.set(name="spinner", color=ACCENT)
-        self.dev_icon.loop(800)
-
-    def set_device_note(self, text):
-        self.c.itemconfigure(self.dev_sub, text=text)
-
-    def _toggle_pass(self):
-        self._pass_visible = not self._pass_visible
-        self.fld_pass.set_show("" if self._pass_visible else "•")
-        icon = self.fld_pass.trail
-        icon.animate(1.0, 140, frm=0.0, done=lambda: (icon.set(name="eye" if self._pass_visible else "eye_off"),
-                                                      icon.animate(0.0, 160)))
-
-    def _state(self, form, check, offline, choice=False, device=False):
-        self.c.delete("gate")
-        if not device:
-            self.dev_icon.stop()
-        self.c.itemconfigure("choice", state="normal" if choice else "hidden")
-        self.c.itemconfigure("device", state="normal" if device else "hidden")
-        self.c.itemconfigure("form", state="normal" if form else "hidden")
-        self.c.itemconfigure("check", state="normal" if check else "hidden")
-        self.c.itemconfigure("offline", state="normal" if offline else "hidden")
-
-    def _submit(self):
-        user, pw = self.var_user.get().strip(), self.var_pass.get()
-        if not user or not pw:
-            self.set_error("Kullanıcı adı ve şifre gerekli.")
-            return
-        self.set_busy(True)
-        self.on_submit(user, pw)
-
-    def set_error(self, text):
-        self.c.itemconfigure(self.err, text=text or "")
-        self.c.itemconfigure(self.err_choice, text=text or "")
-
-    def set_busy(self, busy):
-        self.btn.set_enabled(not busy)
-        self.btn.set_text("Giriş yapılıyor…" if busy else "Giriş yap")
-        if busy:
-            self.set_error("")
-
-    def show_form(self, error="", username=None):
-        self.chk_icon.stop()
-        self._state(True, False, False)
-        self.set_busy(False)
-        self.set_error(error)
-        if username is not None:
-            self.var_user.set(username)
-        self.var_pass.set("")
-        target = self.fld_pass.entry if self.var_user.get() else self.fld_user.entry
-        self.root.after(60, target.focus_set)
-
-    def show_checking(self, user):
-        self._state(False, True, False)
-        self.chk_icon.set(name="spinner", color=ACCENT)
-        self.chk_icon.loop(800)
-        self.c.itemconfigure(self.chk_title, text="Oturum doğrulanıyor")
-        self.c.itemconfigure(self.chk_sub, text=f"{user} olarak giriş yapılıyor…")
-
-    def show_gate(self, icon, color, title, message, primary=None, secondary=None, progress=None):
-        """Bakım / güncelleme ekranı. primary, secondary: (etiket, komut). progress: 0–1 ya da None."""
-        self._state(False, False, False)
-        self.chk_icon.stop()
-        c, u, f, cx = self.c, self.u, self.f, W / 2
-        icon_item = ui.AnimatedIcon(u, cx, 330, icon, 28, color, tags=("gate",))
-        if icon == "spinner":
-            icon_item.loop(800)
-        c.create_text(cx, 372, text=title, font=f.ui(16, semi=True), fill=TEXT, tags="gate")
-        c.create_text(cx, 398, anchor="n", text=message, font=f.ui(12), fill=TEXT2, width=INNER, justify="center", tags="gate")
-        y = 540
-        if progress is not None:
-            c.create_image(PAD, y - 40, anchor="nw", tags="gate", image=ui.rrect_image(INNER, 6, 3, fill=SURFACE2))
-            w = max(6, round(INNER * max(0.0, min(1.0, progress))))
-            c.create_image(PAD, y - 40, anchor="nw", tags="gate", image=ui.rrect_image(w, 6, 3, fill=ACCENT))
-        if primary:
-            ui.Button(u, PAD, y, INNER, 44, text=primary[0], kind="primary", command=primary[1],
-                      font=f.ui(14, semi=True), tags=("gate",))
-        if secondary:
-            ui.Button(u, PAD, y + 54, INNER, 38, text=secondary[0], kind="ghost", command=secondary[1],
-                      font=f.ui(13), tags=("gate",))
-
-    def show_offline(self, user, message):
-        self._state(False, True, True)
-        self.chk_icon.stop()
-        self.chk_icon.set(name="link", t=0.0, color=ui.DISPUTED)
-        self.c.itemconfigure(self.chk_title, text="Sunucuya ulaşılamıyor")
-        self.c.itemconfigure(self.chk_sub, text=f"{user} hesabı kayıtlı. {message}")
 
 
 class MakineGameLiveApp(tk.Tk):

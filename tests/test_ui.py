@@ -445,7 +445,7 @@ class MakineLiveDevUI(ctk.CTk):
                                       command=self._toggle_live_loop, height=38, font=ctk.CTkFont(weight="bold"))
         self.btn_live.pack(fill="x", padx=10, pady=(8, 8))
 
-        ctk.CTkButton(left_panel, text="🎮 OYUN İÇİ HUD'U BAŞLAT (game_overlay.py)", fg_color="#ea580c", hover_color="#c2410c",
+        ctk.CTkButton(left_panel, text="🎮 OYUN İÇİ HUD'U BAŞLAT (py -m makine_live)", fg_color="#ea580c", hover_color="#c2410c",
                       height=38, font=ctk.CTkFont(weight="bold"),
                       command=self._launch_game_overlay).pack(fill="x", padx=10, pady=(0, 8))
 
@@ -630,9 +630,8 @@ class MakineLiveDevUI(ctk.CTk):
 
     def _launch_game_overlay(self):
         import subprocess
-        script_path = os.path.join(self.root_dir, "game_overlay.py")
-        subprocess.Popen([sys.executable, script_path])
-        self.log("🎮 Oyun İçi Overlay Paketi (game_overlay.py) başlatıldı!")
+        subprocess.Popen([sys.executable, "-m", "makine_live"], cwd=self.root_dir)
+        self.log("🎮 Oyun İçi Overlay Paketi (py -m makine_live) başlatıldı!")
 
     def _trigger_ocr_only(self):
         x, y, w, h = self._get_coords()

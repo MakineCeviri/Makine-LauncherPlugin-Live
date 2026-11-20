@@ -12,8 +12,8 @@ import sys
 import tempfile
 
 from _root import ROOT  # noqa: E402,F401
-from game_library import (GAME, NOT_GAME, UNKNOWN, GameEntry, GameLibrary, appinfo_verdict, parse_vdf,
-                          read_epic, read_steam, read_steam_appinfo, slugify)
+from makine_live.games.game_library import (GAME, NOT_GAME, UNKNOWN, GameEntry, GameLibrary, appinfo_verdict, parse_vdf,
+                                            read_epic, read_steam, read_steam_appinfo, slugify)
 
 FAILS = 0
 

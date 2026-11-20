@@ -126,9 +126,9 @@ third_party/rapidocr/
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build              # → build/release/makine-live.dll (+ OCR dosyaları, modeller, ikon)
 
-py pack.py                       # → makine-live.makine (Launcher eklenti paketi)
-py build_exe.py                  # → dist/MakineLive.exe (tek dosyalık uygulama)
-py game_overlay.py               # uygulamayı derlemeden çalıştırma (geliştirme)
+py tools/pack.py                 # → makine-live.makine (Launcher eklenti paketi)
+py tools/build_exe.py            # → dist/MakineLive.exe (tek dosyalık uygulama)
+py -m makine_live                # uygulamayı derlemeden çalıştırma (geliştirme)
 ```
 
 ### Testler
@@ -149,12 +149,18 @@ Uygulama varsayılan olarak `https://makineceviri.org` ile konuşur. Yerel bir s
 ## Proje yapısı
 
 ```
-├── src/, include/        C++ çekirdeği ve Launcher ile ortak C ABI başlıkları
-├── *.py                  Makine Live masaüstü uygulaması (test koşucusu)
+├── src/, include/        C++ çekirdeği (makine-live.dll) ve Launcher ile ortak C ABI başlıkları
+├── makine_live/          Makine Live masaüstü uygulaması (py -m makine_live; test koşucusu)
+│   ├── ui/               kontrol paneli, oyun içi çeviri kutusu, giriş ekranı
+│   ├── core/             DLL sarmalayıcısı, satır takibi ve zamanlayıcı, OCR süzgeçleri
+│   ├── games/            oyun kütüphanesi ve algılama, konsol (Remote Play) penceresi
+│   ├── net/              sunucu istemcisi, yerel havuz, güncelleme, Discord
+│   └── tv/               Makine TV bağlantısı ve kurulumu, telefon / OBS sayfası
 ├── tv/, tv-webos/        Makine TV: Android TV / Google TV ve LG webOS
+├── assets/               logo ve uygulama ikonu
 ├── spec/                 istemci ve sunucunun paylaştığı test vektörleri, tasarım dili
 ├── resources/            kelime sıklık listesi, eklenti ikonu
-├── tools/                ikon üretimi, LG paketleyici, TV emülatör testi
+├── tools/                exe ve eklenti paketleme, ikon üretimi, LG paketleyici, TV emülatör testi
 ├── tests/                bütün testler
 └── docs/                 teknik mimari, kullanıcı rehberleri, sürüm notları
 ```

@@ -10,7 +10,7 @@ import time
 import unittest
 
 from _root import ROOT  # noqa: E402,F401
-import subtitle_web as sw
+from makine_live.tv import subtitle_web as sw
 
 
 def _events(port):

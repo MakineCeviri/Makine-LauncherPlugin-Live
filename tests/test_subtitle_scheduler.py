@@ -6,7 +6,7 @@ Altyazı zamanlaması birim testleri (subtitle_timing.py).
 import unittest
 
 from _root import ROOT  # noqa: E402,F401
-from subtitle_timing import LineTracker, SubtitleScheduler, reading_min
+from makine_live.core.subtitle_timing import LineTracker, SubtitleScheduler, reading_min
 
 
 def run(sched, t0, t1, step=0.05):

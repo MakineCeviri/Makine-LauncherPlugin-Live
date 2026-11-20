@@ -14,7 +14,8 @@ import re
 import threading
 from typing import Dict, List, Optional, Tuple
 
-from game_library import GameEntry, GameLibrary, steam_running_appid
+from makine_live.paths import app_data_dir
+from makine_live.games.game_library import GameEntry, GameLibrary, steam_running_appid
 
 # Bilinen oyun exe adları (mağaza bilgisi bulunamazsa son kaynak) ve havuzdaki sabit slug'ları
 KNOWN_GAMES: Dict[str, Tuple[str, str]] = {
@@ -61,7 +62,7 @@ KNOWN_GAMES: Dict[str, Tuple[str, str]] = {
 # ─────────────────────────────────────────────────────────────
 
 def data_dir() -> str:
-    return os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MakineLive")
+    return app_data_dir()
 
 
 _library: Optional[GameLibrary] = None

@@ -1,11 +1,11 @@
 """
-Logodan türetilen dosyaları üretir. Tek kaynak: logo_white-96.webp (depo kökü). Logo değişince bunu çalıştırın:
+Logodan türetilen dosyaları üretir. Tek kaynak: assets/logo_white-96.webp. Logo değişince bunu çalıştırın:
 
     py tools/brand_assets.py
 
 Üretilenler:
   resources/icon.png              Launcher eklenti ikonu (manifest.json → "icon"; CMake build/release'e kopyalar)
-  packaging/app.ico               .exe ikonu (build_exe.py de her derlemede yeniden üretir)
+  assets/app.ico                  .exe ikonu (tools/build_exe.py de her derlemede yeniden üretir)
   tv/app/src/main/res/...         Makine TV (Android TV): uygulama ikonu, başlatıcı afişi (320×180), ekran logosu
   tv-webos/app/img/...            Makine TV (LG webOS): 80 / 130 px ikonlar, ekran logosu
   server/assets/...               yalnızca eski portal klasörü yerelde varsa: logo, favicon, apple-touch-icon
@@ -18,8 +18,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from game_overlay import LOGO_PATH, app_mark_image, logo_image  # noqa: E402
-import hud_ui as ui  # noqa: E402
+from makine_live.paths import LOGO_PATH  # noqa: E402
+from makine_live.ui.brand import app_mark_image, logo_image  # noqa: E402
+from makine_live.ui import hud_ui as ui  # noqa: E402
 
 TV_RES = os.path.join(ROOT, "tv", "app", "src", "main", "res")
 
@@ -84,9 +85,9 @@ def main() -> int:
     logo_image(256).save(os.path.join(ROOT, "resources", "icon.png"), optimize=True)
     sizes = [16, 24, 32, 48, 64, 128, 256]
     images = [app_mark_image(s) for s in sizes]
-    ico = os.path.join(ROOT, "packaging", "app.ico")
+    ico = os.path.join(ROOT, "assets", "app.ico")
     images[-1].save(ico, format="ICO", sizes=[(s, s) for s in sizes], append_images=images[:-1])
-    for rel in (*made, "resources/icon.png", "packaging/app.ico", *tv_assets(), *webos_assets()):
+    for rel in (*made, "resources/icon.png", "assets/app.ico", *tv_assets(), *webos_assets()):
         print(f"  {rel:<36} {os.path.getsize(os.path.join(ROOT, rel)):>7} B")
     return 0
 

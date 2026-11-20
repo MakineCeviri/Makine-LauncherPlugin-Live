@@ -45,7 +45,7 @@ set_target_properties(makine-live PROPERTIES
 )
 
 configure_file(${CMAKE_SOURCE_DIR}/manifest.json ${CMAKE_BINARY_DIR}/release/manifest.json COPYONLY)
-# Launcher plugin icon (generated from logo_white-96.webp by tools/brand_assets.py)
+# Launcher plugin icon (generated from assets/logo_white-96.webp by tools/brand_assets.py)
 configure_file(${CMAKE_SOURCE_DIR}/resources/icon.png ${CMAKE_BINARY_DIR}/release/icon.png COPYONLY)
 # English word list for OCR space restoration (src/text_fix.cpp)
 configure_file(${CMAKE_SOURCE_DIR}/resources/en_words.txt ${CMAKE_BINARY_DIR}/release/resources/en_words.txt COPYONLY)

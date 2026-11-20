@@ -13,7 +13,7 @@ import time
 import unittest
 
 from _root import ROOT  # noqa: E402,F401
-import console_mode as cm
+from makine_live.games import console_mode as cm
 
 
 class GeometryTest(unittest.TestCase):
@@ -84,7 +84,7 @@ class GameTest(unittest.TestCase):
         """Konsol modu yalnızca GTA VI içindir: bütün satırlar aynı havuza gider."""
         g = cm.console_game()
         self.assertEqual((g.name, g.slug, g.store), ("Grand Theft Auto VI", "grand-theft-auto-vi", "console"))
-        from game_library import slugify
+        from makine_live.games.game_library import slugify
         self.assertEqual(slugify(cm.DEFAULT_GAME), cm.CONSOLE_SLUG)   # sunucunun ürettiği slug ile aynı
 
 

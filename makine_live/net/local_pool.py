@@ -26,7 +26,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
-from pool_client import compact_pool_key
+from makine_live.net.pool_client import compact_pool_key
 
 # Sunucudaki benzer satır kuralıyla aynı (Makine-WEB src/live/text.ts; docs/MIMARI.md §4.3)
 FUZZY_MIN_KEY_LEN = 12

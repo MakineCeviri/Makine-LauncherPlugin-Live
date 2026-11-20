@@ -417,7 +417,8 @@ OBS_HTML = r"""<!doctype html>
 
 if __name__ == "__main__":
     import sys
-    web = SubtitleWeb(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_white-96.webp"))
+    from makine_live.paths import LOGO_PATH
+    web = SubtitleWeb(LOGO_PATH)
     web.configure(True, lan="--lan" in sys.argv)
     print("OBS:", web.obs_url)
     print("Telefon:", web.phone_url if "--lan" in sys.argv else "(kapalı; --lan ile açın)")

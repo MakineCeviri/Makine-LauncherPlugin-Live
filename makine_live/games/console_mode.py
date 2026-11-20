@@ -24,9 +24,9 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
 
-from game_detector import (TargetWindow, _top_level_windows, _is_cloaked, _class_name, window_pid, process_path,
-                           window_title, _u32)
-from game_library import GameEntry
+from makine_live.games.game_detector import (TargetWindow, _top_level_windows, _is_cloaked, _class_name, window_pid, process_path,
+                                             window_title, _u32)
+from makine_live.games.game_library import GameEntry
 
 # ─────────────────────────────────────────────────────────────
 # Kaynak uygulamalar
