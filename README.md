@@ -122,6 +122,17 @@ third_party/rapidocr/
 
 ### Derleme ve paketleme
 
+Tek adımda sürüm: `build.cmd`'ye çift tıklayın ya da komut satırından çalıştırın. DLL'i derler, testleri çalıştırır,
+`dist/MakineLive.exe`'yi paketler, exe'nin içinden selftest yapar ve sonunda boyutu ve SHA-256'yı yazar.
+
+```powershell
+build.cmd                        # yeni sürüm numarasını sorar (boş = aynı sürüm)
+build.cmd 0.3.1                  # sürümü her yerde 0.3.1 yapar, sonra derler
+build.cmd --hizli                # testleri atlar
+```
+
+Adım adım:
+
 ```powershell
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build              # → build/release/makine-live.dll (+ OCR dosyaları, modeller, ikon)
@@ -162,7 +173,8 @@ Uygulama varsayılan olarak `https://makineceviri.org` ile konuşur. Yerel bir s
 ├── resources/            kelime sıklık listesi, eklenti ikonu
 ├── tools/                exe ve eklenti paketleme, ikon üretimi, LG paketleyici, TV emülatör testi
 ├── tests/                bütün testler
-└── docs/                 teknik mimari, kullanıcı rehberleri, sürüm notları
+├── docs/                 teknik mimari, kullanıcı rehberleri, sürüm notları
+└── build.cmd             tek adımda sürüm: DLL → testler → exe → selftest (tools/build.py)
 ```
 
 ## Gizlilik ve güvenlik

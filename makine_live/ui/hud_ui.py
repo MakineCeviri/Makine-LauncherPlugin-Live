@@ -376,6 +376,15 @@ def draw_icon(name, size, color, t=0.0):
         pen.line([(10.5, 12.25), (20, 12.25)])
         pen.line([(17, 12.25), (17, 15)])
         pen.line([(19.5, 12.25), (19.5, 14.5)])
+    elif name == "heart":             # t = tek kalp atışı (büyüyüp yerine döner)
+        k = 0.47 * (1 + 0.16 * math.sin(math.pi * t))
+        pts = []
+        for i in range(73):
+            a = 2 * math.pi * i / 72
+            x = 16 * math.sin(a) ** 3
+            y = 13 * math.cos(a) - 5 * math.cos(2 * a) - 2 * math.cos(3 * a) - math.cos(4 * a)
+            pts.append((12 + x * k, 11.6 - y * k))
+        pen.line(pts)
     elif name == "plus":
         pen.line([(12, 6), (12, 18)])
         pen.line([(6, 12), (18, 12)])

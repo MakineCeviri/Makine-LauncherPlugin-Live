@@ -13,8 +13,8 @@ Yalnızca okuma açıkken (F9) gösterilir; durdurunca, çıkışta, oturum kapa
 bir yeniden denenir. Discord saniyede çok güncellemeye izin vermez (20 sn'de 5): değişiklikler en az 15 sn arayla gider.
 
 Discord Developer Portal'da "Makine Live" adlı bir uygulama gerekir (profilde "Makine Live oynuyor" yazan ad odur);
-kimliği (Application ID, gizli değildir) DISCORD_APP_ID'ye yazılır. Görseller adresle verilir (sitenin logosu, Steam
-kapağı), Portal'a görsel yüklemek gerekmez. Kimlik boşken bileşen hiçbir şey yapmaz (paneldeki ayar da görünmez).
+kimliği (Application ID, gizli değildir; Public Key ve Client Secret gerekmez) DISCORD_APP_ID'dedir. Görseller adresle
+verilir (sitenin logosu, Steam kapağı), Portal'a görsel yüklemek gerekmez. Kimlik boşken bileşen hiçbir şey yapmaz.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import time
 import uuid
 from typing import Optional
 
-DISCORD_APP_ID = ""          # Discord Developer Portal → Makine Live → Application ID
+DISCORD_APP_ID = "1573370697676488765"   # Discord Developer Portal → Makine Live → Application ID
 PIPE = r"\\.\pipe\discord-ipc-{}"
 DOWNLOAD_URL = "https://makineceviri.org/live/"
 LOGO_URL = "https://makineceviri.org/images/icon-512.png"

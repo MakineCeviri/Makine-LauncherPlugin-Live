@@ -122,6 +122,7 @@ POOL_IDLE_SYNC_S = 600    # okuma kapalıyken (oyun açık) aynı karşılaştı
 POOL_TICK_S = 60          # eşitleme zamanı geldi mi diye bakma aralığı
 TR_CACHE_TTL_S = 900      # onaylanmamış satırın çevirisi oturumda bu kadar tutulur (oy sunucuda zaten kayıtlı)
 STATUS_POLL_S = 300       # bakım / yeni sürüm / duyuru kontrolü (oturum açıkken)
+DONATE_URL = "https://kreosus.com/makineceviri/posts"   # bağış (ilk açılış penceresi + Hesap sekmesi)
 
 
 def _local_time(utc: str) -> str:
@@ -251,6 +252,7 @@ class MakineGameLiveApp(tk.Tk):
         self.prefs = {**LOOK_DEFAULTS, "custom_anchor": None, "tab": "canli", "look_sec": "yazi",
                       # Discord profilinde "Makine Live ile Türkçe oynuyor" (Hesap sekmesi; kimlik yoksa gizli)
                       "discord_presence": True,
+                      "donate_seen": False,   # ilk açılıştaki bağış penceresi bir kez gösterilir
                       # Konsol / TV modu: oyun konsolda, görüntü Remote Play / yakalama penceresinden okunur
                       # Konsol modu yalnızca GTA VI içindir (console_mode.console_game). Altyazı nerede görünür:
                       # tv = Makine TV, pc = bu bilgisayarın ekranı (monitörde oynayanlar), web = telefon / tablet
@@ -461,6 +463,19 @@ class MakineGameLiveApp(tk.Tk):
             self.after(POOL_TICK_S * 1000, self._pool_tick)
         if not profile.get("translation_ready", True):
             self._set_notice("Sunucuda çeviri anahtarı yok · yalnızca havuzdaki satırlar gelir", "no_key")
+        if not self.prefs["donate_seen"]:
+            self.after(1500, self._queue_donate)     # güncelleme / duyuru pencereleri önce gelsin
+
+    def _queue_donate(self):
+        """İlk açılışta bir kez: gönüllü proje, sunucu giderleri için bağış (Kreosus)."""
+        if self.profile is None or self.prefs["donate_seen"] or any(p["_type"] == "donate" for p in self._popups):
+            return
+        self._popups.append({"_type": "donate"})
+        self._show_next_popup()
+
+    def _open_donate(self):
+        webbrowser.open(DONATE_URL)
+        self.log("bağış  Kreosus sayfası açıldı")
 
     def _on_auth_lost(self, message="Oturumunuz kapatıldı. Lütfen yeniden giriş yapın."):
         """401: jeton geçersiz (süre, iptal ya da hesap silindi). Pipeline durur, giriş ekranına dönülür."""
@@ -1492,8 +1507,11 @@ class MakineGameLiveApp(tk.Tk):
                       text="Oturum bu bilgisayarda Windows hesabınıza bağlı olarak şifreli saklanır. Çıkış yapınca "
                            "silinir; yönetici oturumu uzaktan da kapatabilir.")
         y += 56
-        self.btn_logout = ui.Button(u, PAD, y, INNER, 40, text="Çıkış yap", icon="lock", kind="secondary",
-                                    command=self.logout, font=f.ui(13, semi=True), tags=(tag,))
+        half = (INNER - 10) // 2
+        self.btn_donate = ui.Button(u, PAD, y, half, 40, text="Bağış yap", icon="heart", kind="secondary",
+                                    command=self._open_donate, font=f.ui(13, semi=True), tags=(tag,))
+        self.btn_logout = ui.Button(u, PAD + half + 10, y, INNER - half - 10, 40, text="Çıkış yap", icon="lock",
+                                    kind="secondary", command=self.logout, font=f.ui(13, semi=True), tags=(tag,))
         if self.discord.available:
             y += 62
             c.create_line(PAD, y - 14, W - PAD, y - 14, fill=LINE, tags=tag)
@@ -1766,6 +1784,7 @@ class MakineGameLiveApp(tk.Tk):
             p["console_out"] = "pc"
         p["stream_visible"] = bool(prefs.get("stream_visible", False))
         p["discord_presence"] = bool(prefs.get("discord_presence", True))
+        p["donate_seen"] = bool(prefs.get("donate_seen", False))
         p["obs_source"] = bool(prefs.get("obs_source", False))
         if prefs.get("tv_kind") in ("android", "lg"):
             p["tv_kind"] = prefs["tv_kind"]
@@ -2844,7 +2863,8 @@ class MakineGameLiveApp(tk.Tk):
 
     # ── Duyuru ve güncelleme pencereleri (panelin üstünde, birer birer) ──
 
-    ANN_COLORS = {"important": "DISPUTED", "maintenance": "ACCENT", "release": "VERIFIED", "info": "TEXT2"}
+    ANN_COLORS = {"important": "DISPUTED", "maintenance": "ACCENT", "release": "VERIFIED", "info": "TEXT2",
+                  "donate": "ACCENT"}
 
     def _show_next_popup(self):
         if self._popup_open or not self._popups or self.profile is None or self._gate:
@@ -2865,6 +2885,16 @@ class MakineGameLiveApp(tk.Tk):
             meta = f"Şu an {APP_VERSION_LABEL} kullanıyorsunuz · {latest.get('size', 0) / 1048576:.1f} MB"
             body = (latest.get("notes") or "").strip() or "Yeni sürümle iyileştirmeler ve düzeltmeler geliyor."
             pos = None
+        elif item["_type"] == "donate":
+            kind, label = "donate", "Destek ol"
+            title = "Makine Live gönüllü ve ücretsiz bir proje"
+            meta = "Makine Çeviri ekibinden"
+            body = ("Sunucu giderlerini kendi cebimizden karşılıyoruz. Bağış yapmak isterseniz hem sunucunun açık "
+                    "kalmasına hem de motivasyonumuza destek olursunuz. Kreosus sayfamızdan dilediğiniz kadar "
+                    "destek olabilirsiniz; uygulama her durumda ücretsiz kalacak.")
+            pos = None
+            self.prefs["donate_seen"] = True
+            self._save_hud_prefs()
         else:
             a = item["ann"]
             kind, label = a.get("kind", "info"), a.get("kind_label") or "Duyuru"
@@ -2896,7 +2926,14 @@ class MakineGameLiveApp(tk.Tk):
         if body:
             c.create_text(x0 + 20, y0 + 116, anchor="nw", text=body, font=bf, fill=TEXT2, width=cw - 40, tags=tag)
         by = y0 + ch - 54
-        if item["_type"] == "update":
+        if item["_type"] == "donate":
+            b = ui.Button(u, x0 + 20, by, 150, 36, text="Bağış yap", icon="heart", kind="primary",
+                          font=f.ui(13, semi=True), command=lambda: (self._close_popup(), self._open_donate()),
+                          tags=(tag,), parent_bg=RAISED)
+            self.after(420, lambda: b.icon and b.icon.play(520))
+            ui.Button(u, x0 + 178, by, 110, 36, text="Daha sonra", kind="ghost", font=f.ui(13),
+                      command=lambda: self._close_popup(), tags=(tag,), parent_bg=RAISED)
+        elif item["_type"] == "update":
             ui.Button(u, x0 + 20, by, 160, 36, text="Şimdi güncelle", kind="primary", font=f.ui(13, semi=True),
                       command=lambda: self._popup_update(item), tags=(tag,), parent_bg=RAISED)
             ui.Button(u, x0 + 188, by, 90, 36, text="Sonra", kind="ghost", font=f.ui(13),
@@ -2905,7 +2942,10 @@ class MakineGameLiveApp(tk.Tk):
             more = bool(self._popups) and self._popups[0].get("_type") == "ann"
             ui.Button(u, x0 + 20, by, 150, 36, text="Sonraki" if more else "Anladım", kind="primary",
                       font=f.ui(13, semi=True), command=lambda: self._close_popup(), tags=(tag,), parent_bg=RAISED)
-        self.log(f"duyuru {label.lower()}: {title}" if item["_type"] == "ann" else f"sürüm  v{item['update']['latest']['version']} önerildi")
+        if item["_type"] == "ann":
+            self.log(f"duyuru {label.lower()}: {title}")
+        elif item["_type"] == "update":
+            self.log(f"sürüm  v{item['update']['latest']['version']} önerildi")
         try:
             self.deiconify()
             self.lift()

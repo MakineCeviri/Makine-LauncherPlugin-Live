@@ -1,0 +1,24 @@
+Geri bildirimleriniz için teşekkürler! Bu sürüm sizden gelenlerle şekillendi: çeviriler daha hızlı geliyor, ekrana anlamsız harf ve rakamlar düşmüyor, altyazıyı istediğiniz gibi ayarlayabiliyorsunuz.
+
+DAHA AZ GECİKME
+- Hızlı konuşmalarda çeviriler artık birbirinin arkasında birikmiyor; satır oyunda göründüğü sürece ekranda kalıyor, sıradaki hazırsa beklemeden geçiyor. Uzun oturumlarda biriken gecikme ortadan kalktı.
+- Sunucuyla bağlantı yeni satır belirir belirmez hazırlanıyor; ilk satırdaki bir saniyelik takılma kalktı.
+
+RASTGELE HARF VE RAKAM YOK
+- Oyunun arayüzündeki yazılar (harita, saat, araç adları, tuş simgeleri) ve ekrandaki gürültü artık çeviriye karışmıyor.
+- Çeviri kutusunda yalnızca gerçek diyaloglar görünüyor; İngilizcesini takip etmek zorunda kalmıyorsunuz.
+
+ALTYAZIYI ÖZELLEŞTİRİN
+- Görünüm sekmesi yenilendi: Yazı, Kutu, Konum ve yayın.
+- Hazır stiller (yeni: Kontrast, sarı yazı ve koyu bant), yazı tipi, boyut, satır sayısı, yazı ve bant rengi, opaklık, kontur, gölge, genişlik ve kenardan uzaklık.
+- Ayarlarınız oyundaki kutuya, telefon / OBS sayfasına ve Makine TV'ye birlikte uygulanıyor.
+- Panel ve kutu animasyonları daha akıcı.
+
+DISCORD'DA GÖSTERİN
+- Okuma açıkken Discord profilinizde hangi oyunu Makine Live ile Türkçe oynadığınız, ne zamandır oynadığınız ve bu oturumda kaç diyalog çevrildiği görünür.
+- İstemezseniz Hesap sekmesinden "Discord'da göster"i kapatabilirsiniz.
+
+DESTEK OLUN
+- Makine Live gönüllü ve ücretsiz bir proje; sunucu giderlerini kendi cebimizden karşılıyoruz. Destek olmak isterseniz Hesap sekmesindeki "Bağış yap" düğmesi Kreosus sayfamızı açar. Uygulama her durumda ücretsiz kalacak.
+
+Sorun yaşarsanız %APPDATA%\MakineLive\logs\makine-live.log dosyasıyla birlikte makineceviri.org/iletisim ya da Discord sunucumuzdan bize yazın. İyi oyunlar!

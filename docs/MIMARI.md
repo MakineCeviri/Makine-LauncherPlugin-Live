@@ -69,6 +69,7 @@ graph TD
 
 ```
 ├── README.md, SECURITY.md, LICENSE
+├── build.cmd                   # tek adımda sürüm (tools/build.py; çift tıklanınca sürüm numarasını sorar)
 ├── CMakeLists.txt              # DLL derlemesi; OCR çalışma dosyalarını build/release'e kopyalar
 ├── manifest.json               # Launcher eklenti manifesti (sürüm burada; plugin.cpp ile aynı tutulur)
 ├── include/makine/plugin/      # Launcher ile ortak ABI başlıkları
@@ -133,6 +134,7 @@ graph TD
 ├── tv-webos/                   # LG webOS (app/ web uygulaması: HDMI'ı içinde açar + altyazı; service/ JS servisi, ES5)
 │
 ├── tools/
+│   ├── build.py                # sürüm numarası → DLL → testler → exe → selftest → SHA-256 (build.cmd bunu çağırır)
 │   ├── build_exe.py            # tek dosyalık dist/MakineLive.exe (PyInstaller)
 │   ├── pack.py                 # build/release → makine-live.makine (eksik dosya varsa reddeder)
 │   ├── brand_assets.py         # logodan türetilenleri üretir: eklenti ikonu, app.ico, Makine TV ikon ve afişi
@@ -353,7 +355,7 @@ bu uygulamanın yerini Launcher alır.
   **Vazgeç**); uygulama `interval` (3 sn) arayla `device_poll` sorar, onaylanınca jetonu alır (10 dk'da onaylanmazsa
   süre doldu der). İkinci yol **Ekip hesabıyla giriş**: kullanıcı adı + şifre (`app_login`). Jeton `%APPDATA%\MakineLive\session.dat` içinde DPAPI ile şifreli
   saklanır, sonraki açılışlarda `app_me` ile doğrulanır. 401 gelirse oturum silinip giriş ekranına dönülür; ağ hatasında
-  jeton korunur ve "Tekrar dene" çıkar. Oturum yokken F9 çalışmaz. **Hesap** sekmesinde yalnızca kullanıcı adı, rol, sürüm, çıkış ve
+  jeton korunur ve "Tekrar dene" çıkar. Oturum yokken F9 çalışmaz. **Hesap** sekmesinde yalnızca kullanıcı adı, rol, sürüm, bağış, çıkış ve
   **Discord'da göster** anahtarı bulunur; sunucu adresi ve karakter kullanımı uygulamanın hiçbir yerinde gösterilmez (ürün kararı).
 - **Sabit ayarlar (ürün kararı):** Dil yalnızca İngilizce → Türkçe (`SOURCE_LANG`, `TARGET_LANG`; seçim yok).
   Okuma her zaman yalnızca algılanan oyun öndeyken yapılır (`only_focus` daima açık; anahtar yok).
@@ -378,6 +380,10 @@ bu uygulamanın yerini Launcher alır.
   (1 MB × 3). Testerlar sorun bildirirken bu dosyayı gönderir.
 - **Doğrulama:** `MakineLive.exe --selftest` arayüz açmadan DLL'i yükler, bilinen bir satırı OCR ile okur, sonucu
   `%APPDATA%\MakineLive\selftest.json` dosyasına yazar.
+- **Sürüm çıkarma:** `build.cmd` (ya da `py tools/build.py [X.Y.Z] [--hizli]`): sürüm numarasını `manifest.json`,
+  `CMakeLists.txt`, `src/plugin.cpp` ve `tv-webos` paket dosyalarında birlikte değiştirir (yalnızca büyütür), DLL'i
+  derler, testleri çalıştırır (Node yoksa LG servis testi atlanır), exe'yi paketler, exe'nin içinden `--selftest` yapar ve
+  boyut, SHA-256 ve sürüm notu dosyasını (`docs/surum-notlari/vX.Y.Z.txt`) yazar. Exe açıkken başlamaz.
 - **Derleme:** `py tools/build_exe.py` (PyInstaller, tek dosya, pencereli, ikon ve sürüm bilgisiyle). `build/release` eksikse, DLL
   `src/`'den eskiyse ya da manifest sürümü uyuşmuyorsa reddeder. **Her DLL derlemesinden sonra `.exe` yeniden derlenmelidir.**
   Boyut yaklaşık 53 MB, ilk açılış yaklaşık 3 sn (tek dosyalık paketin açılması).
@@ -389,6 +395,10 @@ bu uygulamanın yerini Launcher alır.
   kullanılır; bağımlılık yok, ağa çıkılmaz. Discord kapalıysa 20 sn'de bir yeniden denenir; güncellemeler Discord'un hız
   sınırına göre en az 15 sn arayla birleştirilerek gider. Discord Developer Portal'daki "Makine Live" uygulamasının kimliği
   `DISCORD_APP_ID`'dedir (gizli değildir; geliştirmede `MAKINE_DISCORD_APP_ID`); kimlik boşsa ayar görünmez.
+  Görseller adresle verilir (sitenin `icon-512.png`'si, Steam kapağı); Portal'a görsel yüklenmez.
+- **Bağış:** ilk açılışta (girişten sonra, güncelleme / duyuru pencerelerinin ardından) bir kez "Makine Live gönüllü ve
+  ücretsiz bir proje" penceresi: **Bağış yap** Kreosus sayfasını (`DONATE_URL`) açar, **Daha sonra** kapatır; görüldüğü
+  `prefs.donate_seen`'e yazılır. Hesap sekmesinde **Bağış yap** düğmesi her zaman durur.
 
 - **Logo:** `ui/brand.py` (`logo_image()` / `app_mark_image()`) `assets/logo_white-96.webp`'den çizer (giriş ekranı, pencere ikonu,
   `.exe` ikonu). Logo `.exe`'ye gömülür (`tools/build_exe.py --add-data`). Büyük boyutlarda alfa yumuşak büyütülüp keskinleştirilir.
@@ -553,6 +563,9 @@ py tools/pack.py           # → makine-live.makine (Launcher → Ayarlar → Ek
 
 # Oyun içi canlı test (geliştirme)
 py -m makine_live
+
+# Sürüm: DLL → testler → exe → selftest → SHA-256 tek adımda (çift tıklanınca sürüm numarasını sorar)
+build.cmd                  # ya da: py tools/build.py 0.3.1   |   py tools/build.py --hizli (testsiz)
 
 # Makine Live uygulaması (tek dosya; önce DLL'i derleyin). Makine TV APK'sı eskiyse kendisi derler ve gömer.
 py tools/build_exe.py      # → dist/MakineLive.exe
