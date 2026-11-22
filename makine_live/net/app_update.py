@@ -8,7 +8,7 @@ Sonra çalışan .exe'nin adı "MakineLive.exe.old" yapılır (Windows çalışa
 yeni sürüm eski adıyla yerine kopyalanır ve `--after-update <pid>` ile açılır; yeni süreç eskisinin kapanmasını bekler,
 sonra açılır ve .old dosyasını siler. Yerine kopyalanamazsa (klasör yazılamıyorsa) yeni sürüm indirildiği yerden açılır.
 
-0.3.0 ve öncesinde bu iş gizli bir komut dosyasıyla yapılıyordu (tasklist / ping döngüsü, kendi .exe'sinin üzerine kopyalama,
+0.3.1 ve öncesinde bu iş gizli bir komut dosyasıyla yapılıyordu (tasklist / ping döngüsü, kendi .exe'sinin üzerine kopyalama,
 kendini silen betik). Bu kalıp zararlı yazılım "dropper"larınınkine benzediği için bazı antivirüslerin sezgisel
 taramasına takılıyordu; şimdi yalnızca dosya adı değişikliği ve normal bir süreç başlatma var.
 """

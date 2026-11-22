@@ -356,7 +356,7 @@ bu uygulamanın yerini Launcher alır.
 - **Açılış sırası:** önce `/api/live/app?action=status`: bakım (yönetici değilse) → bakım ekranı; zorunlu güncelleme → "Güncelleme
   gerekli" ekranı (**Şimdi güncelle**: `app_update` ile indir, SHA-256 doğrula, çalışan `.exe`'nin adını `.old` yap, yenisini
   yerine kopyala ve `--after-update <pid>` ile aç; yeni süreç eskisinin kapanmasını bekleyip `.old`'u siler; yazılamazsa yeni
-  dosyayı bulunduğu yerden açar. Komut dosyası yoktur: 0.3.0'ın gizli `.cmd` betiği antivirüs sezgilerine takılıyordu). Sonra oturum doğrulanır. Girişten sonra ve her
+  dosyayı bulunduğu yerden açar. Komut dosyası yoktur: 0.3.1 ve öncesinin gizli `.cmd` betiği antivirüs sezgilerine takılıyordu). Sonra oturum doğrulanır. Girişten sonra ve her
   `STATUS_POLL_S` (5 dk): isteğe bağlı yeni sürüm penceresi ("Şimdi güncelle / Sonra") ve okunmamış duyurular panelin üstünde
   birer birer (aciliyet, gönderen, tarih, "1 / 3"); kapatılan duyuru okundu sayılır.
 - **Giriş:** Açılışta hesap ister. Ana düğme **Makine Çeviri hesabıyla giriş yap**: `device_start` kodu ve bağlantıyı
@@ -395,7 +395,7 @@ bu uygulamanın yerini Launcher alır.
   yerel havuz satırı, kuyruk, hata sayısı) gider. Ekran görüntüsü ve okunan metin gitmez. Çıkışta ve kapanışta `bye` (en fazla 1,5 sn).
 - **Arayüz hızı:** Arka plan iş parçacıkları arayüze yalnızca `_post` kuyruğuyla iş verir; kuyruk tur başına en fazla 30 ms
   boşaltılır (`UI_TURN_BUDGET_S`), kalan iş hemen sonraki turda sürer. Geçmiş listesi satırın kısaltılmış metnini eklerken bir
-  kez hesaplar ve en fazla bir kez, boşta çizer; istatistik kartları en fazla 150 ms'de bir. (0.3.0'da her satır geçmişi baştan
+  kez hesaplar ve en fazla bir kez, boşta çizer; istatistik kartları en fazla 150 ms'de bir. (0.3.1 ve öncesinde her satır geçmişi baştan
   çiziyor, uzun metinler harf harf ölçülüyordu: satır başına ~1 sn, yüzlerce satırda panel dakikalarca donuyordu.)
 - **Doğrulama:** `MakineLive.exe --selftest` arayüz açmadan DLL'i yükler, bilinen bir satırı OCR ile okur, sonucu
   `%APPDATA%\MakineLive\selftest.json` dosyasına yazar.
@@ -458,7 +458,7 @@ bu uygulamanın yerini Launcher alır.
   5. `KNOWN_GAMES` exe adları. Bu liste ayrıca havuzdaki slug'ı sabitler (mağaza adı farklı yazılsa bile).
   Konsol görüntüsünü getiren uygulamalar (PS Remote Play, Xbox uygulaması `XboxPcApp.exe`, Asobi: Remote Play, chiaki,
   Greenlight; `game_library.is_console_stream_exe`) PC modunda da her zaman **GTA VI** sayılır (`store = console`), çünkü
-  konsol havuzu GTA VI'nındır. 0.3.0'da bu pencereler kendi adlarıyla ayrı havuz açıyordu; sunucu bu adları da GTA VI'ya
+  konsol havuzu GTA VI'nındır. 0.3.1 ve öncesinde bu pencereler kendi adlarıyla ayrı havuz açıyordu; sunucu bu adları da GTA VI'ya
   yönlendirir ve o havuzları GTA VI'ya taşır.
   Klasör eşleşmelerinde oyunun yardımcı programları (`HELPER_EXE`: crash, launcher, setup, anticheat, redist…) oyun sayılmaz.
   Birden çok oyun açıksa öndeki oyun, sonra Steam'in `RunningAppID`'si, sonra en büyük pencere seçilir. Java ile çalışan

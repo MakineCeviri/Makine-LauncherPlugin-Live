@@ -1,16 +1,5 @@
 Geri bildirimleriniz için teşekkürler! Bu sürüm sizden gelenlerle şekillendi: çeviriler daha hızlı geliyor, ekrana anlamsız harf ve rakamlar düşmüyor, altyazıyı istediğiniz gibi ayarlayabiliyorsunuz.
 
-YÜZLERCE SATIRDA DONMA YOK
-- Çok sayıda diyalog art arda çevrildiğinde uygulamanın yanıt vermemesi düzeldi. Kapatıp açmanız gerekmiyor; panel yoğun anlarda da akıcı kalıyor.
-- Hazır çevirileri indirdiğiniz oyunlarda benzer satır araması çok daha hızlı (büyük havuzlarda ~50 kat).
-
-PS REMOTE PLAY, XBOX VE ASOBI ARTIK GTA VI
-- PS Remote Play, Xbox uygulaması, Asobi: Remote Play, chiaki ve Greenlight hangi modda açılırsa açılsın GTA VI olarak tanınıyor; okunan satırlar GTA VI'nın ortak havuzuna gidiyor ve oradaki onaylı çeviriler size geliyor.
-- Bu uygulamaların adıyla daha önce açılmış havuzlardaki satırlar GTA VI havuzuna taşındı.
-
-ANTİVİRÜS UYARILARI
-- Bazı antivirüslerin (Windows Defender, ESET, Bkav ve diğerleri) Makine Live'ı yanlışlıkla zararlı saymasına yol açan iki şeyi değiştirdik: uygulamanın başlatıcısı artık kendi derlememiz ve güncelleme arka planda komut dosyası çalıştırmadan yapılıyor.
-
 DAHA AZ GECİKME
 - Hızlı konuşmalarda çeviriler artık birbirinin arkasında birikmiyor; satır oyunda göründüğü sürece ekranda kalıyor, sıradaki hazırsa beklemeden geçiyor. Uzun oturumlarda biriken gecikme ortadan kalktı.
 - Sunucuyla bağlantı yeni satır belirir belirmez hazırlanıyor; ilk satırdaki bir saniyelik takılma kalktı.
@@ -31,9 +20,5 @@ DISCORD'DA GÖSTERİN
 
 DESTEK OLUN
 - Makine Live gönüllü ve ücretsiz bir proje; sunucu giderlerini kendi cebimizden karşılıyoruz. Destek olmak isterseniz Hesap sekmesindeki "Bağış yap" düğmesi Kreosus sayfamızı açar. Uygulama her durumda ücretsiz kalacak.
-
-SORUNLARI DAHA HIZLI ÇÖZEBİLMEK İÇİN
-- Uygulama açıkken birkaç dakikada bir sunucuya kısa bir kullanım bildirimi gönderiyor (sürüm, oyun, mod, çevrilen satır sayısı, Windows ve ekran bilgisi). Ekran görüntüsü ya da okunan metin bu bildirime girmez.
-- Bir sorunu incelememiz gerektiğinde ekibimiz uygulama kaydını isteyebilir; gönderildiğinde panelde "Uygulama kaydı Makine Live ekibine gönderildi" yazar. Ayrıntılar: makineceviri.org/gizlilik-politikasi
 
 Sorun yaşarsanız %APPDATA%\MakineLive\logs\makine-live.log dosyasıyla birlikte makineceviri.org/iletisim ya da Discord sunucumuzdan bize yazın. İyi oyunlar!

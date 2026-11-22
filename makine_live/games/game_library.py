@@ -69,7 +69,7 @@ class GameEntry:
 
 # Konsol görüntüsünü PC'ye getiren uygulamalar (PS Remote Play, Xbox uygulaması, Asobi, chiaki, Greenlight). Bunlarda yalnızca
 # konsol oyunu görünür ve konsol havuzu GTA VI'nındır (console_mode.console_game): PC modunda da oyun olarak GTA VI sayılırlar.
-# 0.3.0 ve öncesinde bu pencereler kendi adlarıyla ayrı havuz açıyordu; sunucu da aynı adları GTA VI'ya yönlendirir (text.ts poolSlug).
+# 0.3.1 ve öncesinde bu pencereler kendi adlarıyla ayrı havuz açıyordu; sunucu da aynı adları GTA VI'ya yönlendirir (text.ts poolSlug).
 CONSOLE_GAME_NAME = "Grand Theft Auto VI"
 CONSOLE_GAME_SLUG = "grand-theft-auto-vi"
 CONSOLE_STREAM_EXES = frozenset({"remoteplay.exe", "chiaki.exe", "chiaki-ng.exe", "xboxpcapp.exe", "greenlight.exe"})
