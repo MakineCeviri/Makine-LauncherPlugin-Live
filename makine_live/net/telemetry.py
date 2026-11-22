@@ -136,7 +136,8 @@ def collect_log(log_dir: str, header: Dict[str, object], limit: int = LOG_TAIL_B
     head = "".join(f"{k}: {v}\n" for k, v in header.items())
     parts.append(("──── Makine Live günlüğü\n" + head + "\n").encode("utf-8"))
     crash = _tail(os.path.join(log_dir, "crash.log"), 200_000)
-    if crash.strip():
+    # faulthandler her açılışta yalnızca bir başlık satırı yazar: gerçek bir çökme izi yoksa bölüm eklenmez
+    if any(ln.strip() and not ln.lstrip().startswith("────".encode("utf-8")) for ln in crash.splitlines()):
         parts.append("──── crash.log (son kısım)\n".encode("utf-8") + crash + b"\n")
     budget = max(0, limit - sum(len(p) for p in parts))
     logs = []

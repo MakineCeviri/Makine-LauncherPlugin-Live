@@ -54,6 +54,13 @@ class LogTest(unittest.TestCase):
         self.assertLess(len(text.encode("utf-8")), 62_000, "bütçe aşılmaz")
         self.assertLess(text.index("crash.log"), text.index("02999"), "başlık ve çökme kaydı önce")
 
+    def test_crash_log_without_crash_is_left_out(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "crash.log"), "w", encoding="utf-8") as fh:
+            fh.write("\n──── 2026-11-22 16:31:59 · Makine Live 0.3.2 beta\n" * 40)
+        text = gzip.decompress(telemetry.collect_log(d, {})).decode("utf-8")
+        self.assertNotIn("crash.log", text, "yalnızca açılış başlıkları: çökme yok, bölüm eklenmez")
+
     def test_empty_dir(self):
         text = gzip.decompress(telemetry.collect_log(tempfile.mkdtemp(), {})).decode("utf-8")
         self.assertIn("Makine Live günlüğü", text)

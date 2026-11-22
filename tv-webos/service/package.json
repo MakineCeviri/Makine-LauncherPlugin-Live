@@ -1,6 +1,6 @@
 {
   "name": "org.makineceviri.tv.service",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "Makine TV: PC'deki Makine Live'dan gelen altyazı satırları (ev ağı)",
   "main": "service.js"
 }

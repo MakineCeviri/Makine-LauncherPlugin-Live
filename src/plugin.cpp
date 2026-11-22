@@ -52,7 +52,7 @@ MakinePluginInfo makine_get_info(void)
     return {
         "com.makineceviri.live",
         "Makine Live",
-        "0.3.0",
+        "0.3.2",
         MAKINE_PLUGIN_API_VERSION
     };
 }

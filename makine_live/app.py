@@ -2903,7 +2903,7 @@ class MakineGameLiveApp(tk.Tk):
     # ── Duyuru ve güncelleme pencereleri (panelin üstünde, birer birer) ──
 
     ANN_COLORS = {"important": "DISPUTED", "maintenance": "ACCENT", "release": "VERIFIED", "info": "TEXT2",
-                  "donate": "ACCENT"}
+                  "donate": "ACCENT", "support": "ACCENT"}
 
     def _show_next_popup(self):
         if self._popup_open or not self._popups or self.profile is None or self._gate:
@@ -2923,6 +2923,15 @@ class MakineGameLiveApp(tk.Tk):
             title = f"Makine Live v{latest['version']} çıktı"
             meta = f"Şu an {APP_VERSION_LABEL} kullanıyorsunuz · {latest.get('size', 0) / 1048576:.1f} MB"
             body = (latest.get("notes") or "").strip() or "Yeni sürümle iyileştirmeler ve düzeltmeler geliyor."
+            pos = None
+        elif item["_type"] == "support":
+            kind, label = "support", "Destek"
+            title = "Uygulama kaydınız Makine Live ekibine gönderildi"
+            meta = f"Makine Live ekibi · {item.get('time', '')}"
+            body = (f"Ekibimiz bir sorunu incelemek için uygulamanın kayıt dosyasını istedi ve dosya gönderildi "
+                    f"({max(1, item.get('size', 0) // 1024)} KB). Kayıtta okunan altyazı satırları, çeviri süreleri ve hata "
+                    "ayrıntıları bulunur; parola ya da oturum anahtarı bulunmaz. Kayıt 30 gün sonra silinir. "
+                    "Ayrıntılar: makineceviri.org/gizlilik-politikasi")
             pos = None
         elif item["_type"] == "donate":
             kind, label = "donate", "Destek ol"
@@ -2985,6 +2994,8 @@ class MakineGameLiveApp(tk.Tk):
             self.log(f"duyuru {label.lower()}: {title}")
         elif item["_type"] == "update":
             self.log(f"sürüm  v{item['update']['latest']['version']} önerildi")
+        if item["_type"] == "support" and self.is_running:
+            return                      # oyundayken pencere öne gelmez (tam ekran oyun küçülürdü); kart panelde bekler
         try:
             self.deiconify()
             self.lift()
@@ -3158,7 +3169,23 @@ class MakineGameLiveApp(tk.Tk):
             return
         self.log(f"destek  Makine Live ekibi bir sorunu incelemek için uygulama kaydını istedi · kayıt gönderildi "
                  f"({max(1, size // 1024)} KB)")
-        self.toast("Uygulama kaydı Makine Live ekibine gönderildi")
+        # Kapatılana kadar duran kart (oyundayken pencere öne gelmez; görev çubuğundaki simge yanıp söner)
+        self._popups.append({"_type": "support", "size": size, "time": time.strftime("%H:%M")})
+        self._show_next_popup()
+        self._flash_taskbar()
+
+    def _flash_taskbar(self):
+        """Pencere önde değilse görev çubuğundaki simge, pencere açılana kadar yanıp söner (odak çalınmaz)."""
+        class FLASHWINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("hwnd", ctypes.c_void_p), ("dwFlags", ctypes.c_uint),
+                        ("uCount", ctypes.c_uint), ("dwTimeout", ctypes.c_uint)]
+        try:
+            hwnd = user32.GetAncestor(ctypes.c_void_p(self.winfo_id()), 2)          # GA_ROOT
+            if hwnd and user32.GetForegroundWindow() != hwnd:
+                info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x2 | 0xC, 0, 0)   # FLASHW_TRAY | FLASHW_TIMERNOFG
+                user32.FlashWindowEx(ctypes.byref(info))
+        except (OSError, tk.TclError):
+            pass
 
     def destroy(self):
         try:
