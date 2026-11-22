@@ -301,11 +301,14 @@ class ServerClient:
             h["Authorization"] = f"Bearer {self.token}"
         return h
 
-    def _call(self, method: str, path: str, payload: dict = None, timeout: float = 4.0) -> dict:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    def _call(self, method: str, path: str, payload: dict = None, timeout: float = 4.0,
+              raw_body: bytes = None, content_type: str = "") -> dict:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else raw_body
+        headers = self._headers(payload is not None)
+        if raw_body is not None and content_type:
+            headers["Content-Type"] = content_type
         try:
-            status, raw = HTTP.request(method, f"{self.base_url}{path}", body=body,
-                                       headers=self._headers(payload is not None), timeout=timeout)
+            status, raw = HTTP.request(method, f"{self.base_url}{path}", body=body, headers=headers, timeout=timeout)
         except OSError as e:
             raise NetworkError(str(e) or "bağlantı kurulamadı") from e
         try:
@@ -405,6 +408,18 @@ class ServerClient:
     def status(self, timeout: float = 5.0) -> dict:
         """{maintenance: {on, message, bypass}, update: {latest, available, mandatory, download}, announcements: [...]}"""
         return self._call("GET", "/api/live/app?action=status", timeout=timeout)
+
+    def beat(self, payload: dict, timeout: float = 6.0) -> dict:
+        """
+        Kullanım bildirimi (net/telemetry.py): {"beat_s": sonraki aralık, "log_request": ekip günlük istediyse kimliği}.
+        Uygulama kapanırken payload["bye"] = True.
+        """
+        return self._call("POST", "/api/live/app?action=beat", payload, timeout=timeout)
+
+    def upload_log(self, request_id: str, gz: bytes, timeout: float = 30.0) -> dict:
+        """Ekibin istediği günlük (gzip); yalnızca bu oturum için istenmişse kabul edilir."""
+        return self._call("POST", "/api/live/app?action=log_upload&id=" + urllib.parse.quote(request_id), timeout=timeout,
+                          raw_body=gz, content_type="application/gzip")
 
     def announcement_read(self, ann_id: int, timeout: float = 5.0) -> dict:
         return self._call("POST", "/api/live/app?action=ann_read", {"id": int(ann_id)}, timeout=timeout)

@@ -29,7 +29,7 @@ EXE = os.path.join(ROOT, "dist", "MakineLive.exe")
 
 # Derlemeden sonra çalışan testler (ayrıntı: tests/README.md). LG servis testi Node.js ister; yoksa atlanır.
 TESTS = ["test_normalization", "test_garbage", "test_local_pool", "test_subtitle_scheduler", "test_game_library",
-         "test_console_mode", "test_tv_link", "test_subtitle_web", "test_discord_presence", "test_plugin",
+         "test_console_mode", "test_tv_link", "test_subtitle_web", "test_discord_presence", "test_telemetry", "test_app_update", "test_plugin",
          "test_dll_server", "test_webos_install"]
 NODE_TESTS = ["test_webos_service"]
 

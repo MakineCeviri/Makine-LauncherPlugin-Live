@@ -62,6 +62,8 @@ class MatchTest(unittest.TestCase):
         self.assertEqual(cm.match_source("RemotePlay.exe", "PS Remote Play").key, "ps-remote-play")
         self.assertEqual(cm.match_source("XboxPcApp.exe", "Xbox").console, "xbox")
         self.assertEqual(cm.match_source("4KCaptureUtility.exe", "").console, "capture")
+        self.assertEqual(cm.match_source("Asobi.exe", "Asobi").key, "asobi")
+        self.assertEqual(cm.match_source("AsobiRemotePlay.exe", "").console, "ps5")
 
     def test_title_patterns(self):
         self.assertIsNotNone(cm.match_source("obs64.exe", "Windowed Projector (Preview)"))

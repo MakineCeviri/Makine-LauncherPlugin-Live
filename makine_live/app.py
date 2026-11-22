@@ -48,7 +48,7 @@ from makine_live.tv import tv_install
 import socket
 from makine_live.net.local_pool import LocalPool
 from makine_live.net.pool_client import HTTP, HttpPool
-from makine_live.net import app_update
+from makine_live.net import app_update, telemetry
 from makine_live.net.discord_presence import DiscordPresence, build_activity
 from makine_live.net.pool_client import (ServerClient, SessionStore, AuthRequired, NetworkError, ServerError, SERVER_URL,
                                          compact_pool_key, app_data_dir)
@@ -122,6 +122,7 @@ POOL_IDLE_SYNC_S = 600    # okuma kapalıyken (oyun açık) aynı karşılaştı
 POOL_TICK_S = 60          # eşitleme zamanı geldi mi diye bakma aralığı
 TR_CACHE_TTL_S = 900      # onaylanmamış satırın çevirisi oturumda bu kadar tutulur (oy sunucuda zaten kayıtlı)
 STATUS_POLL_S = 300       # bakım / yeni sürüm / duyuru kontrolü (oturum açıkken)
+BEAT_DEFAULT_S = 300      # kullanım bildirimi aralığı; sunucu her yanıtta güncel aralığı söyler (portal → Canlı)
 DONATE_URL = "https://kreosus.com/makineceviri/posts"   # bağış (ilk açılış penceresi + Hesap sekmesi)
 
 
@@ -185,6 +186,7 @@ class MakineGameLiveApp(tk.Tk):
         self.hud_prefs_path = os.path.join(self.data_path, "hud.json")
 
         self._ui_queue = queue.Queue()
+        self._stats_job = None
         self._cfg_lock = threading.Lock()
         self._cfg = {}
 
@@ -206,6 +208,13 @@ class MakineGameLiveApp(tk.Tk):
         self._gate_poll_armed = False         # bakım ekranının tek yoklama zinciri
         self.discord = DiscordPresence()      # Discord'da gösterme (yerel IPC; Discord kapalıysa bekler)
         self._session_lines = 0               # bu oturumda (F9'dan beri) çevrilen diyalog
+        self._lines_total = 0                 # uygulama açıldığından beri çevrilen (kullanım bildirimi farkı bundan)
+        self._beat = telemetry.BeatCounter()  # kullanım bildirimi (net/telemetry.py): okuma süresi ve satır farkı
+        self._beat_s = BEAT_DEFAULT_S
+        self._beat_job = None
+        self._app_started = time.time()
+        self._log_sending = ""                # ekibin istediği günlük gönderiliyor (istek kimliği)
+        self._err_count, self._last_error = 0, ""
 
         # Yalnızca oyunlar algılanır (game_library): oyun yoksa hedef boştur ve hiçbir şey okunmaz
         self.detected_game_name = ""
@@ -461,6 +470,7 @@ class MakineGameLiveApp(tk.Tk):
         if not getattr(self, "_pool_tick_started", False):
             self._pool_tick_started = True
             self.after(POOL_TICK_S * 1000, self._pool_tick)
+        self._schedule_beat(2000)
         if not profile.get("translation_ready", True):
             self._set_notice("Sunucuda çeviri anahtarı yok · yalnızca havuzdaki satırlar gelir", "no_key")
         if not self.prefs["donate_seen"]:
@@ -482,6 +492,7 @@ class MakineGameLiveApp(tk.Tk):
         if self.is_running:
             self.toggle_running()
         user = (self.profile or {}).get("user") or getattr(self, "_saved_user", "")
+        self._cancel_beat()
         self.profile = None
         self.server.token = None
         self.session.clear()
@@ -493,7 +504,13 @@ class MakineGameLiveApp(tk.Tk):
     def logout(self):
         if self.is_running:
             self.toggle_running()
-        threading.Thread(target=self.server.logout, daemon=True).start()
+        bye = self._beat_payload(bye=True)
+        self._cancel_beat()
+
+        def worker():
+            self._send_bye(bye)
+            self.server.logout()
+        threading.Thread(target=worker, daemon=True).start()
         user = (self.profile or {}).get("user", "")
         self.session.clear()
         self.profile = None
@@ -568,10 +585,19 @@ class MakineGameLiveApp(tk.Tk):
         """Arka plan thread'lerinden ana thread'e iş gönderir."""
         self._ui_queue.put((fn, args))
 
+    UI_TURN_BUDGET_S = 0.030
+
     def _drain_ui_queue(self):
-        # Bir işin hatası köprüyü durdurmasın: hata günlüğe yazılır, sıradaki işler ve sonraki turlar devam eder
+        # Bir işin hatası köprüyü durdurmasın: hata günlüğe yazılır, sıradaki işler ve sonraki turlar devam eder.
+        # Tur başına en fazla UI_TURN_BUDGET_S çalışılır: yüzlerce satır art arda gelse de pencere (çizim, fare, F8-F10)
+        # arada nefes alır; kalan işler hemen sonraki turda sürer.
+        deadline = time.perf_counter() + self.UI_TURN_BUDGET_S
+        more = False
         try:
             while True:
+                if time.perf_counter() > deadline:
+                    more = True
+                    break
                 try:
                     fn, args = self._ui_queue.get_nowait()
                 except queue.Empty:
@@ -581,7 +607,7 @@ class MakineGameLiveApp(tk.Tk):
                 except Exception:  # noqa: BLE001
                     _FILE_LOG.error("arayüz işi başarısız: %s\n%s", getattr(fn, "__name__", fn), traceback.format_exc())
         finally:
-            self.after(30, self._drain_ui_queue)
+            self.after(1 if more else 30, self._drain_ui_queue)
 
     def _snapshot_cfg(self, *_):
         with self._cfg_lock:
@@ -1619,6 +1645,9 @@ class MakineGameLiveApp(tk.Tk):
 
     def log(self, text: str):
         _FILE_LOG.info(text)
+        if text.startswith("hata"):
+            self._err_count += 1
+            self._last_error = " ".join(text.split())[:160]
         self.log_box.configure(state="normal")
         self.log_box.insert("end", f"{time.strftime('%H:%M:%S')}  {text}\n")
         lines = int(self.log_box.index("end-1c").split(".")[0])
@@ -1658,6 +1687,12 @@ class MakineGameLiveApp(tk.Tk):
         self.toast("Oyunda yeniden gösterildi")
 
     def _refresh_stats(self):
+        """İstatistik kartları ve gecikme grafiği: art arda gelen satırlarda en fazla 150 ms'de bir çizilir."""
+        if self._stats_job is None:
+            self._stats_job = self.after(150, self._refresh_stats_now)
+
+    def _refresh_stats_now(self):
+        self._stats_job = None
         s = self.stats
         looked = s["pool"] + s["api"]
         lat = list(s["lat"])
@@ -1991,6 +2026,7 @@ class MakineGameLiveApp(tk.Tk):
             self._block_reason = None
             self.is_running = True
             self._session_lines = 0
+            self._beat.running(True)
             self._set_state(True)
             if not self.is_locked and self._pc_box_on():
                 self.overlay.show()
@@ -2004,6 +2040,7 @@ class MakineGameLiveApp(tk.Tk):
             self.worker_thread.start()
         else:
             self.is_running = False
+            self._beat.running(False)
             self._set_state(False)
             self.scheduler.clear()
             self._shown_disp = None
@@ -2367,6 +2404,7 @@ class MakineGameLiveApp(tk.Tk):
     def _on_translation(self, line_id, raw, translated, kind, source, stage_ms, res):
         now = time.monotonic()
         self._session_lines += 1
+        self._lines_total += 1
         self._discord_update()
         self.scheduler.translation_ready(line_id, translated, kind, now)
         t0 = self._line_t0.get(line_id)
@@ -2494,7 +2532,7 @@ class MakineGameLiveApp(tk.Tk):
     def _resolve_appid(self, target):
         """Steam numarası: Steam oyunlarında hazır, diğerlerinde Steam mağazasında ada göre (bir kez, önbellekli)."""
         self.detected_appid = target.game.steam_appid or ""
-        if self.detected_appid or isinstance(target, ConsoleTarget):   # konsol oyununda Steam araması yapılmaz
+        if self.detected_appid or target.store == "console":   # konsol oyununda (Remote Play dahil) Steam araması yapılmaz
             return
 
         def worker():
@@ -3022,7 +3060,115 @@ class MakineGameLiveApp(tk.Tk):
 
         threading.Thread(target=listener, daemon=True).start()
 
+    # ─────────────────────────────────────────────────────────
+    # Kullanım bildirimi ve ekibin istediği günlük (net/telemetry.py; portal → Canlı)
+    # ─────────────────────────────────────────────────────────
+
+    def _schedule_beat(self, delay_ms=None):
+        self._cancel_beat()
+        if self.profile is not None:
+            self._beat_job = self.after(self._beat_s * 1000 if delay_ms is None else delay_ms, self._beat_tick)
+
+    def _cancel_beat(self):
+        if self._beat_job is not None:
+            try:
+                self.after_cancel(self._beat_job)
+            except tk.TclError:
+                pass
+            self._beat_job = None
+
+    def _beat_payload(self, bye=False) -> dict:
+        konsol = self.prefs["mode"] == "konsol"
+        s = self.stats
+        looked = s["pool"] + s["api"]
+        pool = self.local_pool.get(self._pool_slug) if self._pool_slug else None
+        info = telemetry.system_info()
+        info.update({
+            "ocr_ms": telemetry.median(self.stage_ms["ocr"]), "pool_ms": telemetry.median(self.stage_ms["pool"]),
+            "api_ms": telemetry.median(self.stage_ms["api"]), "hit_pct": round(100 * s["pool"] / looked) if looked else None,
+            "local_lines": len(pool) if pool else 0, "queue": self._executor._work_queue.qsize(),
+            "errors": self._err_count, "last_error": self._last_error, "uptime_s": int(time.time() - self._app_started),
+            "discord": bool(self.prefs.get("discord_presence")), "web_clients": self.web.clients if self.web.running else None,
+            "tv": self.tv_link.state if konsol and self.prefs["console_out"] == "tv" else None,
+        })
+        payload = {
+            "started_at": int(self._app_started), "running": self.is_running, "mode": "konsol" if konsol else "pc",
+            "output": self.prefs["console_out"] if konsol else "box",
+            "game": self.detected_game_slug or (CONSOLE_SLUG if konsol else ""),
+            "game_name": self.detected_game_name or (DEFAULT_GAME if konsol else ""),
+            "session_lines": self._session_lines, "info": {k: v for k, v in info.items() if v not in (None, "")},
+        }
+        payload.update(self._beat.take(self._lines_total))
+        if bye:
+            payload["bye"] = True
+        return payload
+
+    def _beat_tick(self):
+        self._beat_job = None
+        if self.profile is None:
+            return
+        payload = self._beat_payload()
+
+        def worker():
+            try:
+                r = self.server.beat(payload)
+            except (AuthRequired, NetworkError, ServerError):
+                r = None                       # oturum / ağ sorununu çeviri ve durum istekleri zaten bildirir
+            self._post(self._on_beat, r)
+        threading.Thread(target=worker, daemon=True, name="bildirim").start()
+
+    def _on_beat(self, r):
+        if r:
+            try:
+                self._beat_s = max(60, min(1800, int(r.get("beat_s") or BEAT_DEFAULT_S)))
+            except (TypeError, ValueError):
+                self._beat_s = BEAT_DEFAULT_S
+            req = r.get("log_request")
+            if isinstance(req, str) and req and req != self._log_sending:
+                self._send_log(req)
+        if self._beat_job is None:
+            self._schedule_beat()
+
+    def _send_bye(self, payload):
+        try:
+            self.server.beat(payload, timeout=1.5)
+        except (AuthRequired, NetworkError, ServerError):
+            pass
+
+    def _send_log(self, req):
+        """Ekip bu oturumun günlüğünü istedi: makine-live.log'un sonu (gzip) gönderilir, kullanıcıya söylenir."""
+        self._log_sending = req
+        header = {"sürüm": APP_VERSION_LABEL, "zaman": time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "oyun": self.detected_game_name or "—", "mod": self.prefs["mode"], **telemetry.system_info()}
+        log_dir = os.path.join(app_data_dir(), "logs")
+
+        def worker():
+            try:
+                gz = telemetry.collect_log(log_dir, header)
+                self.server.upload_log(req, gz)
+                self._post(self._on_log_sent, len(gz), "")
+            except (AuthRequired, NetworkError, ServerError, OSError) as e:
+                self._post(self._on_log_sent, 0, str(e))
+        threading.Thread(target=worker, daemon=True, name="gunluk").start()
+
+    def _on_log_sent(self, size, error):
+        if error:
+            self._log_sending = ""             # bir sonraki bildirimde yeniden denenir
+            self.log(f"destek  ekibin istediği uygulama kaydı gönderilemedi ({error}) · yeniden denenecek")
+            return
+        self.log(f"destek  Makine Live ekibi bir sorunu incelemek için uygulama kaydını istedi · kayıt gönderildi "
+                 f"({max(1, size // 1024)} KB)")
+        self.toast("Uygulama kaydı Makine Live ekibine gönderildi")
+
     def destroy(self):
+        try:
+            if self.profile is not None and self.server.token:
+                bye = self._beat_payload(bye=True)
+                t = threading.Thread(target=self._send_bye, args=(bye,), daemon=True)
+                t.start()
+                t.join(1.5)                  # kapanış en fazla 1,5 sn bekler; ağ yoksa bildirim gitmez
+        except Exception:  # noqa: BLE001 — kapanış bildirim yüzünden yarım kalmasın
+            _FILE_LOG.error("kapanış bildirimi: %s", traceback.format_exc())
         self.is_running = False
         self.discord.stop()
         self._executor.shutdown(wait=False, cancel_futures=True)
@@ -3207,6 +3353,8 @@ def main() -> int:
     _install_crash_handlers(log_path)
     if "--selftest" in sys.argv:
         return run_selftest()
+    if app_update.after_update():
+        _FILE_LOG.info("sürüm  güncellemeden sonra açıldı")
     mutex = _acquire_single_instance()
     if mutex is None:
         return 0
