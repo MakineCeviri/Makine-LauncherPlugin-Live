@@ -55,6 +55,51 @@ def bounded_levenshtein(a: str, b: str, limit: int) -> int:
     return prev[-1] if prev[-1] <= limit else limit + 1
 
 
+def levenshtein(a: str, b: str) -> int:
+    """
+    Levenshtein mesafesi, Myers'ın bit-paralel algoritmasıyla (Hyyrö 2003): kısa metnin her harfi bir bit, uzun metnin
+    her harfi için birkaç tamsayı işlemi. bounded_levenshtein'in iç içe döngüsünden ~50 kat hızlı; yerel havuzda binlerce
+    aday tek tek karşılaştırılırken (benzer satır araması) çeviri iş parçacıkları GIL'i tutup paneli dondurmasın diye.
+    """
+    if len(a) > len(b):
+        a, b = b, a
+    m = len(a)
+    if m == 0:
+        return len(b)
+    peq: dict = {}
+    for i, ch in enumerate(a):
+        peq[ch] = peq.get(ch, 0) | (1 << i)
+    full = (1 << m) - 1
+    last = 1 << (m - 1)
+    pv, mv, score = full, 0, m
+    for ch in b:
+        eq = peq.get(ch, 0)
+        xv = eq | mv
+        xh = (((eq & pv) + pv) ^ pv) | eq
+        ph = mv | ~(xh | pv)
+        mh = pv & xh
+        if ph & last:
+            score += 1
+        elif mh & last:
+            score -= 1
+        ph = (ph << 1) | 1
+        mh <<= 1
+        pv = (mh | ~(xv | ph)) & full
+        mv = ph & xv & full
+    return score
+
+
+def bigram_mask(key: str) -> int:
+    """
+    Anahtarın ikili harflerinin (bigram) 512 bitlik izi. Bir düzenleme en fazla iki ikiliyi bozar, yani
+    (iz(a) & ~iz(b)).bit_count() <= 2 * mesafe(a, b). Çakışmalar yalnızca farkı küçültür: süzgeç hiçbir benzer adayı atmaz.
+    """
+    m = 0
+    for i in range(len(key) - 1):
+        m |= 1 << ((ord(key[i]) * 31 + ord(key[i + 1])) % 509)
+    return m
+
+
 def keys_similar(a: str, b: str) -> bool:
     if a == b:
         return True
@@ -67,7 +112,7 @@ def keys_similar(a: str, b: str) -> bool:
         return False
     if _DIGITS.findall(a) != _DIGITS.findall(b):
         return False                         # "floor 3" / "floor 4" asla eşleşmez
-    return bounded_levenshtein(a, b, limit) <= limit
+    return levenshtein(a, b) <= limit
 
 
 class GamePool:
@@ -79,6 +124,8 @@ class GamePool:
         self.items: Dict[int, Tuple[str, str, str]] = {}        # id -> (anahtar, kaynak, çeviri)
         self._by_key: Dict[str, int] = {}
         self._by_len: Dict[int, List[int]] = {}
+        self._fuzzy: Dict[str, Optional[int]] = {}               # benzer satır aramasının sonuçları (liste değişmez)
+        self._masks: Dict[int, int] = {}                          # adayların ikili harf izi (ilk aramada hesaplanır)
         for it in items or []:
             try:
                 did, key, src, tr = int(it[0]), str(it[1]), str(it[2]), str(it[3])
@@ -104,16 +151,32 @@ class GamePool:
         n = len(key)
         if n < FUZZY_MIN_KEY_LEN:
             return None
+        if key in self._fuzzy:                   # OCR aynı satırı tekrar tekrar okur: sonuç (bulunamadı dahil) hatırlanır
+            best = self._fuzzy[key]
+            return None if best is None else (best, self.items[best][2], False)
         d = int(n * (1 - FUZZY_MIN_SIMILARITY))
+        digits = _DIGITS.findall(key)
+        mask = bigram_mask(key)
+        masks = self._masks
         best, best_dist = None, None
         for length in range(n - d - 1, n + d + 2):
             for cand in self._by_len.get(length, ()):
                 k = self.items[cand][0]
-                if not keys_similar(key, k):
+                # keys_similar ile aynı kural, adayın uzunluğu ve rakamları önce (ucuz), mesafe bir kez
+                limit = int(max(n, len(k)) * (1 - FUZZY_MIN_SIMILARITY) + 1e-9)
+                if len(k) < FUZZY_MIN_KEY_LEN or abs(n - len(k)) > limit:
                     continue
-                dist = bounded_levenshtein(key, k, max(len(key), len(k)))
-                if best_dist is None or dist < best_dist:
+                km = masks.get(cand)
+                if km is None:
+                    km = masks[cand] = bigram_mask(k)
+                if (mask & ~km).bit_count() > 2 * limit or _DIGITS.findall(k) != digits:
+                    continue
+                dist = levenshtein(key, k)
+                if dist <= limit and (best_dist is None or dist < best_dist):
                     best, best_dist = cand, dist
+        if len(self._fuzzy) >= 5000:
+            self._fuzzy.clear()
+        self._fuzzy[key] = best
         if best is None:
             return None
         return best, self.items[best][2], False

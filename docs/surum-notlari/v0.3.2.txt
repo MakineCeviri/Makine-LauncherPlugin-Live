@@ -1,0 +1,18 @@
+Bu sürüm daha çok düzeltme içeriyor. Bildirdiğiniz sorunlar için teşekkürler.
+
+DONMA
+- Çok sayıda satır art arda çevrildiğinde uygulamanın bir süre yanıt vermemesine yol açan bir sorunu düzelttik. Yoğun anlarda panelin akıcı kalması gerekiyor; yine de donma yaşarsanız lütfen bize yazın.
+- Hazır çevirileri indirdiğiniz oyunlarda satırların yerel havuzda aranması daha hızlı.
+
+PS REMOTE PLAY, XBOX VE ASOBI
+- PS Remote Play, Xbox uygulaması, Asobi: Remote Play, chiaki ve Greenlight artık GTA VI olarak tanınıyor. Bu uygulamalardan okunan satırlar GTA VI'nın ortak havuzuna gidiyor, oradaki onaylı çeviriler de size geliyor.
+- Bu uygulamaların adıyla daha önce kaydedilen satırları GTA VI havuzuna taşıdık.
+
+ANTİVİRÜS UYARILARI
+- Bazı antivirüs programları Makine Live'ı yanlışlıkla zararlı olarak işaretliyordu. Buna yol açabilecek iki şeyi değiştirdik: uygulamanın paketlenme biçimi ve kendini güncelleme yöntemi. Bu uyarıları azaltmasını bekliyoruz ama her antivirüste tamamen kalkacağını şimdiden söyleyemiyoruz. Uyarı görürseniz hangi programın verdiğini bize iletirseniz ilgili firmaya yanlış alarm olarak bildiriyoruz.
+
+DESTEK
+- Uygulama açıkken birkaç dakikada bir sunucuya kısa bir kullanım bildirimi gönderiyor: sürüm, oyun, kullanım şekli, çevrilen satır sayısı, Windows ve ekran bilgisi. Ekran görüntüsü ya da okunan metin bu bildirime girmez.
+- Bir sorunu incelememiz gerektiğinde ekibimiz uygulama kaydını isteyebilir. Kayıt gönderildiğinde panelde bunu görürsünüz. Ayrıntılar: makineceviri.org/gizlilik-politikasi
+
+Sorun yaşarsanız %APPDATA%\MakineLive\logs\makine-live.log dosyasıyla birlikte makineceviri.org/iletisim ya da Discord sunucumuzdan bize yazın. İyi oyunlar!

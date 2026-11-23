@@ -26,7 +26,7 @@ from typing import Iterable, List, Optional, Tuple
 
 from makine_live.games.game_detector import (TargetWindow, _top_level_windows, _is_cloaked, _class_name, window_pid, process_path,
                                              window_title, _u32)
-from makine_live.games.game_library import GameEntry
+from makine_live.games.game_library import CONSOLE_GAME_NAME, CONSOLE_GAME_SLUG, CONSOLE_STREAM_STEM, GameEntry
 
 # ─────────────────────────────────────────────────────────────
 # Kaynak uygulamalar
@@ -40,11 +40,13 @@ class SourceApp:
     console: str                     # ps5 | xbox | capture
     exes: Tuple[str, ...]            # küçük harf exe adları
     title: str = ""                  # pencere başlığı deseni (regex, büyük/küçük harf duyarsız); boş = her başlık
+    exe_re: Optional[re.Pattern] = None   # exe adı (uzantısız) deseni: adı sürüme göre değişen uygulamalar
 
 
 SOURCES: Tuple[SourceApp, ...] = (
     SourceApp("ps-remote-play", "PS Remote Play", "ps5", ("remoteplay.exe",)),
     SourceApp("chiaki", "chiaki", "ps5", ("chiaki.exe", "chiaki-ng.exe")),
+    SourceApp("asobi", "Asobi", "ps5", ("asobi.exe",), exe_re=CONSOLE_STREAM_STEM),
     SourceApp("xbox-app", "Xbox uygulaması", "xbox", ("xboxpcapp.exe",)),
     SourceApp("greenlight", "Greenlight", "xbox", ("greenlight.exe",)),
     SourceApp("elgato", "Elgato 4K Capture Utility", "capture", ("4kcaptureutility.exe", "gamecapture.exe")),
@@ -65,8 +67,8 @@ MIN_SOURCE_SIZE = (960, 540)
 # Konsolda exe olmadığı için oyun pencereden anlaşılamaz. Kullanıcı kararı: konsol modundaki her satır GTA VI havuzuna
 # gider (oyun seçimi yok). Böylece sunucunun DeepL kotası tek bir oyunun havuzunu doldurmaya harcanır ve oyuncular
 # birbirinin onayladığı satırlardan yararlanır.
-DEFAULT_GAME = "Grand Theft Auto VI"
-CONSOLE_SLUG = "grand-theft-auto-vi"
+DEFAULT_GAME = CONSOLE_GAME_NAME
+CONSOLE_SLUG = CONSOLE_GAME_SLUG
 
 
 def console_game() -> GameEntry:
@@ -232,7 +234,8 @@ def match_source(exe: str, title: str, custom_exes: Iterable[str] = ()) -> Optio
     """Pencerenin exe adı ve başlığından kaynak uygulaması (yoksa None)."""
     exe = (exe or "").lower()
     for s in SOURCES:
-        if exe in s.exes and (not s.title or re.search(s.title, title or "", re.IGNORECASE)):
+        hit = exe in s.exes or (s.exe_re is not None and bool(s.exe_re.search(os.path.splitext(exe)[0])))
+        if hit and (not s.title or re.search(s.title, title or "", re.IGNORECASE)):
             return s
     if exe and exe in {e.lower() for e in custom_exes}:
         return SourceApp("custom", os.path.splitext(exe)[0], "custom", (exe,))

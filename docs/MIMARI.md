@@ -122,7 +122,8 @@ graph TD
 │   ├── net/
 │   │   ├── pool_client.py      # [TEST] sunucu istemcisi (makineceviri.org/api/live): hesapla giriş, oturum (DPAPI), translate, keep-alive
 │   │   ├── local_pool.py       # [TEST→C++] yerel havuz: oyunun ONAYLI çevirileri bilgisayarda (arama, eşitleme, sayaçlar)
-│   │   ├── app_update.py       # [TEST] .exe'nin kendini güncellemesi (indir → SHA-256 → kapanınca üzerine yaz → yeniden aç)
+│   │   ├── app_update.py       # [TEST] .exe'nin kendini güncellemesi (indir → SHA-256 → .old'a çevir, yerine koy → yeniden aç)
+│   │   ├── telemetry.py        # [TEST] kullanım bildirimi (heartbeat) ve ekibin istediği günlük (gzip)
 │   │   └── discord_presence.py #   Discord'da "Makine Live ile Türkçe oynuyor" (yerel IPC, bağımlılıksız)
 │   └── tv/
 │       ├── tv_link.py          # [TEST→C++] PC → Makine TV bağlantısı (UDP keşif + TCP satır-JSON, eşleşme kodu)
@@ -137,7 +138,8 @@ graph TD
 ├── tools/
 │   ├── build.py                # sürüm numarası → DLL → testler → exe → selftest → SHA-256 (build.cmd bunu çağırır)
 │   ├── offline.py              # sahte /api/live sunucusu (127.0.0.1) + uygulama; veriler build/offline (test.cmd)
-│   ├── build_exe.py            # tek dosyalık dist/MakineLive.exe (PyInstaller)
+│   ├── build_exe.py            # tek dosyalık dist/MakineLive.exe (PyInstaller, kendi başlatıcımızla)
+│   ├── build_bootloader.py     # PyInstaller başlatıcısını kaynaktan GCC ile derler (antivirüs yanlış alarmları)
 │   ├── pack.py                 # build/release → makine-live.makine (eksik dosya varsa reddeder)
 │   ├── brand_assets.py         # logodan türetilenleri üretir: eklenti ikonu, app.ico, Makine TV ikon ve afişi
 │   ├── build_webos.py          # tv-webos → build/webos/makine-tv.ipk (LG'nin ares-package aracı gerekmez)
@@ -153,6 +155,8 @@ graph TD
     ├── test_console_mode.py, test_tv_link.py  # konsol modu ve TV bağlantısı (sahte TV ile)
     ├── test_subtitle_web.py    #   telefon / OBS sayfaları ve SSE akışı (gerçek HTTP)
     ├── test_discord_presence.py  # Discord'da gösterme (sahte Discord IPC kanalı)
+    ├── test_telemetry.py       #   kullanım bildirimi sayaçları, günlüğün sonu (gzip), sistem bilgisi
+    ├── test_app_update.py      #   kendi kendini güncelleme (komut dosyasız ad değiştirme)
     ├── test_webos_service.py, test_webos_install.py  # LG servisi (Node + sahte webos-service), geliştirici modu kurulumu (sahte TV)
     ├── webos_mock/, webos_preview.html  # sahte 'webos-service' modülü; LG arayüzünü tarayıcıda görme sayfası
     ├── text_fix_test.cpp       #   boşluk düzeltici (ctest --test-dir build)
@@ -285,6 +289,8 @@ Bu bölüm istemcinin dayandığı davranışı anlatır. Bütün yanıtlar JSON
 | `GET /api/live/auth?action=device_poll&device=` | herkese açık | Onaylanınca uygulama jetonu **bir kez** döner (`status: approved`); süre dolunca 410 |
 | `POST /api/live/auth?action=app_login\|app_logout`, `GET ?action=app_me` | — / jeton | Ekip hesabıyla şifreli giriş; jeton doğrulama |
 | `GET /api/live/app?action=status`, `POST ?action=ann_read` | jeton | Bakım modu, sürüm kontrolü (`available` / `mandatory`), okunmamış duyurular |
+| `POST /api/live/app?action=beat` `{started_at, running, mode, output, game, game_name, session_lines, run_s, lines, info, bye?}` → `{beat_s, log_request}` | jeton | Kullanım bildirimi: uygulama açıkken `beat_s` saniyede bir (sunucu ayarı, varsayılan 300), kapanırken `bye`. Portalın **Canlı** bölümü bundan beslenir |
+| `POST /api/live/app?action=log_upload&id=` (gövde: gzip) | jeton | Yönetici bu oturumun günlüğünü istediyse (`log_request`) uygulama `makine-live.log`'un sonunu yollar; yalnızca o oturum, bir kez |
 | `POST /api/live/translate` `{game, text, source_lang, target_lang}` | jeton | Havuz + (gerekirse) sunucu tarafı DeepL + kayıt. 422 çöp, 429 günlük sınır, 503 anahtar yok / bakım |
 | `GET /api/live/pool?action=sync&game=<slug>[&rev=][&head=1]` | jeton | Yerel havuz: oyunun **yalnızca onaylı** satırları `[id, anahtar, kaynak, çeviri]`. `head=1` yalnızca `{count, rev}`; `rev` aynıysa `{unchanged}` |
 | `POST /api/live/pool?action=hits` `{game, hits: {id: adet}}` | jeton | Yerel havuzdan gösterilen satırların sayacı |
@@ -352,12 +358,13 @@ Bu test koşucusu oyunculara **tek bir `MakineLive.exe`** olarak verilir (`py to
 `makineceviri.org/live/`. Python ya da başka bir şey kurmak gerekmez. Nihai ürün yine DLL'dir; Launcher entegrasyonunda
 bu uygulamanın yerini Launcher alır.
 
-- **Sürüm:** `manifest.json` → `0.3.0`, kanal `beta` (ekranda "0.3.0 beta"; `.exe` FileVersion 0.3.0, ProductVersion
-  "0.3.0 beta"; DLL `makine_get_info` 0.3.0; Makine TV `versionName` aynı sayıyı manifest'ten alır; `tv-webos` paket
-  dosyaları da 0.3.0). 0.3.0 ilk açık sürümdür: sunucu makineceviri.org. Her istekte `X-Makine-Version` gider.
+- **Sürüm:** `manifest.json` → `0.3.2`, kanal `beta` (ekranda "0.3.2 beta"; `.exe` FileVersion 0.3.2, ProductVersion
+  "0.3.2 beta"; DLL `makine_get_info` 0.3.2; Makine TV `versionName` aynı sayıyı manifest'ten alır; `tv-webos` paket
+  dosyaları da 0.3.2). 0.3.0 ilk açık sürümdür: sunucu makineceviri.org. Her istekte `X-Makine-Version` gider.
 - **Açılış sırası:** önce `/api/live/app?action=status`: bakım (yönetici değilse) → bakım ekranı; zorunlu güncelleme → "Güncelleme
-  gerekli" ekranı (**Şimdi güncelle**: `app_update` ile indir, SHA-256 doğrula, uygulama kapanınca kendi `.exe`'sinin üzerine
-  yaz ve yeniden aç; yazılamazsa yeni dosyayı bulunduğu yerden açar). Sonra oturum doğrulanır. Girişten sonra ve her
+  gerekli" ekranı (**Şimdi güncelle**: `app_update` ile indir, SHA-256 doğrula, çalışan `.exe`'nin adını `.old` yap, yenisini
+  yerine kopyala ve `--after-update <pid>` ile aç; yeni süreç eskisinin kapanmasını bekleyip `.old`'u siler; yazılamazsa yeni
+  dosyayı bulunduğu yerden açar. Komut dosyası yoktur: 0.3.1 ve öncesinin gizli `.cmd` betiği antivirüs sezgilerine takılıyordu). Sonra oturum doğrulanır. Girişten sonra ve her
   `STATUS_POLL_S` (5 dk): isteğe bağlı yeni sürüm penceresi ("Şimdi güncelle / Sonra") ve okunmamış duyurular panelin üstünde
   birer birer (aciliyet, gönderen, tarih, "1 / 3"); kapatılan duyuru okundu sayılır.
 - **Giriş:** Açılışta hesap ister. Ana düğme **Makine Çeviri hesabıyla giriş yap**: `device_start` kodu ve bağlantıyı
@@ -387,13 +394,28 @@ bu uygulamanın yerini Launcher alır.
 - **Paketli çalışma:** `.exe` içinde DLL, OCR ve modeller `sys._MEIPASS\runtime`'dan yüklenir; veriler `%APPDATA%\MakineLive`
   altındadır. Tek örnek çalışır (ikinci açılış mevcut pencereyi öne getirir).
 - **Günlük:** `%APPDATA%\MakineLive\logs\makine-live.log` paneldeki kayıtları ve yakalanmayan hataların tam izini içerir
-  (1 MB × 3). Testerlar sorun bildirirken bu dosyayı gönderir.
+  (1 MB × 3). Testerlar sorun bildirirken bu dosyayı gönderir. Yönetici portalın **Canlı** bölümünden bir oturumun günlüğünü
+  isteyebilir: bir sonraki kullanım bildiriminin yanıtında `log_request` gelir, uygulama son ~2 MB'ı (eski parçalar ve
+  `crash.log` dahil) gzip ile yollar ve panelde "Uygulama kaydı Makine Live ekibine gönderildi" der (`net/telemetry.py`).
+- **Kullanım bildirimi** (`net/telemetry.py`, `app._beat_tick`): girişten 2 sn sonra ve sonra her `beat_s` saniyede bir (sunucunun
+  söylediği aralık; portaldan değişir) oyun, mod / çıktı, okuma açık mı, bu oturumda ve son bildirimden beri çevrilen satır,
+  okuma süresi ve sistem / hız bilgisi (Windows, ekran, ölçek, işlemci, bellek, OCR / havuz / DeepL medyanı, havuz isabeti,
+  yerel havuz satırı, kuyruk, hata sayısı) gider. Ekran görüntüsü ve okunan metin gitmez. Çıkışta ve kapanışta `bye` (en fazla 1,5 sn).
+- **Arayüz hızı:** Arka plan iş parçacıkları arayüze yalnızca `_post` kuyruğuyla iş verir; kuyruk tur başına en fazla 30 ms
+  boşaltılır (`UI_TURN_BUDGET_S`), kalan iş hemen sonraki turda sürer. Geçmiş listesi satırın kısaltılmış metnini eklerken bir
+  kez hesaplar ve en fazla bir kez, boşta çizer; istatistik kartları en fazla 150 ms'de bir. (0.3.1 ve öncesinde her satır geçmişi baştan
+  çiziyor, uzun metinler harf harf ölçülüyordu: satır başına ~1 sn, yüzlerce satırda panel dakikalarca donuyordu.)
 - **Doğrulama:** `MakineLive.exe --selftest` arayüz açmadan DLL'i yükler, bilinen bir satırı OCR ile okur, sonucu
   `%APPDATA%\MakineLive\selftest.json` dosyasına yazar.
 - **Sürüm çıkarma:** `build.cmd` (ya da `py tools/build.py [X.Y.Z] [--hizli]`): sürüm numarasını `manifest.json`,
   `CMakeLists.txt`, `src/plugin.cpp` ve `tv-webos` paket dosyalarında birlikte değiştirir (yalnızca büyütür), DLL'i
   derler, testleri çalıştırır (Node yoksa LG servis testi atlanır), exe'yi paketler, exe'nin içinden `--selftest` yapar ve
   boyut, SHA-256 ve sürüm notu dosyasını (`docs/surum-notlari/vX.Y.Z.txt`) yazar. Exe açıkken başlamaz.
+- **Antivirüs yanlış alarmları:** PyInstaller'ın hazır başlatıcısı (`runw.exe`) zararlı yazılımlarda da birebir aynıdır; bu yüzden
+  tek dosyalık paketler Microsoft, Google, ESET, Fortinet, Ikarus, Rising, Bkav gibi motorlarda sık sık "Trojan" görünür.
+  `tools/build_bootloader.py` başlatıcıyı PyInstaller'ın PyPI kaynak paketinden (SHA-256 doğrulanır) GCC ile derler
+  (`build/bootloader/<sürüm>/`); `build_exe.py` PyInstaller'ı bu başlatıcıyla çalıştırır (kurulu pakete dokunmadan) ve UPX
+  sıkıştırmasını kapatır (`--noupx`). Kalıcı çözüm kod imzalamadır (Authenticode); imza anahtarı depoya girmez.
 - **Derleme:** `py tools/build_exe.py` (PyInstaller, tek dosya, pencereli, ikon ve sürüm bilgisiyle). `build/release` eksikse, DLL
   `src/`'den eskiyse ya da manifest sürümü uyuşmuyorsa reddeder. **Her DLL derlemesinden sonra `.exe` yeniden derlenmelidir.**
   Boyut yaklaşık 53 MB, ilk açılış yaklaşık 3 sn (tek dosyalık paketin açılması).
@@ -442,6 +464,10 @@ bu uygulamanın yerini Launcher alır.
   3. Windows oyun listesi: `HKCU\System\GameConfigStore\Children\*\MatchedExeFullPath` (exe düzeyinde).
   4. Epic (`AppCategories` içinde `games`), GOG, Ubisoft Connect, EA, Xbox/Game Pass (`XboxGames\*\Content\MicrosoftGame.config`).
   5. `KNOWN_GAMES` exe adları. Bu liste ayrıca havuzdaki slug'ı sabitler (mağaza adı farklı yazılsa bile).
+  Konsol görüntüsünü getiren uygulamalar (PS Remote Play, Xbox uygulaması `XboxPcApp.exe`, Asobi: Remote Play, chiaki,
+  Greenlight; `game_library.is_console_stream_exe`) PC modunda da her zaman **GTA VI** sayılır (`store = console`), çünkü
+  konsol havuzu GTA VI'nındır. 0.3.1 ve öncesinde bu pencereler kendi adlarıyla ayrı havuz açıyordu; sunucu bu adları da GTA VI'ya
+  yönlendirir ve o havuzları GTA VI'ya taşır.
   Klasör eşleşmelerinde oyunun yardımcı programları (`HELPER_EXE`: crash, launcher, setup, anticheat, redist…) oyun sayılmaz.
   Birden çok oyun açıksa öndeki oyun, sonra Steam'in `RunningAppID`'si, sonra en büyük pencere seçilir. Java ile çalışan
   oyunlarda (Minecraft istemcileri) ad pencere başlığından gelir. Durdurulmuşken kart 3 sn'de bir, çalışırken hedef yoksa ya da
@@ -479,9 +505,10 @@ bu uygulamanın yerini Launcher alır.
     (PrintWindow, ~9 ms) pencere siyah gelirse 5 sn arayla 6 kez dener, sonra dakikada bir; o sürede kutu gizli kalır ve ekran
     kopyası okunur. Kutu yakalamaya açıkken ekran kopyası **asla** okunmaz (yoklama atlanır). "OBS tarayıcı kaynağı"
     (`obs_source`) sunucuyu 127.0.0.1'de açar ve adresi kopyalar.
-  - **Kaynak** (`console_mode.find_console_source`): PS Remote Play (`RemotePlay.exe`), chiaki, Xbox uygulaması (`XboxPcApp.exe`),
-    Greenlight, Elgato, OBS pencereli projektör, Windows Kamera + kullanıcının seçtiği exe'ler (`console_exes`). Bu pencereler
-    yalnızca konsol modu açıkken hedef olur; PC modundaki "yalnızca oyunlar" kuralı aynen geçerlidir. Oyun her zaman GTA VI;
+  - **Kaynak** (`console_mode.find_console_source`): PS Remote Play (`RemotePlay.exe`), chiaki, Asobi, Xbox uygulaması (`XboxPcApp.exe`),
+    Greenlight, Elgato, OBS pencereli projektör, Windows Kamera + kullanıcının seçtiği exe'ler (`console_exes`). Konsol modunda
+    bu pencerelerin kendi içeriği okunur. PC modunda yakalama programları (Elgato, OBS, Kamera) hedef olmaz; Remote Play,
+    Xbox, Asobi, chiaki ve Greenlight ise oyun gibi algılanır ve yine GTA VI sayılır (§5 oyun algılama). Oyun her zaman GTA VI;
     Steam araması yapılmaz.
   - **Okuma:** DLL'e `hwnd` + istemci koordinatı verilir; pencerenin kendi içeriği okunur (§3.2), yani üstünde başka pencere
     olabilir ve önde olması gerekmez. Bekleme sebepleri: pencere yok / kapandı / küçültülmüş / 960×540'tan küçük.
@@ -566,6 +593,8 @@ py tests/test_console_mode.py    # konsol modu: 16:9 alan, oransal bölge, kayna
 py tests/test_tv_link.py         # TV bağlantısı: sahte TV ile keşif, kod, satır, en yeni kazanır, yeniden bağlanma
 py tests/test_subtitle_web.py    # telefon / OBS sayfaları ve SSE akışı
 py tests/test_discord_presence.py  # Discord'da gösterme: sahte Discord IPC kanalıyla el sıkışma, içerik, hız sınırı
+py tests/test_telemetry.py       # kullanım bildirimi: okuma süresi / satır farkı, günlüğün sonu (gzip), sistem bilgisi
+py tests/test_app_update.py      # kendi kendini güncelleme: .old'a çevirme, yerine koyma, geri alma
 py tests/test_webos_service.py   # LG servisi gerçek Node ile (sahte webos-service): keşif, eşleşme, satır, kod kilidi
 py tests/test_webos_install.py   # LG geliştirici modu kurulumu, sahte TV'ye (anahtar, parola, SSH, kurulum yanıtları)
 ctest --test-dir build           # C++ boşluk düzeltici (tests/text_fix_test.cpp)
@@ -579,10 +608,11 @@ py tools/pack.py           # → makine-live.makine (Launcher → Ayarlar → Ek
 py -m makine_live
 
 # Sürüm: DLL → testler → exe → selftest → SHA-256 tek adımda (çift tıklanınca sürüm numarasını sorar)
-build.cmd                  # ya da: py tools/build.py 0.3.1   |   py tools/build.py --hizli (testsiz)
+build.cmd                  # ya da: py tools/build.py 0.3.3   |   py tools/build.py --hizli (testsiz)
 
 # Makine Live uygulaması (tek dosya; önce DLL'i derleyin). Makine TV APK'sı eskiyse kendisi derler ve gömer.
-py tools/build_exe.py      # → dist/MakineLive.exe
+py tools/build_exe.py      # → dist/MakineLive.exe (ilk derlemede başlatıcıyı da kaynaktan derler: gcc gerekir)
+py tools/build_bootloader.py   # yalnızca PyInstaller başlatıcısı → build/bootloader/<sürüm>/
 dist\MakineLive.exe --selftest   # → %APPDATA%\MakineLive\selftest.json (tv_apk, tv_adb dahil)
 
 # Makine TV (Android TV) — Android SDK + JDK 17 gerekir; tv/local.properties → sdk.dir

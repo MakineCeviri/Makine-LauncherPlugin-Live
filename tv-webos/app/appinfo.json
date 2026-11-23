@@ -1,6 +1,6 @@
 {
   "id": "org.makineceviri.tv",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "vendor": "Makine Çeviri",
   "type": "web",
   "main": "index.html",

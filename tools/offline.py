@@ -66,6 +66,7 @@ class State:
         self.started = {}            # cihaz → kodun verildiği an
         self.read = set()            # kapatılan duyurular
         self.lines = 0
+        self.beats = 0               # kullanım bildirimleri
 
 
 def pool_file(slug):
@@ -94,8 +95,11 @@ def make_handler(st: State, port_ref: list):
 
         def _body(self):
             n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n)
+            if self.headers.get("Content-Type", "").startswith("application/gzip"):
+                return {"_raw": raw}
             try:
-                return json.loads(self.rfile.read(n) or b"{}")
+                return json.loads(raw or b"{}")
             except ValueError:
                 return {}
 
@@ -158,6 +162,17 @@ def make_handler(st: State, port_ref: list):
                                             "announcements": anns})
                 if action == "ann_read":
                     st.read.add(int(body.get("id") or 0))
+                    return self._send(200, {"success": True})
+                if action == "beat":
+                    # Kullanım bildirimi; ilk bildirimde ekip günlük istemiş gibi yapılır (gönderim akışı denensin)
+                    st.beats += 1
+                    say(f"bildirim {'kapanış' if body.get('bye') else st.beats} · okuma {'açık' if body.get('running') else 'kapalı'}"
+                        f" · {body.get('lines', 0)} yeni satır · {body.get('run_s', 0)} sn")
+                    return self._send(200, {"success": True, "beat_s": 60,
+                                            "log_request": "0123456789abcdef" if st.beats == 1 else None})
+                if action == "log_upload":
+                    data = body.get("_raw", b"")
+                    say(f"günlük  geldi ({len(data) // 1024} KB sıkıştırılmış)")
                     return self._send(200, {"success": True})
 
             if path == "/api/live/translate":

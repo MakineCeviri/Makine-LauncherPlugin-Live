@@ -11,7 +11,13 @@ from makine_live.ui.hud_ui import (BG, SURFACE2, LINE, TEXT, TEXT2, TEXT3, mix)
 
 
 class HistoryList(tk.Canvas):
-    """Son satırlar: tıkla = çeviriyi kopyala, çift tıkla = oyunda yeniden göster."""
+    """
+    Son satırlar: tıkla = çeviriyi kopyala, çift tıkla = oyunda yeniden göster.
+
+    Hız: satırın kısaltılmış metni eklenirken bir kez hesaplanır (ikili arama, ~8 ölçüm) ve liste en fazla bir kez,
+    arayüz boşaldığında yeniden çizilir. Önceden her eklemede 50 satırın metni harf harf ölçülüyordu: satır başına ~1 sn,
+    yüzlerce satır art arda gelince panel dakikalarca yanıt vermiyordu.
+    """
 
     ROW_H = 62
     MAX = 50
@@ -28,6 +34,7 @@ class HistoryList(tk.Canvas):
         self._fnt_badge = tkfont.Font(font=fonts.code(11))
         self._ctx = ui.UI(master.winfo_toplevel(), self, fonts)
         self.copy_icon = None
+        self._redraw_job = None
         self.bind("<Motion>", self._motion)
         self.bind("<Leave>", lambda e: self._set_hover(None))
         self.bind("<Button-1>", self._click)
@@ -37,22 +44,42 @@ class HistoryList(tk.Canvas):
         self.redraw()
 
     def add(self, entry):
+        entry = dict(entry)
+        entry["_raw"] = self._fit(entry["raw"], self._fnt_src, self.w - 24)
+        entry["_tr"] = self._fit(entry["translated"], self._fnt_main, self.w - 48)
         self.rows.appendleft(entry)
-        self.redraw()
+        self._schedule_redraw()
 
     def clear(self):
         self.rows.clear()
-        self.redraw()
+        self._schedule_redraw()
 
-    def _fit(self, text, font, width):
+    def _schedule_redraw(self):
+        if self._redraw_job is None:
+            self._redraw_job = self.after_idle(self.redraw)
+
+    @staticmethod
+    def _fit(text, font, width):
+        """Genişliğe sığan en uzun baş kısım + "…" (ölçüm sayısı metnin uzunluğuyla değil, logaritmasıyla artar)."""
         text = " ".join(text.split())
         if font.measure(text) <= width:
             return text
-        while text and font.measure(text + "…") > width:
-            text = text[:-1]
-        return text + "…"
+        lo, hi = 0, len(text)                  # text[:lo] + "…" sığar, text[:hi] + "…" sığmaz
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if font.measure(text[:mid] + "…") <= width:
+                lo = mid
+            else:
+                hi = mid
+        return text[:lo].rstrip() + "…"
 
     def redraw(self):
+        if self._redraw_job is not None:
+            try:
+                self.after_cancel(self._redraw_job)
+            except tk.TclError:
+                pass
+            self._redraw_job = None
         self.delete("all")
         self._hover = None
         if not self.rows:
@@ -79,10 +106,8 @@ class HistoryList(tk.Canvas):
             if r.get("ms") is not None:
                 self.create_text(self.w - 12, y + 16, anchor="e", text=f"{r['ms']} ms", font=self.f.code(11),
                                  fill=TEXT3, tags=tag)
-            self.create_text(12, y + 34, anchor="w", text=self._fit(r["raw"], self._fnt_src, self.w - 24),
-                             font=self.f.ui(12), fill=TEXT3, tags=tag)
-            self.create_text(12, y + 51, anchor="w", text=self._fit(r["translated"], self._fnt_main, self.w - 48),
-                             font=self.f.ui(13), fill=TEXT, tags=tag)
+            self.create_text(12, y + 34, anchor="w", text=r["_raw"], font=self.f.ui(12), fill=TEXT3, tags=tag)
+            self.create_text(12, y + 51, anchor="w", text=r["_tr"], font=self.f.ui(13), fill=TEXT, tags=tag)
             if i < len(self.rows) - 1:
                 self.create_line(12, y + self.ROW_H, self.w - 12, y + self.ROW_H, fill=LINE, tags=tag)
         self.copy_icon = ui.AnimatedIcon(self._ctx, -100, -100, "copy", 16, TEXT2)

@@ -67,6 +67,21 @@ class GameEntry:
             self.slug = slugify(self.name)
 
 
+# Konsol görüntüsünü PC'ye getiren uygulamalar (PS Remote Play, Xbox uygulaması, Asobi, chiaki, Greenlight). Bunlarda yalnızca
+# konsol oyunu görünür ve konsol havuzu GTA VI'nındır (console_mode.console_game): PC modunda da oyun olarak GTA VI sayılırlar.
+# 0.3.1 ve öncesinde bu pencereler kendi adlarıyla ayrı havuz açıyordu; sunucu da aynı adları GTA VI'ya yönlendirir (text.ts poolSlug).
+CONSOLE_GAME_NAME = "Grand Theft Auto VI"
+CONSOLE_GAME_SLUG = "grand-theft-auto-vi"
+CONSOLE_STREAM_EXES = frozenset({"remoteplay.exe", "chiaki.exe", "chiaki-ng.exe", "xboxpcapp.exe", "greenlight.exe"})
+CONSOLE_STREAM_STEM = re.compile(r"asobi", re.IGNORECASE)          # Asobi: Remote Play (exe adı sürüme göre değişebilir)
+CONSOLE_STREAM_APPIDS = frozenset({"4505440", "4534740"})            # Asobi'nin Steam sayfaları
+
+
+def is_console_stream_exe(path: str) -> bool:
+    base = os.path.basename(path or "").lower()
+    return base in CONSOLE_STREAM_EXES or bool(CONSOLE_STREAM_STEM.search(os.path.splitext(base)[0]))
+
+
 def clean_name(name: str) -> str:
     name = re.sub(r"[™®©]", "", name or "").strip()
     return re.sub(r"\s+", " ", name)
@@ -744,6 +759,9 @@ class GameLibrary:
             if p in self._ignored:
                 return None
             dir_hit = next((e for root, e in self._dirs if p.startswith(root)), None)
+            if is_console_stream_exe(p) or (dir_hit is not None and dir_hit.store == "steam" and (
+                    dir_hit.appid in CONSOLE_STREAM_APPIDS or CONSOLE_STREAM_STEM.search(dir_hit.name))):
+                return GameEntry(CONSOLE_GAME_NAME, "console", exe=exe_path, slug=CONSOLE_GAME_SLUG)
             if p in self._custom:
                 # Elle eklenen oyun: "oyun mu" kararı kullanıcının; ad ve slug mağazada kayıtlıysa oradan gelir
                 if dir_hit is not None:

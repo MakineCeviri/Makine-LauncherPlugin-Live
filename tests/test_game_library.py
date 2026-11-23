@@ -148,6 +148,16 @@ def main():
     m = lib.match(r"D:\Oyunlar\BG3\bin\bg3.exe")
     check(m is not None and m.slug == "baldurs-gate-3", "bilinen exe adı (mağaza bilgisi yok)")
     check(lib.summary().get("steam") == 3, f"özet: 3 Steam oyunu ({lib.summary()})")
+    for app in (r"C:\Program Files (x86)\Sony\PS Remote Play\RemotePlay.exe",
+                r"C:\Program Files\WindowsApps\Microsoft.GamingApp_1\XboxPcApp.exe",
+                r"D:\SteamLibrary\steamapps\common\Asobi Remote Play\AsobiRemotePlay.exe",
+                r"C:\Tools\chiaki-ng\chiaki-ng.exe"):
+        m = lib.match(app)
+        check(m is not None and (m.name, m.slug, m.store) == ("Grand Theft Auto VI", "grand-theft-auto-vi", "console"),
+              f"konsol yayın uygulaması GTA VI havuzuna gider ({os.path.basename(app)})")
+    lib.mark_not_game(r"C:\Tools\chiaki-ng\chiaki-ng.exe")
+    check(lib.match(r"C:\Tools\chiaki-ng\chiaki-ng.exe") is None, "konsol uygulamasında da 'oyun değil' geçerli")
+    lib.add_custom(r"C:\Tools\chiaki-ng\chiaki-ng.exe")
 
     print("[3] Kullanıcı işaretleri (kalıcı)")
     tool = r"C:\Tools\MyEmu\emu.exe"

@@ -35,6 +35,25 @@ EXCLUDES = [
 ]
 
 
+# PyInstaller'ı kendi derlediğimiz başlatıcıyla çalıştırır (tools/build_bootloader.py): kurulu paketin dosyalarına dokunmadan,
+# EXE adımının seçtiği başlatıcı dosyası build/bootloader/<sürüm>/ altındakiyle değiştirilir.
+PYINSTALLER_WITH_OWN_BOOTLOADER = r"""
+import os, sys
+from PyInstaller.building import api
+own_dir = os.environ["MAKINE_BOOTLOADER_DIR"]
+_orig = api.EXE._bootloader_file
+def _own(self, exe, extension=None):
+    path = _orig(self, exe, extension)
+    own = os.path.join(own_dir, os.path.basename(path))
+    if not os.path.isfile(own):
+        raise SystemExit("Kendi başlatıcımız eksik: " + own)
+    return own
+api.EXE._bootloader_file = _own
+import PyInstaller.__main__
+PyInstaller.__main__.run(sys.argv[1:])
+"""
+
+
 def fail(msg: str) -> int:
     print(f"\nHata: {msg}")
     return 1
@@ -156,9 +175,13 @@ def main() -> int:
     apk = tv_apk()
     ipk = webos_ipk()
 
+    # Antivirüslerin yanlış alarmı: hazır başlatıcı yerine kaynaktan derlenmiş olanı, UPX sıkıştırması asla
+    from build_bootloader import build as build_bootloader
+    env = dict(os.environ, MAKINE_BOOTLOADER_DIR=build_bootloader())
+
     sep = os.pathsep
     args = [
-        sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
+        sys.executable, "-c", PYINSTALLER_WITH_OWN_BOOTLOADER, "--noconfirm", "--clean", "--onefile", "--windowed", "--noupx",
         "--name", NAME, "--icon", ICON, "--version-file", vfile,
         "--distpath", DIST, "--workpath", os.path.join(WORK, "work"), "--specpath", WORK,
         "--add-data", f"{RELEASE}{sep}runtime",
@@ -180,7 +203,7 @@ def main() -> int:
 
     print(f"Paketleniyor: Makine Live {version} → dist/{NAME}.exe")
     t0 = time.time()
-    rc = subprocess.call(args, cwd=ROOT)
+    rc = subprocess.call(args, cwd=ROOT, env=env)
     if rc != 0:
         return fail("PyInstaller başarısız oldu (çıktıya bakın).")
     exe = os.path.join(DIST, f"{NAME}.exe")

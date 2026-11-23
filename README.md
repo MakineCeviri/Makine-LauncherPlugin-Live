@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Sürüm" src="https://img.shields.io/badge/s%C3%BCr%C3%BCm-0.3.0%20beta-FCCD66">
+  <img alt="Sürüm" src="https://img.shields.io/badge/s%C3%BCr%C3%BCm-0.3.2%20beta-FCCD66">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4">
   <img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-00599C">
   <a href="LICENSE"><img alt="Lisans" src="https://img.shields.io/badge/lisans-AGPL--3.0%20%2B%20Commons%20Clause-555"></a>
@@ -78,7 +78,7 @@ Ayrıntılar (C ABI, yakalama, pipeline, sunucuyla sözleşme, konsensüs kurall
 | Bileşen | Klasör | Durum |
 |---|---|---|
 | **`makine-live.dll`** — C++23 çekirdeği: yakalama, OCR, temizlik, önbellek, çeviri. Makine Launcher'ın yüklediği nihai ürün (`.makine` paketi) | `src/`, `include/` | beta |
-| **Makine Live uygulaması** — tek dosyalık `MakineLive.exe`: kontrol paneli, oyun algılama, yerel havuz, altyazı kutusu, konsol modu. Özellikler önce burada denenir, sonra DLL'e taşınır | kök klasördeki `*.py` | 0.3.0 beta |
+| **Makine Live uygulaması** — tek dosyalık `MakineLive.exe`: kontrol paneli, oyun algılama, yerel havuz, altyazı kutusu, konsol modu. Özellikler önce burada denenir, sonra DLL'e taşınır | `makine_live/` | 0.3.2 beta |
 | **Makine TV (Android TV / Google TV)** — HDMI görüntüsünün üstüne altyazı çizen katman uygulaması | `tv/` | beta |
 | **Makine TV (LG webOS)** — konsol görüntüsünü kendi içinde açıp altyazıyı üstüne yazan uygulama + servis | `tv-webos/` | beta |
 | **Sunucu** — çeviri havuzu, hesaplar, çevirmen portalı (`makineceviri.org/api/live/`, Cloudflare Workers) | ayrı depo | canlı |
@@ -129,7 +129,7 @@ Tek adımda sürüm: `build.cmd`'ye çift tıklayın ya da komut satırından ç
 
 ```powershell
 build.cmd                        # yeni sürüm numarasını sorar (boş = aynı sürüm)
-build.cmd 0.3.1                  # sürümü her yerde 0.3.1 yapar, sonra derler
+build.cmd 0.3.3                  # sürümü her yerde 0.3.3 yapar, sonra derler
 build.cmd --hizli                # testleri atlar
 ```
 
