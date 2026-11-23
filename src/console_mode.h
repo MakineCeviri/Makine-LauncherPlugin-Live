@@ -69,6 +69,8 @@ bool alive(const Source& s);
 Rect clientRect(void* hwnd);
 /// Why the source cannot be read now ("" = it can).
 std::string blockReason(const Source* s);
+/// The same as a fixed code: source_missing | source_minimized | source_small | "" (OCR_KARAR §6).
+std::string blockCode(const Source* s);
 /// Does PrintWindow give the window's picture (not black)?
 bool windowHasImage(void* hwnd);
 /// Fractional region → client coordinates of the source window (what the capture reads).

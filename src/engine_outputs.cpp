@@ -214,7 +214,13 @@ void Engine::applyStyleOutputs()
     if (s.contains("widthPct") && s["widthPct"].is_number()) web["width"] = s["widthPct"];
     if (s.contains("shadow") && s["shadow"].is_boolean()) web["shadow"] = s["shadow"];
     if (m_web) m_web->setStyle(web);
-    if (m_tv) m_tv->setStyle(size, pos, opacity);
+    const int tvOpacity = s.contains("bandOpacity") || str(s, "preset") == "minimal" ? opacity : 86;
+    if (m_tv)
+        m_tv->setStyle({{"t", "style"}, {"size", size}, {"pos", pos}, {"opacity", tvOpacity},
+                        // optional fields (TV-app change): size relative to the screen height, safe area, lines, colours
+                        {"relSize", 0.046}, {"safeArea", 0.05}, {"maxLines", 2},
+                        {"text", str(s, "textColor").empty() ? "#ffffff" : str(s, "textColor")},
+                        {"band", str(s, "bandColor").empty() ? "#0f1012" : str(s, "bandColor")}});
 }
 
 bool Engine::boxWanted() const
@@ -254,6 +260,90 @@ void Engine::updateDiscord()
                                        console, "", console ? std::string(console::kGameSlug) : m_gameSlug);
     }
     m_discord->set(std::move(activity));
+}
+
+// ── reason codes (OCR_KARAR §6): one sentence and one fix per code ──────────
+
+namespace {
+
+struct ReasonText {
+    const char *code, *text, *action;
+};
+
+const ReasonText kReasons[] = {
+    {"maintenance", "Makine Live şu an bakımda; bakım bitince kendiliğinden devam eder.", "none"},
+    {"update_required", "Makine Live'ın bu sürümü artık desteklenmiyor. Makine'yi güncelle.", "update_launcher"},
+    {"signed_out", "Makine hesabınla giriş yap.", "login"},
+    {"offline", "Sunucuya ulaşılamıyor; bağlantı gelince devam eder.", "retry"},
+    {"source_missing", "Konsol görüntüsü görünmüyor. PS Remote Play, Xbox uygulaması ya da yakalama programını aç.", "open_source"},
+    {"source_minimized", "Konsol penceresi küçültülmüş. Pencereyi ekranda aç; başka pencerelerin altında kalabilir.", "restore_source"},
+    {"source_small", "Konsol penceresi çok küçük. En az 960×540 yap.", "enlarge_source"},
+    {"black_frame", "Görüntü siyah geliyor. Yakalama kartıyla PS5'te HDCP'yi kapat; Remote Play'i tam ekrandan çıkar.", "check_hdcp"},
+    {"capture_failed", "Ekran okunamadı; yeniden deneniyor.", "retry"},
+    {"region_missing", "Okunacak altyazı bölgesini seç.", "pick_region"},
+    {"game_missing", "Oyun algılanmadı. Oyunu Makine'den başlat.", "none"},
+    {"game_not_front", "Oyun önde değil; oyuna dönünce okuma sürer.", "none"},
+    {"tv_offline", "TV'ye ulaşılamıyor. Makine TV açık mı, bilgisayarla aynı ağda mı?", "tv_search"},
+    {"tv_bad_code", "TV kodu eşleşmedi. TV ekranındaki kodu yeniden gir.", "tv_pair"},
+    {"quota", "Yeni çeviri sınırı doldu; havuzdaki çeviriler gelmeye devam ediyor.", "none"},
+    {"no_key", "Sunucu şu an yeni çeviri yapamıyor; havuzdaki çeviriler gelmeye devam ediyor.", "none"},
+    {"upstream", "Çeviri servisi yanıt vermedi; yeniden deneniyor.", "none"},
+    {"stopped", "Okuma durdu.", "start"},
+};
+
+json reasonJson(const std::string& code)
+{
+    for (const ReasonText& r : kReasons)
+        if (code == r.code) return {{"code", r.code}, {"text", r.text}, {"action", r.action}};
+    return nullptr;
+}
+
+} // namespace
+
+// Only the most blocking reason at a time, in this order. stream_stalled / stream_poor / hdr_washed
+// need the OCR pipeline's confidence and contrast figures: they come with the OCR rebuild.
+json Engine::reasonLocked() const
+{
+    if (m_maintenance) {
+        json r = reasonJson("maintenance");
+        if (!m_serverMessage.empty()) r["text"] = m_serverMessage;
+        return r;
+    }
+    if (m_blocked) return reasonJson("update_required");
+    if (m_loginState == "signedOut") return reasonJson("signed_out");
+    if (m_loginState == "offline") return reasonJson("offline");
+    if (m_running && !m_captureCode.empty()) return reasonJson(m_captureCode);
+    if (m_mode == "console" && m_output == "tv" && m_tv) {
+        const std::string tv = m_tv->state().first;
+        if (tv == "offline") return reasonJson("tv_offline");
+        if (tv == "bad_code") return reasonJson("tv_bad_code");
+    }
+    if (!m_noticeCode.empty()) return reasonJson(m_noticeCode);
+    return nullptr;
+}
+
+// Problems go where the player looks: with the subtitle on the TV, the TV shows them too.
+void Engine::updateTvNote()
+{
+    std::string code, text;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_mode != "console" || m_output != "tv" || !m_tv) return;
+        const json r = reasonLocked();
+        const std::string rc = r.is_object() ? r.value("code", std::string()) : std::string();
+        if (m_running) {
+            m_noteRunning = true;
+            if (rc.rfind("source_", 0) == 0 || rc == "black_frame" || rc == "quota" || rc == "maintenance" || rc == "offline")
+                code = rc;
+        } else if (m_noteRunning) {
+            code = "stopped";
+        }
+        if (code == m_noteCode) return;
+        m_noteCode = code;
+        if (!code.empty()) text = code == "maintenance" && r.is_object() ? r.value("text", std::string())
+                                                                         : reasonJson(code).value("text", std::string());
+    }
+    m_tv->sendNote(code, text);
 }
 
 // ── state and methods for the launcher screen ───────────────────────────────

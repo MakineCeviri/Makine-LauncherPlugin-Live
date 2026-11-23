@@ -231,6 +231,9 @@ function serve(sock) {
             emit({ event: 'line', text: String(msg.text), kind: String(msg.kind || 'api') });
         } else if (msg.t === 'clear') {
             emit({ event: 'clear' });
+        } else if (msg.t === 'note') {
+            // PC'den oyuncuya not (kaynak kayboldu, okuma durdu, kota): satır gibi gösterilir, boşsa temizlenir
+            emit(msg.text ? { event: 'line', text: String(msg.text), kind: 'note' } : { event: 'clear' });
         } else if (msg.t === 'style') {
             emit({ event: 'style', size: msg.size, pos: msg.pos, opacity: msg.opacity });
         }

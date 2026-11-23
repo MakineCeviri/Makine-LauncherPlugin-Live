@@ -256,6 +256,21 @@ void TvLink::setStyle(int size, const std::string& pos, int opacity)
     m_cv.notify_all();
 }
 
+void TvLink::setStyle(json style)
+{
+    std::lock_guard lock(m_mutex);
+    m_style = std::move(style);
+    m_cv.notify_all();
+}
+
+void TvLink::sendNote(const std::string& code, const std::string& text)
+{
+    std::lock_guard lock(m_mutex);
+    m_note = {{"t", "note"}, {"code", code}, {"text", text}};
+    ++m_noteVersion;
+    m_cv.notify_all();
+}
+
 std::pair<std::string, std::string> TvLink::state() const
 {
     std::lock_guard lock(m_mutex);
@@ -339,14 +354,18 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
     }
     if (t != "ok") return finish();
     setState("connected", reply->contains("tv") && (*reply)["tv"].is_string() ? (*reply)["tv"].get<std::string>() : tv.name);
-    json sentStyle, shown;
+    json sentStyle, shown, note;
+    int sentNote = 0;
     {
         std::lock_guard lock(m_mutex);
         sentStyle = m_style;
         if (m_line.is_null()) shown = m_shown;   // the line on the PC screen shows on the TV at once
+        if (!m_note.is_null() && !m_note.value("text", std::string()).empty()) note = m_note;
+        sentNote = m_noteVersion;
     }
     std::string first = sentStyle.is_null() ? std::string() : encode(sentStyle);
     if (!shown.is_null()) first += encode(shown);
+    if (!note.is_null()) first += encode(note);
     if (!first.empty() && !sendAll(s, first)) return finish();
     auto lastSend = Clock::now();
     for (;;) {
@@ -358,7 +377,7 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
                 result = "stale";
                 return finish();
             }
-            if (m_line.is_null() && m_style == sentStyle) {
+            if (m_line.is_null() && m_style == sentStyle && m_noteVersion == sentNote) {
                 const double since = std::chrono::duration<double>(Clock::now() - lastSend).count();
                 const double wait = std::min(1.0, std::max(0.0, kPingS - since));
                 m_cv.wait_for(lock, std::chrono::milliseconds(static_cast<int>(wait * 1000)));
@@ -374,6 +393,10 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
             if (!m_line.is_null()) {
                 out += encode(m_line);
                 m_line = nullptr;
+            }
+            if (m_noteVersion != sentNote) {
+                sentNote = m_noteVersion;
+                out += encode(m_note);
             }
         }
         if (out.empty() && std::chrono::duration<double>(Clock::now() - lastSend).count() >= kPingS)

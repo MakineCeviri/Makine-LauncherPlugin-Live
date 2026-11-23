@@ -48,6 +48,9 @@ public:
     void sendLine(int id, const std::string& text, const std::string& kind);
     void clear();
     void setStyle(int size, const std::string& pos, int opacity);
+    void setStyle(nlohmann::json style);   // with the optional fields (relSize, safeArea, maxLines, text, band)
+    /// A message for the player on the TV ({"t":"note","code","text"}; empty text clears it). TV-app change.
+    void sendNote(const std::string& code, const std::string& text);
 
     /// idle | connecting | connected | bad_code | offline, and the TV's name
     std::pair<std::string, std::string> state() const;
@@ -68,7 +71,8 @@ private:
     std::optional<TvInfo> m_tv;
     std::string m_code;
     nlohmann::json m_line = nullptr, m_style = nullptr;
-    nlohmann::json m_shown = nullptr;   // the line on screen: sent again when the TV (re)connects
+    nlohmann::json m_shown = nullptr, m_note = nullptr;
+    int m_noteVersion = 0;   // the line on screen: sent again when the TV (re)connects
     std::function<void()> m_onChange;
     int m_gen = 0;
     bool m_closed = false;

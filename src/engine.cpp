@@ -306,6 +306,7 @@ json Engine::stateLocked() const
         {"game", {{"name", console ? console::kGameName : m_gameName},
                   {"slug", console ? console::kGameSlug : m_gameSlug}}},
     };
+    state["reason"] = reasonLocked();
     const json outputs = outputsStateLocked();   // a named value: items() of a temporary would dangle
     for (const auto& [k, v] : outputs.items()) state[k] = v;
     return state;
@@ -320,6 +321,7 @@ void Engine::publish()
     }
     m_host.emitEvent("ui.state", payload);
     updateDiscord();
+    updateTvNote();
 }
 
 void Engine::setStatus(const std::string& text)
@@ -1132,7 +1134,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
     }
 
     ApiResult res;
-    std::string notice;
+    std::string notice, noticeCode;
     double requestMs = 0;
     for (int attempt = 1; attempt <= 2; ++attempt) {
         const auto sent = Clock::now();
@@ -1146,6 +1148,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
         }
         if (res.network()) {
             notice = "Sunucuya ulaşılamıyor · yeniden deneniyor";
+            noticeCode = "offline";
             retry = true;
         } else if (res.status == 422) {
             std::lock_guard lock(m_mutex);
@@ -1154,17 +1157,20 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
             break;
         } else if (res.status == 429) {
             notice = "Günlük çeviri sınırı doldu — havuzdaki çeviriler gelmeye devam ediyor";
+            noticeCode = "quota";
             break;
         } else if (res.code() == "maintenance") {
             post([this] { refreshStatus(); });
             break;
         } else if (res.status == 503) {
             notice = "Sunucuda çeviri anahtarı yok · yalnızca havuzdaki satırlar gelir";
+            noticeCode = "no_key";
             break;
         } else {
             logLine(MAKINE_LOG_WARN, "Sunucu " + std::to_string(res.status) + ": " + res.error);
             retry = res.status == 502 || res.status == 504;
             if (retry) notice = "Çeviri servisi yanıt vermedi · yeniden deneniyor";
+            if (retry) noticeCode = "upstream";
         }
         if (!retry || attempt == 2) break;
         {
@@ -1181,9 +1187,15 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
     {
         std::lock_guard lock(m_mutex);
         m_inflight.erase(key);
-        if (!notice.empty()) m_notice = notice;
+        if (!notice.empty()) {
+            m_notice = notice;
+            m_noticeCode = noticeCode;
+        }
         if (!translated.empty()) {
-            if (m_notice.find("yeniden deneniyor") != std::string::npos) m_notice.clear();
+            if (m_notice.find("yeniden deneniyor") != std::string::npos) {
+                m_notice.clear();
+                m_noticeCode.clear();
+            }
             m_cache[key] = {translated, kind, now()};
             if (m_cache.size() > 1000) m_cache.erase(m_cache.begin());
             if (kind != "api") ++m_poolHits;
@@ -1272,7 +1284,8 @@ bool Engine::readRegion(void* hwnd, const CaptureRegion& region, std::string& te
     return true;
 }
 
-std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::Box& overlay, bool needGame)
+std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::Box& overlay, bool needGame,
+                                  std::string* code)
 {
     std::string mode, key, gameName;
     unsigned long pid = 0;
@@ -1297,6 +1310,7 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
             m_source = pickSource(key, pid, exes);
         }
         const std::string reason = console::blockReason(m_source ? &*m_source : nullptr);
+        if (code) *code = console::blockCode(m_source ? &*m_source : nullptr);
         if (!reason.empty()) return reason;
         hwnd = m_source->hwnd;
         const console::Box b = console::clientRegion(hwnd, frac);
@@ -1304,7 +1318,10 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         overlay = console::regionToScreen(console::videoRect(console::clientRect(hwnd)), frac);
         return {};
     }
-    if (!pc) return "Önce okunacak bölgeyi seç.";
+    if (!pc) {
+        if (code) *code = "region_missing";
+        return "Önce okunacak bölgeyi seç.";
+    }
     if (needGame) {
         // Read only while the game is in front (the harness's target lock): text of another
         // window over the region (Discord, a browser) must never reach the pool
@@ -1320,8 +1337,12 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         const int cx = pc->x + pc->w / 2, cy = pc->y + pc->h / 2;
         const bool covers = fg && GetWindowRect(fg, &r) && cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom;
         if (!fg || fgPid == GetCurrentProcessId() || fgPid == m_launcherPid || (gamePid && fgPid != gamePid) || !covers)
+        {
+            if (code) *code = "game_not_front";
             return "Oyun önde değil · oyuna dönünce okuma sürer.";
+        }
     }
+    if (needGame && gameName.empty() && code) *code = "game_missing";
     if (needGame && gameName.empty()) return "Oyun algılanmadı · oyunu Makine'den başlat ya da konsol modunu kullan.";
     region = {pc->x, pc->y, pc->w, pc->h};
     overlay = *pc;
@@ -1495,7 +1516,8 @@ void Engine::runCapture()
                     void* hwnd = nullptr;
                     CaptureRegion region;
                     console::Box overlay;
-                    const std::string reason = resolveTarget(hwnd, region, overlay, true);
+                    std::string code;
+                    const std::string reason = resolveTarget(hwnd, region, overlay, true, &code);
                     std::string filtered;
                     bool read = false;
                     if (!reason.empty()) {
@@ -1505,6 +1527,19 @@ void Engine::runCapture()
                         std::string raw;
                         if (readRegion(hwnd, region, raw, error)) {
                             read = true;
+                            // A console window that gives only black (HDCP on a capture card, a GPU path
+                            // PrintWindow cannot see): checked on the whole window every few seconds
+                            bool dark = hwnd != nullptr;
+                            for (size_t i = 0; dark && i < m_frame.pixels.size(); i += 4 * 97)
+                                dark = m_frame.pixels[i] < 16 && m_frame.pixels[i + 1] < 16 && m_frame.pixels[i + 2] < 16;
+                            const double t = now();
+                            if (!dark) m_darkSince = -1;
+                            else if (m_darkSince < 0) m_darkSince = t;
+                            if (dark && t - m_darkSince > 3 && t >= m_blackCheckAt) {
+                                m_blackCheckAt = t + 5;
+                                if (!console::windowHasImage(hwnd)) code = "black_frame";
+                                else m_darkSince = t;   // a dark scene: look again later
+                            }
                             // Our own overlay read back from the screen is never a source line: its
                             // boxes go before the boxes are joined into one sentence. A window read
                             // through PrintWindow (console) never contains the overlay
@@ -1517,10 +1552,18 @@ void Engine::runCapture()
                             setStatus(mode == "console" && m_source ? "Okunuyor · " + m_source->app.label
                                                                     : std::string("Okunuyor"));
                         } else {
+                            code = hwnd && !console::windowHasImage(hwnd) ? "black_frame" : "capture_failed";
                             setStatus(error);
                             wait = kBlockedPollS;
                         }
                     }
+                    bool codeChanged = false;
+                    {
+                        std::lock_guard guard(m_mutex);
+                        codeChanged = code != m_captureCode;
+                        m_captureCode = code;
+                    }
+                    if (codeChanged) publish();
                     const double t = now();
                     handleEvents(read ? m_tracker.update(text::fromUtf8(filtered), t) : m_tracker.reset());
 

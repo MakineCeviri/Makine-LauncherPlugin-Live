@@ -153,6 +153,8 @@ class LinkServer(private val prefs: Prefs, private val listener: Listener) {
                         listener.onLine(it, msg.optString("kind", "api"))
                     }
                     "clear" -> listener.onClear()
+                    // PC'den oyuncuya not (kaynak kayboldu, okuma durdu, kota): satır gibi gösterilir, boşsa temizlenir
+                    "note" -> msg.optString("text").let { if (it.isBlank()) listener.onClear() else listener.onLine(it, "note") }
                     "style" -> listener.onStyle(
                         msg.optInt("size", -1).takeIf { it >= 0 },
                         msg.optString("pos").takeIf { it.isNotEmpty() },

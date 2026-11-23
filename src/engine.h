@@ -104,7 +104,8 @@ private:
     void runCapture();
     bool ensureOcr(std::string& error);
     bool readRegion(void* hwnd, const CaptureRegion& region, std::string& text, std::string& error);
-    std::string resolveTarget(void*& hwnd, CaptureRegion& region, console::Box& overlay, bool needGame);
+    std::string resolveTarget(void*& hwnd, CaptureRegion& region, console::Box& overlay, bool needGame,
+                              std::string* code = nullptr);
     void handleEvents(const std::vector<LineEvent>& events);
     void showOverlay(const Display& d, const console::Box& rect);
     void hideOverlay();
@@ -132,6 +133,8 @@ private:
     std::optional<makine::plugin::Result> invokeOutputs(std::string_view method, const nlohmann::json& params);
     void onStatus(const nlohmann::json& data);
     void onLogRequest(const std::string& requestId);
+    nlohmann::json reasonLocked() const;   // the most blocking reason {code, text, action} or null
+    void updateTvNote();
     void setHostSetting(const std::string& key, bool value);
     void beatLoop(int gen);
     nlohmann::json beatPayloadLocked(bool bye);
@@ -206,6 +209,9 @@ private:
     // Fable's rules: console lines go to the GTA VI pool only after the player agreed once; nothing is
     // captured before the player's first explicit start (autoStart waits for it); the screen is told a
     // firewall question is coming before the first home-network listener opens
+    std::string m_captureCode, m_noticeCode, m_noteCode;   // fixed reason codes (OCR_KARAR §6)
+    bool m_noteRunning = false;
+    double m_darkSince = -1, m_blackCheckAt = 0;   // capture thread: black-frame detection
     bool m_consoleConsent = false, m_everStarted = false, m_lanOnce = false, m_firewallHeadsUp = false;
 
     // ── capture thread only ──

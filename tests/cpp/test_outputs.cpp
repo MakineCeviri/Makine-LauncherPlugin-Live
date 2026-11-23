@@ -319,7 +319,7 @@ void testTvLink()
         const std::string reply = hello.find("\"code\":\"4321\"") != std::string::npos ? "{\"t\":\"ok\",\"tv\":\"Salon TV\"}\n"
                                                                                        : "{\"t\":\"bad_code\"}\n";
         send(c, reply.data(), static_cast<int>(reply.size()), 0);
-        received = readUntil(c, "Merhaba");
+        received = readUntil(c, "Kota doldu");
         closesocket(c);
     });
     const auto found = discoverTvs(1500, udpPort, {"127.0.0.1"});
@@ -332,9 +332,12 @@ void testTvLink()
     check(link->state().first == "connected" && link->state().second == "Salon TV", "paired with the code");
     link->setStyle(30, "alt", 80);
     link->sendLine(1, "Merhaba", "api");
+    link->sendNote("quota", "Kota doldu");
     tv.join();
     check(received.find("\"t\":\"style\"") != std::string::npos && received.find("\"text\":\"Merhaba\"") != std::string::npos,
           "style and line arrive");
+    check(received.find("\"t\":\"note\"") != std::string::npos && received.find("\"code\":\"quota\"") != std::string::npos,
+          "a note for the player arrives");
     link->close();
     closesocket(udp);
     closesocket(tcp);

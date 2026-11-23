@@ -242,6 +242,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "server": {"maintenance", "message"}, "notice": "…",
   "style": { ... }, "game": {"name", "slug"}
   "autoStart": false, "usageReport": true, "consoleConsent": false, "everStarted": false,
+  "reason": {"code", "text", "action"} | null,   // en engelleyici tek neden (aşağıda)
   "output": "pc|tv|phone", "obs": false,
   "web": {"running", "lan", "port", "clients", "obsUrl", "phoneUrl", "error", "firewallNote", "firewallHeadsUp"},
   "tv": {"state": "idle|connecting|connected|bad_code|offline", "detail", "paired": {...} | null, "found": [{"id", "name", "host", "port"}], "searching"},
@@ -263,6 +264,17 @@ Makine olmamalı ve bölgenin ortasını kapsamalı. Ekrandan okunan ve gösterd
 cümle birleştirilmeden önce atılır; yine de Makine'nin kaplama penceresinin `SetWindowDisplayAffinity(
 WDA_EXCLUDEFROMCAPTURE)` ile yakalamadan gizlenmesi gerekir. Yerel havuz, oyun Makine'nin kütüphanesinden
 geldiği için sormadan indirilir.
+
+**Neden kodları** (`ui.state.reason`, OCR_KARAR §6; serbest metin `status` yalnız ayrıntıdır), öncelik sırasıyla:
+`maintenance` · `update_required` (eylem `update_launcher`) · `signed_out` (`login`) · `offline` (`retry`) ·
+`source_missing` (`open_source`) · `source_minimized` (`restore_source`) · `source_small` (`enlarge_source`) ·
+`black_frame` (`check_hdcp`) · `capture_failed` (`retry`) · `region_missing` (`pick_region`) · `game_missing` ·
+`game_not_front` · `tv_offline` (`tv_search`) · `tv_bad_code` (`tv_pair`) · `quota` · `no_key` · `upstream`.
+`stream_stalled`, `stream_poor`, `hdr_washed` OCR hattının güven / kontrast ölçüleriyle gelecek. Çıktı TV iken kaynak
+kaybı, siyah görüntü, kota, bakım ve okumanın durması TV'ye `{"t":"note","code","text"}` olarak da gider (boş `text`
+notu kaldırır). TV stili isteğe bağlı `relSize` (ekran yüksekliğine oran, 0.046), `safeArea` (0.05), `maxLines` (2),
+`text`, `band` alanlarını da taşır; varsayılan koyu şerit, beyaz yazı, opaklık 86. **TV uygulaması:** `note` Android
+(`LinkServer.kt`) ve webOS servisinde satır olarak gösterilir; yeni stil alanlarını TV uygulamaları henüz uygulamıyor.
 
 **Çıktılar.** Çeviri, PC modunda ve konsol modunda `output: "pc"` iken Makine'nin kaplamasıyla gösterilir; `tv` iken
 Makine TV'ye (UDP 47710 keşif, TCP satır-JSON, TV'deki 4 haneli kod; `src/tv_link.cpp`), `phone` iken telefon / tablet

@@ -258,6 +258,15 @@ std::string blockReason(const Source* s)
     return {};
 }
 
+std::string blockCode(const Source* s)
+{
+    if (!s || !alive(*s)) return "source_missing";
+    if (IsIconic(static_cast<HWND>(s->hwnd))) return "source_minimized";
+    const Rect r = clientRect(s->hwnd);
+    if (r.r - r.l < kMinWidth || r.b - r.t < kMinHeight) return "source_small";
+    return {};
+}
+
 Box clientRegion(void* hwnd, const Frac& frac)
 {
     const Rect c = clientRect(hwnd);
