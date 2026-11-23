@@ -47,15 +47,15 @@ Onay = öneride yazıldığı gibi. Değişiklik = aşağıdaki biçimiyle.
 | **K4** | **Değişiklik → aday, F3; birincil yol değil** | Risk GTA tarzı altyazıda yüksek: parlak açık dünya zemini (gökyüzü, kum, neon) parlak dolgu maskesini doldurur; satır içi **renkli kelime** (GTA V görev metninde hedef adları renkliydi; GTA VI gerçek karede doğrulanacak) ve **düğme simgesi** izdüşümü böler. Kazancı da K3'ten sonra küçüktür: OCR saniyede bir kereden az çalışıyorsa dedektörün 40 ms'si E2E'ye girer ama CPU'ya girmez. B2'de gerçek karelerde G-ORDER/G-SPLIT = 0 ve CER farkı ≤ 0,3 görülürse girer. "Öğrenilmiş bant" K4 ile birlikte bekler. |
 | **K4a** | **Onay, F1** | Asıl düzeltme budur. Eşikler satır yüksekliğine göreli kalır. Birleştirilen kırpıntı tek rec çağrısına gider. İki satırlı altyazı yukarıdan aşağı, tek boşlukla birleşir. |
 | **K5** | **Onay** | cls yüklenmez, pakete girmez. |
-| **K6** | **Onay, değişiklikle** | F1'de model değişmez. Geçiş ancak §4'teki kanıtla. `latin` v5 ve INT8 **girmiyor** (rec ~8 ms; riske değmez; S4 darboğaz çıkarsa yeniden açılır). |
+| **K6** | **Onay, değişiklikle** | F1'de model değişmez. Geçiş ancak §4'teki kanıtla. `latin` v5 ve INT8 **girmiyor** (rec'in hedefi satır başına ~8 ms (V); B0'da S4 darboğaz çıkarsa yeniden açılır). |
 | **K7** | **Onay, yalnız (a)** | RGB olduğu gibi. (b) ve (c) ancak D-C'de CER düşürürse. Keskinleştirme / ikilileştirme yok. |
 | **K8** | **Onay, değişiklikle** | İş parçacığı politikası **moda göre**: PC modunda 1 iş parçacığı, spin kapalı, `BELOW_NORMAL` (oyun bu makinede). Konsol modunda oyun bu makinede değil; 2 iş parçacığı, normal öncelik, sınır "akış çözücüsü takılmasın". EcoQoS yalnız PC modunda aday. Isınma ve spin kapalı her modda. |
-| **K9** | **Onay, F3** | GTA daktilo altyazı kullanmıyor; öncelik değil. |
+| **K9** | **Onay, F3** | GTA altyazısı satırı bütün gösterir, daktilo değil (V: GTA V böyleydi; GTA VI gerçek kare setinde doğrulanır, daktilo çıkarsa K9 F2'ye çıkar). |
 | **K10** | **Bu turda girmiyor** | Gösterim tarafı dahil. GTA VI'nın konuşmacı adı gösterip göstermediği gerçek karede görülmeden tasarım yok; anahtar değişikliği ayrıca iki depolu karar. |
 | **K11** | **Değişiklik** | Tek okumayla gönderme yalnız şu üçü birlikteyse: maske 2 uyanışta sabit **ve** rec güveni eşiğin üstünde **ve** D-C'de G-HALF ile G-KEY tabandan kötü değil. Kanıtlanana kadar konsol yolunda **iki okuma kuralı kalır**; sıkıştırma titremesinde havuzu koruyan odur. |
-| **K12** | **Tam anahtar: onay (F2). Önek ön-yükleme: ret.** | Onaylı satırda tam anahtar isabeti risksiz ve en büyük E2E kazancı. Önek bilerek kaldırılmıştı; yalnız daktiloda işe yarar, GTA'da yok. |
+| **K12** | **Tam anahtar: onay (F2). Önek ön-yükleme: ret.** | Onaylı satırda tam anahtar isabeti risksiz ve en büyük E2E kazancı. Önek bilerek kaldırılmıştı; yalnız daktiloda işe yarar (K9'daki varsayımla aynı). |
 | **K13** | **Onay** | Havuz eşitlemesi okuma başlamadan bitmiş olur. HTTP/2 aday, HTTP/3 girmiyor. Ek: TV ve telefon soketlerinde `TCP_NODELAY` (§5). |
-| **K14** | **Ret (ürün yolu)** | Türkçe Windows'ta `en-US` OCR bileşeni çoğunlukla yok; kurdurmak oyuncuya iş. Kıyas düzeni ucuzsa tavan rakamı olarak raporlar, eklentide WinRT işi yapılmaz. |
+| **K14** | **Ret (ürün yolu)** | Türkçe Windows'ta `en-US` OCR bileşeni büyük olasılıkla kurulu değil (V); kurdurmak oyuncuya iş, satır geometrisi de bizde olmaz (G1). Kıyas düzeni ucuzsa tavan rakamı olarak raporlar, eklentide WinRT işi yapılmaz. |
 | **K15** | **Ret** | "Varsayılan kapalı" da değil: GPU oyunun, paket büyür, antivirüs yüzeyi artar. Kapandı. |
 | **K16** | **Değişiklik: ikiye ayrılır** | (a) PC masaüstü HDR (DXGI): F3, önce ölçüm. (b) **Konsol HDR: F0'da soru.** PS5 HDR açıkken Remote Play / chiaki penceresi ve yakalama kartı önizlemesi `PrintWindow`'da ne veriyor (doğru SDR mi, soluk gri mi)? Varsayım yapılmaz, kaynak tablosunda ölçülür (§6). |
 | **K17** | **Onay, F3, yalnız PC modu** | |
@@ -111,6 +111,10 @@ Onu kısaltamayız; bu yüzden kendi payımız (K12, K13, TV sıçraması) önem
 hızlı çıkarsa rehberde öyle söylenir. `tv_link` ve SSE soketlerinde `TCP_NODELAY` denetlenir (Nagle + gecikmeli ACK
 tek başına ~40 ms ekleyebilir).
 
+**G-TV-HOP nasıl ölçülür:** PC ve TV saatleri ayrı olduğu için tek yönlü zaman damgası kullanılmaz. Makine TV satırı
+çizdiği karede `drawn{id}` yanıtı yollar; PC gidiş-dönüşü ölçer ve yarısını alır (yalnız ölçüm derlemesinde). Doğrulama:
+PC kutusu ve TV aynı kadrajda, 240 kare/sn kamera.
+
 ## 6. Konsol / Remote Play için eksikler (F0'a girer)
 
 **Kaynak tablosu (B-WIN, öne alındı).** Her kaynak için: `PrintWindow` çalışıyor mu, tur süresi, siyah kare, PS5 HDR
@@ -143,7 +147,7 @@ bir `reason` kodu taşır; ekran tek cümle ve tek düzeltme düğmesi gösterir
 | Sıra | İş | Geçme |
 |---|---|---|
 | **F0** | B0 tabanı (bugünkü hat birebir) · D-R genişletilmiş · D-C · kaynak tablosu · gerçek kare çekimi başlar | Taban JSON'u; RapidOcrOnnx'in D-R'deki hata sayısı raporlu |
-| **F1** | Kendi ORT hattı, **aynı modeller** + K4a + K5 + K8 (moda göre) | D-R'de G-ORDER = 0 ve G-SPLIT = 0 · aynı kırpıntıda rec metni RapidOcrOnnx ile birebir · S4 ≤ taban · G-IO = 0 · G-ORT · `ctest` vektörleri aynen |
+| **F1** | Kendi ORT hattı, **aynı modeller** + K4a + K5 + K8 (moda göre) | D-R'de G-ORDER = 0 ve G-SPLIT = 0 · aynı kırpıntıda rec metni RapidOcrOnnx ile birebir · **tam karede CER ve G-KEY (D-A + D-C) B0'dan kötü değil** (kutularımız ve yeniden ölçeklememiz OpenCV'ninkinden farklı kırpıntı üretir; kırpıntı eşliği bunu göremez) · S4 ≤ taban · G-IO = 0 · G-ORT · `ctest` vektörleri aynen |
 | **F2** | K3 maskesi (konsol yolunda OCR kapısı) → K12 tam anahtar + K13 + TV kapıları → K11 (kanıtla) | G-RATE · G-MISS = 0 (D-C) · G-E2E-TV · G-WRONG = 0 |
 | **F2b** | B1: model kararı (§4) | §4'ün beş maddesi |
 | **F3** | K4 (aday), K2 / K17 (PC modu), K16a, K9 | ilgili kapılar |
