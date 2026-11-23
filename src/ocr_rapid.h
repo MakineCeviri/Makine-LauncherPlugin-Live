@@ -36,6 +36,16 @@ public:
     // models/en_PP-OCRv3_rec_infer.onnx + en_dict.txt exist). Measured on stylised subtitles the English model
     // occasionally produced garbage lines, so it is opt-in via the `ocrModel` setting. Call before init().
     void setLanguage(const std::string& model) { m_lang = model; }
+    // Launcher plugin (ABI 2): RapidOcrOnnx.dll from runtimeDir, models from modelsDir, the scratch
+    // image in workDir. RapidOcrOnnx widens its char* paths byte by byte, so in this mode every path
+    // it gets is a relative ASCII name opened from a current directory set with the wide API (the
+    // caller's thread owns the process's current directory). Call before init().
+    void setPaths(std::wstring runtimeDir, std::wstring modelsDir, std::wstring workDir)
+    {
+        m_runtimeDirW = std::move(runtimeDir);
+        m_modelsDirW = std::move(modelsDir);
+        m_workDirW = std::move(workDir);
+    }
     const std::string& language() const { return m_lang; }
     const std::string& activeModel() const { return m_activeModel; }
     std::string lastError() const override { return m_error; }
@@ -70,6 +80,8 @@ private:
     // Narrow-char API → ANSI path; created once with FILE_ATTRIBUTE_TEMPORARY so it stays in cache.
     std::wstring m_tempDirW;
     std::string m_tempDirAnsi;   // with trailing backslash, as OcrDetect expects
+
+    std::wstring m_runtimeDirW, m_modelsDirW, m_workDirW;   // setPaths()
 };
 
 } // namespace live

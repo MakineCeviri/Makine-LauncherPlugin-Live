@@ -1,0 +1,182 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Makine Çeviri. Commons Clause applies — see LICENSE.
+
+#pragma once
+
+// Makine Live inside the launcher (plugin ABI 2): the screen the launcher draws from
+// ui.state, the reading loop and the server. Threads:
+//   host thread     invoke / onEvent only flip state and queue work; never blocks
+//   capture thread  owns capture, OCR, the text filter, LineTracker and SubtitleScheduler,
+//                   and drives overlay.show / overlay.hide
+//   net threads     (2) a timed job queue: login, profile, status, pool sync, translations,
+//                   and host calls that wait for the user (overlay.pickRegion)
+// Every thread holds a shared_ptr to the Engine, so one that misses the shutdown budget is
+// detached and finishes on memory that is still alive.
+
+#include "capture.h"
+#include "console_mode.h"
+#include "garbage.h"
+#include "local_pool.h"
+#include "ocr_rapid.h"
+#include "server.h"
+#include "settings.h"
+#include "subtitle_timing.h"
+#include "text_fix.h"
+
+#include <makine/plugin/sdk.hpp>
+#include <nlohmann/json.hpp>
+
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+namespace live {
+
+struct EngineInit {
+    std::wstring dataDir, pluginDir;
+    std::string version, launcherVersion;
+};
+
+class Engine : public std::enable_shared_from_this<Engine> {
+public:
+    Engine(makine::plugin::Host host, EngineInit init);
+
+    void launch();
+    void shutdown();   // within ~2.5 s of the host's 3 s budget
+
+    makine::plugin::Result invoke(std::string_view method, const nlohmann::json& params);
+    void onEvent(std::string_view event, const nlohmann::json& payload);
+
+private:
+    using Clock = std::chrono::steady_clock;
+    struct Job {
+        Clock::time_point due;
+        std::function<void()> fn;
+    };
+    struct Translated {   // a translation for the capture thread
+        int line;
+        std::string text;   // empty: failed
+        std::string kind;
+    };
+    struct CachedTranslation {
+        std::string text, kind;
+        double at;
+    };
+
+    // host thread
+    makine::plugin::Result loginStart();
+    makine::plugin::Result pickRegion();
+    makine::plugin::Result readOnce();
+    makine::plugin::Result startReading();
+    makine::plugin::Result listSources(bool all);
+    makine::plugin::Result selectSource(const nlohmann::json& params);
+
+    // net threads
+    void post(std::function<void()> fn, double delaySeconds = 0);
+    void runNet();
+    void loginPoll(int gen, std::string secret, double deadline, double interval);
+    void validateSession();
+    void refreshStatus();
+    void statusLoop();
+    void syncPool(bool force);
+    void translateJob(int line, std::string text, int seq, std::string slug, std::string gameName);
+    void signedOut(const std::string& message);
+    void signedIn(const nlohmann::json& profile);
+    void handleAuthFailure(const ApiResult& r);
+
+    // capture thread
+    void runCapture();
+    bool ensureOcr(std::string& error);
+    bool readRegion(void* hwnd, const CaptureRegion& region, std::string& text, std::string& error);
+    std::string resolveTarget(void*& hwnd, CaptureRegion& region, console::Box& overlay, bool needGame);
+    void handleEvents(const std::vector<LineEvent>& events);
+    void showOverlay(const Display& d, const console::Box& rect);
+    void hideOverlay();
+    void stopTracking();
+
+    // any thread
+    nlohmann::json stateLocked() const;
+    void publish();
+    void setStatus(const std::string& text);
+    void notifyError(const std::string& message);
+    void saveSettings();
+    std::string currentSlug() const;   // under m_mutex
+    double now() const;
+
+    const makine::plugin::Host m_host;
+    const EngineInit m_init;
+    const Clock::time_point m_t0 = Clock::now();
+    ServerClient m_server;
+    LocalPool m_pool;
+
+    // ── guarded by m_mutex ──
+    mutable std::mutex m_mutex;
+    std::condition_variable m_captureCv, m_netCv;
+    Settings m_settings;
+    bool m_quit = false;
+    int m_finished = 0;
+    std::deque<std::function<void()>> m_captureJobs;
+    std::vector<Job> m_jobs;
+    // screen state
+    std::string m_loginState = "signedOut", m_loginCode, m_loginUrl, m_loginMessage, m_user;
+    int m_loginGen = 0;
+    std::string m_mode = "pc";
+    std::optional<console::Box> m_pcRegion;
+    console::Frac m_consoleRegion = console::kDefaultRegion;
+    std::string m_sourceKey;                  // preferred console source
+    unsigned long m_sourcePid = 0;            // the one the user selected
+    std::vector<std::string> m_customExes;
+    nlohmann::json m_sources = nlohmann::json::array();
+    nlohmann::json m_style = nlohmann::json::object();
+    bool m_running = false, m_picking = false;
+    std::string m_status = "Hazır";
+    nlohmann::json m_lastLine = nullptr;
+    int m_lines = 0, m_poolHits = 0;
+    bool m_maintenance = false, m_blocked = false;
+    std::string m_serverMessage, m_notice;
+    int m_styleVersion = 0;
+    std::string m_gameName, m_gameSlug;       // PC: the game the launcher says is running
+    std::string m_poolSlug;                    // the local pool in use
+    double m_poolSyncedAt = -1e9;
+    // translation bookkeeping
+    std::deque<Translated> m_results;
+    std::unordered_map<int, int> m_dispatchSeq;
+    std::unordered_map<int, double> m_goneAt;
+    std::set<std::u32string> m_skipKeys;       // the server called them garbage (422)
+    std::map<std::u32string, CachedTranslation> m_cache;
+    std::set<std::u32string> m_inflight;
+    std::string m_lastError;
+
+    // ── capture thread only ──
+    std::unique_ptr<ScreenCapture> m_capture;
+    std::unique_ptr<RapidOcrEngine> m_ocr;
+    SpacingFixer m_spacing;
+    text::Garbage m_garbage;
+    CapturedFrame m_frame;
+    uint64_t m_lastHash = 0;
+    std::string m_lastOcr, m_lastRaw, m_lastFiltered;
+    LineTracker m_tracker;
+    SubtitleScheduler m_scheduler;
+    bool m_active = false, m_overlayShown = false;
+    std::optional<Display> m_shown;
+    std::map<int, std::string> m_lineSource;   // line id -> the text sent for translation
+    std::vector<std::u32string> m_shownKeys;   // recent overlay texts: never read back as source
+    std::optional<console::Source> m_source;
+    double m_nextPick = 0;
+
+    std::thread m_captureThread;
+    std::vector<std::thread> m_netThreads;
+};
+
+} // namespace live

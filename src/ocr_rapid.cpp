@@ -33,8 +33,14 @@ bool RapidOcrEngine::init(const std::string& dataPath)
         if (dir.empty()) return nullptr;
         return LoadLibraryExW((dir + L"\\RapidOcrOnnx.dll").c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     };
-    m_hDll = tryLoad(pluginDir);
-    if (!m_hDll) m_hDll = tryLoad(dataDir);
+    if (!m_runtimeDirW.empty()) {
+        // Full path; its imports only from its own folder and System32, never PATH or the current directory
+        m_hDll = LoadLibraryExW((m_runtimeDirW + L"\\RapidOcrOnnx.dll").c_str(), nullptr,
+                                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    } else {
+        m_hDll = tryLoad(pluginDir);
+        if (!m_hDll) m_hDll = tryLoad(dataDir);
+    }
     if (!m_hDll) {
         m_error = "RapidOcrOnnx.dll yüklenemedi (hata " + win::lastErrorString()
                 + "). Dosya ve onnxruntime.dll eklenti klasöründe olmalı.";
@@ -53,13 +59,58 @@ bool RapidOcrEngine::init(const std::string& dataPath)
         return false;
     }
 
-    std::wstring modelsDir = pluginDir + L"\\models";
-    if (pluginDir.empty() || !win::isDirectory(modelsDir))
+    std::wstring modelsDir = !m_modelsDirW.empty() ? m_modelsDirW : pluginDir + L"\\models";
+    if (m_modelsDirW.empty() && (pluginDir.empty() || !win::isDirectory(modelsDir)))
         modelsDir = dataDir + L"\\models";
     if (!win::isDirectory(modelsDir)) {
         m_error = "OCR modelleri bulunamadı: " + win::wideToUtf8(modelsDir);
         shutdown();
         return false;
+    }
+
+    // English source text: the English recognition model keeps word spaces; the Chinese model
+    // often glues English words together ("Iwasgoingtofindyou"), which breaks translation and pool matching.
+    const bool useEnglish = m_lang == "en"
+        && GetFileAttributesW((modelsDir + L"\\en_PP-OCRv3_rec_infer.onnx").c_str()) != INVALID_FILE_ATTRIBUTES
+        && GetFileAttributesW((modelsDir + L"\\en_dict.txt").c_str()) != INVALID_FILE_ATTRIBUTES;
+    m_activeModel = useEnglish ? "en" : "ch";
+    const char* recName = useEnglish ? "en_PP-OCRv3_rec_infer.onnx" : "ch_PP-OCRv3_rec_infer.onnx";
+    const char* keysName = useEnglish ? "en_dict.txt" : "ppocr_keys_v1.txt";
+
+    if (!m_workDirW.empty()) {
+        // Relative names from inside the models folder: ASCII wherever the plugin is installed
+        for (const char* name : {"ch_PP-OCRv3_det_infer.onnx", "ch_ppocr_mobile_v2.0_cls_infer.onnx", recName, keysName}) {
+            if (GetFileAttributesW((modelsDir + L"\\" + win::utf8ToWide(name)).c_str()) == INVALID_FILE_ATTRIBUTES) {
+                m_error = std::string("OCR modeli eksik (models\\") + name + "). Makine'yi onarın ya da yeniden kurun.";
+                shutdown();
+                return false;
+            }
+        }
+        std::wstring previous(GetCurrentDirectoryW(0, nullptr), L'\0');
+        previous.resize(GetCurrentDirectoryW(static_cast<DWORD>(previous.size()), previous.data()));
+        if (!SetCurrentDirectoryW(modelsDir.c_str())) {
+            m_error = "OCR modellerinin klasörüne erişilemedi (hata " + win::lastErrorString() + ")";
+            shutdown();
+            return false;
+        }
+        m_handle = m_fnInit("ch_PP-OCRv3_det_infer.onnx", "ch_ppocr_mobile_v2.0_cls_infer.onnx", recName, keysName, 4);
+        SetCurrentDirectoryW(previous.c_str());
+        if (!m_handle) {
+            m_error = "OCR motoru başlatılamadı (OcrInit)";
+            shutdown();
+            return false;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(m_workDirW, ec);
+        if (!win::isDirectory(m_workDirW)) {
+            m_error = "OCR çalışma klasörü oluşturulamadı: " + win::wideToUtf8(m_workDirW);
+            shutdown();
+            return false;
+        }
+        m_tempDirW = m_workDirW;
+        m_tempDirAnsi.clear();   // OcrDetect gets "" + "capture.bmp" from inside m_tempDirW
+        m_ready = true;
+        return true;
     }
 
     // OcrInit takes narrow (ANSI) paths
@@ -71,14 +122,8 @@ bool RapidOcrEngine::init(const std::string& dataPath)
     }
     const std::string detModel = modelsAnsi + "\\ch_PP-OCRv3_det_infer.onnx";
     const std::string clsModel = modelsAnsi + "\\ch_ppocr_mobile_v2.0_cls_infer.onnx";
-    // English source text: the English recognition model keeps word spaces; the Chinese model
-    // often glues English words together ("Iwasgoingtofindyou"), which breaks translation and pool matching.
-    const bool useEnglish = m_lang == "en"
-        && GetFileAttributesW((modelsDir + L"\\en_PP-OCRv3_rec_infer.onnx").c_str()) != INVALID_FILE_ATTRIBUTES
-        && GetFileAttributesW((modelsDir + L"\\en_dict.txt").c_str()) != INVALID_FILE_ATTRIBUTES;
-    m_activeModel = useEnglish ? "en" : "ch";
-    const std::string recModel = modelsAnsi + (useEnglish ? "\\en_PP-OCRv3_rec_infer.onnx" : "\\ch_PP-OCRv3_rec_infer.onnx");
-    const std::string keysPath = modelsAnsi + (useEnglish ? "\\en_dict.txt" : "\\ppocr_keys_v1.txt");
+    const std::string recModel = modelsAnsi + "\\" + recName;
+    const std::string keysPath = modelsAnsi + "\\" + keysName;
 
     m_handle = m_fnInit(detModel.c_str(), clsModel.c_str(), recModel.c_str(), keysPath.c_str(), 4);
     if (!m_handle) {
@@ -160,6 +205,11 @@ std::vector<OcrBox> RapidOcrEngine::recognize(
         int mostAngle;
     } param = {50, 1024, 0.6f, 0.3f, 2.0f, 0, 0};  // doAngle/mostAngle off: subtitles are horizontal (skips the cls pass)
 
+    // Relative mode (setPaths): the image is opened by its name from inside the work folder
+    if (!m_workDirW.empty() && !SetCurrentDirectoryW(m_tempDirW.c_str())) {
+        m_error = "OCR çalışma klasörüne erişilemedi (hata " + win::lastErrorString() + ")";
+        return {};
+    }
     // OcrDetect expects imgPath = directory (with trailing \) and imgName = file name
     char ok = m_fnDetect(m_handle, m_tempDirAnsi.c_str(), "capture.bmp", &param);
     if (!ok) {

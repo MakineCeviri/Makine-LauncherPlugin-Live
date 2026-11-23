@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Makine Çeviri. Commons Clause applies — see LICENSE.
 
 /**
- * Makine Live Plugin — Entry point + C ABI exports
+ * Makine Live — ABI 1 exports, kept for the Python test harness (makine_live/core/dll.py,
+ * tests/test_plugin.py, tests/test_dll_server.py). The launcher uses ABI 2 (plugin.cpp).
  *
  * Exports:
  *   Base: get_info, initialize, shutdown, is_ready, get_last_error
@@ -52,7 +53,7 @@ MakinePluginInfo makine_get_info(void)
     return {
         "com.makineceviri.live",
         "Makine Live",
-        "0.3.0",
+        MAKINE_LIVE_VERSION,
         MAKINE_PLUGIN_API_VERSION
     };
 }
