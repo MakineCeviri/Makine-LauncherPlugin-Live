@@ -81,6 +81,9 @@ void testNormalization()
     check(text::compactPoolKey(std::string("Iwas going")) == "iwasgoing", "pool key = letters and digits");
     check(text::slugify("Grand Theft Auto VI") == console::kGameSlug, "console slug = slugify(GTA VI)");
     check(text::slugify("Baldur's Gate 3") == "baldurs-gate-3", "slugify drops apostrophes");
+    check(text::gameSlug("Grand Theft Auto V") == "gta-5" && text::gameSlug("The Witcher 3: Wild Hunt") == "witcher-3"
+              && text::gameSlug("Elden Ring") == "elden-ring",
+          "game slugs pinned as the harness pins them");
 }
 
 // ── spec/garbage_vectors.json ───────────────────────────────────────────────

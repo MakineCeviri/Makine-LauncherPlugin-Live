@@ -417,6 +417,24 @@ std::string slugify(std::string_view name)
     return slug.empty() ? "game" : slug;
 }
 
+std::string gameSlug(std::string_view name)
+{
+    // The harness pins these slugs (game_detector.KNOWN_GAMES); the server already has pools under them
+    static const std::pair<const char*, const char*> pins[] = {
+        {"clair-obscur-expedition-33", "expedition-33"},
+        {"grand-theft-auto-v", "gta-5"},
+        {"s-t-a-l-k-e-r-2-heart-of-chornobyl", "stalker-2"},
+        {"skyrim-special-edition", "skyrim"},
+        {"the-elder-scrolls-v-skyrim", "skyrim"},
+        {"the-last-of-us-part-i", "the-last-of-us"},
+        {"the-witcher-3-wild-hunt", "witcher-3"},
+    };
+    const std::string slug = slugify(name);
+    for (const auto& [from, to] : pins)
+        if (slug == from) return to;
+    return slug;
+}
+
 // ── Garbage ─────────────────────────────────────────────────────────────────
 
 bool Garbage::setWords(std::string_view content)

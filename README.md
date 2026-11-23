@@ -234,6 +234,12 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 Çeviri `overlay.show` ile gider: `text` (eski Makine'ler için), `lines: [{text, sourceText?}]`, bölge (`x, y, width,
 height`; konsolda video alanındaki bölgenin ekran karşılığı) ve kayıtlı `style`. PC oyununda oyun Makine'nin
 `game.started` / `game.stopped` olaylarından ve `games.running`'den gelir; konsol modu her zaman GTA VI havuzudur.
+PC modunda okuma yalnızca oyun öndeyken yapılır (test koşucusunun hedef kilidi): Makine `game.started` /
+`games.running` içinde isteğe bağlı `pid` gönderirse öndeki pencerenin süreci o olmalı; göndermezse öndeki pencere
+Makine olmamalı ve bölgenin ortasını kapsamalı. Ekrandan okunan ve gösterdiğimiz çeviriye benzeyen OCR kutuları
+cümle birleştirilmeden önce atılır; yine de Makine'nin kaplama penceresinin `SetWindowDisplayAffinity(
+WDA_EXCLUDEFROMCAPTURE)` ile yakalamadan gizlenmesi gerekir. Yerel havuz, oyun Makine'nin kütüphanesinden
+geldiği için sormadan indirilir.
 
 ## Proje yapısı
 

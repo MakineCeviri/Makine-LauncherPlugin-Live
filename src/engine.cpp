@@ -7,6 +7,7 @@
 #include "winutil.h"
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -139,6 +140,19 @@ std::string computerName()
     return GetComputerNameW(buf, &n) ? win::wideToUtf8(buf) : std::string("PC");
 }
 
+unsigned long parentPid()   // the launcher that started this plugin host
+{
+    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W e{};
+    e.dwSize = sizeof e;
+    unsigned long parent = 0;
+    for (BOOL ok = Process32FirstW(snap, &e); ok; ok = Process32NextW(snap, &e))
+        if (e.th32ProcessID == GetCurrentProcessId()) parent = e.th32ParentProcessID;
+    CloseHandle(snap);
+    return parent;
+}
+
 std::string serverUrl()
 {
     // Development only (tools/offline.py): a local test server, as the harness allows
@@ -161,8 +175,9 @@ Engine::Engine(makine::plugin::Host host, EngineInit init)
     , m_pool(m_init.dataDir)
 {
     m_settings.load(win::wideToUtf8(m_init.dataDir + L"\\settings.cfg"));
+    m_launcherPid = parentPid();
     const std::string token = m_settings.get("authToken");
-    if (validToken(token)) {
+    if (validToken(token) && m_settings.get("authServer") == serverUrl()) {   // a token is for its own server
         m_server.setToken(token);
         m_user = m_settings.get("user");
         m_loginState = "checking";
@@ -310,6 +325,7 @@ void Engine::saveSettings()   // under m_mutex
     m_settings.set("style", dump(m_style));
     m_settings.set("user", m_user);
     m_settings.set("authToken", m_server.token());
+    m_settings.set("authServer", m_server.token().empty() ? std::string() : serverUrl());
     if (!m_settings.save()) m_host.warn("Ayarlar kaydedilemedi (settings.cfg).");
 }
 
@@ -402,7 +418,8 @@ void Engine::onEvent(std::string_view event, const json& payload)
         {
             std::lock_guard lock(m_mutex);
             m_gameName = name;
-            m_gameSlug = text::slugify(name);
+            m_gameSlug = text::gameSlug(name);
+            m_gamePid = static_cast<unsigned long>(num(payload, "pid", 0));   // optional (contract addition)
         }
         m_host.info("Oyun: " + name);
         publish();
@@ -412,6 +429,7 @@ void Engine::onEvent(std::string_view event, const json& payload)
             std::lock_guard lock(m_mutex);
             m_gameName.clear();
             m_gameSlug.clear();
+            m_gamePid = 0;
         }
         m_captureCv.notify_all();
         publish();
@@ -801,7 +819,7 @@ void Engine::post(std::function<void()> fn, double delaySeconds)
         m_jobs.push_back({Clock::now() + std::chrono::milliseconds(static_cast<int64_t>(delaySeconds * 1000)),
                           std::move(fn)});
     }
-    m_netCv.notify_one();
+    m_netCv.notify_all();   // translateJob waits on it too
 }
 
 void Engine::runNet()
@@ -1049,6 +1067,23 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         return {};
     }
     if (!pc) return "Önce okunacak bölgeyi seç.";
+    if (needGame) {
+        // Read only while the game is in front (the harness's target lock): text of another
+        // window over the region (Discord, a browser) must never reach the pool
+        const HWND fg = GetForegroundWindow();
+        DWORD fgPid = 0;
+        if (fg) GetWindowThreadProcessId(fg, &fgPid);
+        unsigned long gamePid = 0;
+        {
+            std::lock_guard lock(m_mutex);
+            gamePid = m_gamePid;
+        }
+        RECT r{};
+        const int cx = pc->x + pc->w / 2, cy = pc->y + pc->h / 2;
+        const bool covers = fg && GetWindowRect(fg, &r) && cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom;
+        if (!fg || fgPid == GetCurrentProcessId() || fgPid == m_launcherPid || (gamePid && fgPid != gamePid) || !covers)
+            return "Oyun önde değil · oyuna dönünce okuma sürer.";
+    }
     if (needGame && gameName.empty()) return "Oyun algılanmadı · oyunu Makine'den başlat ya da konsol modunu kullan.";
     region = {pc->x, pc->y, pc->w, pc->h};
     overlay = *pc;
@@ -1101,7 +1136,32 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
     m_host.emitEvent("overlay.show", dump(payload));
     m_overlayShown = true;
     m_shownKeys.push_back(text::compactPoolKey(d.text));
+    ++m_shownCount;
     if (m_shownKeys.size() > 4) m_shownKeys.erase(m_shownKeys.begin());
+}
+
+// OCR boxes that are (pieces of) a translation we showed: with screen capture the overlay
+// sits inside the region it reads.
+std::string Engine::withoutOwnOverlay(const std::string& raw) const
+{
+    if (m_shownKeys.empty()) return raw;
+    std::string kept;
+    size_t b = 0;
+    for (size_t i = 0; i <= raw.size(); ++i) {
+        if (i < raw.size() && raw[i] != '\n') continue;
+        const std::string line = raw.substr(b, i - b);
+        b = i + 1;
+        const std::u32string k = text::compactPoolKey(text::fromUtf8(line));
+        bool own = false;
+        for (const auto& shown : m_shownKeys)
+            own = own || k == shown || keysSimilar(k, shown) || (k.size() >= 8 && shown.find(k) != std::u32string::npos)
+                  || (shown.size() >= 8 && k.find(shown) != std::u32string::npos)
+                  || (k.size() >= 4 && text::sequenceRatio(k, shown) >= 0.8);
+        if (own) continue;
+        if (!kept.empty()) kept += '\n';
+        kept += line;
+    }
+    return kept;
 }
 
 void Engine::hideOverlay()
@@ -1192,9 +1252,13 @@ void Engine::runCapture()
                         std::string raw;
                         if (readRegion(hwnd, region, raw, error)) {
                             read = true;
-                            if (raw != m_lastRaw) {
+                            // Our own overlay read back from the screen is never a source line: its
+                            // boxes go before the boxes are joined into one sentence. A window read
+                            // through PrintWindow (console) never contains the overlay
+                            if (raw != m_lastRaw || m_shownCount != m_filteredWith) {
                                 m_lastRaw = raw;
-                                m_lastFiltered = m_garbage.filterOcr(raw, kSourceLang);
+                                m_filteredWith = m_shownCount;
+                                m_lastFiltered = m_garbage.filterOcr(hwnd ? raw : withoutOwnOverlay(raw), kSourceLang);
                             }
                             filtered = m_lastFiltered;
                             setStatus(mode == "console" && m_source ? "Okunuyor · " + m_source->app.label
@@ -1203,12 +1267,6 @@ void Engine::runCapture()
                             setStatus(error);
                             wait = kBlockedPollS;
                         }
-                    }
-                    // Our own overlay read back from the screen is never a source line
-                    if (!filtered.empty()) {
-                        const std::u32string k = text::compactPoolKey(text::fromUtf8(filtered));
-                        for (const auto& shown : m_shownKeys)
-                            if (keysSimilar(k, shown) || text::sequenceRatio(k, shown) >= 0.8) filtered.clear();
                     }
                     const double t = now();
                     handleEvents(read ? m_tracker.update(text::fromUtf8(filtered), t) : m_tracker.reset());

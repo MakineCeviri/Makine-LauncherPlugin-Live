@@ -103,6 +103,7 @@ private:
     void handleEvents(const std::vector<LineEvent>& events);
     void showOverlay(const Display& d, const console::Box& rect);
     void hideOverlay();
+    std::string withoutOwnOverlay(const std::string& raw) const;
     void stopTracking();
 
     // any thread
@@ -147,6 +148,8 @@ private:
     std::string m_serverMessage, m_notice;
     int m_styleVersion = 0;
     std::string m_gameName, m_gameSlug;       // PC: the game the launcher says is running
+    unsigned long m_gamePid = 0;               // its process, when the launcher sends one
+    unsigned long m_launcherPid = 0;
     std::string m_poolSlug;                    // the local pool in use
     double m_poolSyncedAt = -1e9;
     // translation bookkeeping
@@ -172,6 +175,7 @@ private:
     std::optional<Display> m_shown;
     std::map<int, std::string> m_lineSource;   // line id -> the text sent for translation
     std::vector<std::u32string> m_shownKeys;   // recent overlay texts: never read back as source
+    size_t m_shownCount = 0, m_filteredWith = 0;
     std::optional<console::Source> m_source;
     double m_nextPick = 0;
 

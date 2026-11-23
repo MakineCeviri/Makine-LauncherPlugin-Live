@@ -26,6 +26,8 @@ std::string compactPoolKey(std::string_view utf8);
 
 /// game_library.slugify: the server's game slug ("Baldur's Gate 3" → "baldurs-gate-3").
 std::string slugify(std::string_view name);
+/// The pool slug of a game the launcher names: slugify, except the harness's pinned slugs.
+std::string gameSlug(std::string_view name);
 
 class Garbage {
 public:
