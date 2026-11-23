@@ -203,6 +203,10 @@ private:
     std::set<int64_t> m_annSeen;
     std::string m_logSending;
     int64_t m_readingSince = 0;
+    // Fable's rules: console lines go to the GTA VI pool only after the player agreed once; nothing is
+    // captured before the player's first explicit start (autoStart waits for it); the screen is told a
+    // firewall question is coming before the first home-network listener opens
+    bool m_consoleConsent = false, m_everStarted = false, m_lanOnce = false, m_firewallHeadsUp = false;
 
     // ── capture thread only ──
     std::unique_ptr<ScreenCapture> m_capture;

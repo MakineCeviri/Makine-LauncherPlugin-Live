@@ -223,6 +223,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `tv.install.scan` | `{platform: "android" \| "lg"}`: ev ağında ADB (5555) / LG geliştirici modu (9922) açık cihazlar → `tvInstall.hosts` |
 | `tv.install` | `{platform: "android", host, port?}`: Android TV / Google TV / Fire TV'ye ADB ile kurar; ilerleme `tvInstall.step`, sonuç `tvInstall.state` (`running` · `done` · `error`) ve `message`. `lg` → `E_UNSUPPORTED` (elle kurulum: `tvInstall.guide.lg`) |
 | `tv.install.saveFile` | `{platform: "android" \| "lg"}` → `{path}`: `makine-tv.apk` / `.ipk` İndirilenler klasörüne (USB bellek ya da elle kurulum) |
+| `consoleConsent.set` | `{granted}`: konsol modunda her satırın GTA VI havuzuna gittiğine oyuncunun onayı; onaysız `start` konsolda `E_DENIED` "consent_required: …" döner |
 | `announcement.read` | `{id}`: duyuruyu kapatır (sunucuya `ann_read`) |
 | `support.dismiss` | "kayıt gönderildi" kartını kapatır |
 | `donate` / `donate.dismiss` | bağış sayfasını (`makineceviri.org/destek`) `ui.openUrl` ile açar / ilk açılış kartını kapatır |
@@ -240,9 +241,9 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "counters": {"lines", "poolHits"},
   "server": {"maintenance", "message"}, "notice": "…",
   "style": { ... }, "game": {"name", "slug"}
-  "autoStart": false, "usageReport": true,
+  "autoStart": false, "usageReport": true, "consoleConsent": false, "everStarted": false,
   "output": "pc|tv|phone", "obs": false,
-  "web": {"running", "lan", "port", "clients", "obsUrl", "phoneUrl", "error", "firewallNote"},
+  "web": {"running", "lan", "port", "clients", "obsUrl", "phoneUrl", "error", "firewallNote", "firewallHeadsUp"},
   "tv": {"state": "idle|connecting|connected|bad_code|offline", "detail", "paired": {...} | null, "found": [{"id", "name", "host", "port"}], "searching"},
   "tvInstall": {"platform", "state", "step", "message", "hosts": [...], "scanning", "apkAvailable", "ipkAvailable",
                 "guide": {"android": [...], "firetv": [...], "lg": [...]}},

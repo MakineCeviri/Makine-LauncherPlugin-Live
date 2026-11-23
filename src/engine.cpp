@@ -208,6 +208,9 @@ Engine::Engine(makine::plugin::Host host, EngineInit init)
     if (const std::string out = m_settings.get("output"); out == "tv" || out == "phone") m_output = out;
     m_obs = m_settings.get("obs") == "true";
     m_donateSeen = m_settings.get("donateSeen") == "true";
+    m_consoleConsent = m_settings.get("consoleConsent") == "true";
+    m_everStarted = m_settings.get("everStarted") == "true";
+    m_lanOnce = m_settings.get("lanOnce") == "true";
     m_tvSaved = json::parse(m_settings.get("tv", "null"), nullptr, false);
     if (m_tvSaved.is_discarded()) m_tvSaved = nullptr;
     m_tvCode = m_settings.get("tvCode");
@@ -298,6 +301,8 @@ json Engine::stateLocked() const
         {"style", m_style},
         {"autoStart", m_autoStart},
         {"usageReport", m_usageReport},
+        {"consoleConsent", m_consoleConsent},
+        {"everStarted", m_everStarted},
         {"game", {{"name", console ? console::kGameName : m_gameName},
                   {"slug", console ? console::kGameSlug : m_gameSlug}}},
     };
@@ -356,6 +361,9 @@ void Engine::saveSettings()   // under m_mutex
     m_settings.set("output", m_output);
     m_settings.set("obs", m_obs ? "true" : "false");
     m_settings.set("donateSeen", m_donateSeen ? "true" : "false");
+    m_settings.set("consoleConsent", m_consoleConsent ? "true" : "false");
+    m_settings.set("everStarted", m_everStarted ? "true" : "false");
+    m_settings.set("lanOnce", m_lanOnce ? "true" : "false");
     m_settings.set("tv", dump(m_tvSaved));
     m_settings.set("tvCode", m_tvCode);
     m_settings.set("user", m_user);
@@ -382,7 +390,7 @@ void Engine::maybeAutoStart()
 {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_autoStart || m_running) return;
+        if (!m_autoStart || m_running || !m_everStarted) return;   // nothing is captured before the first explicit start
         if (m_loginState == "checking" || m_loginState == "offline") {   // the session is still being checked
             m_pendingStart = true;
             return;
@@ -539,7 +547,16 @@ Result Engine::invoke(std::string_view method, const json& params)
         publish();
         return okMessage("Durduruldu.");
     }
-    if (method == "readOnce") return readOnce();
+    if (method == "readOnce") return readOnce();   // an explicit action of the player too
+    if (method == "consoleConsent.set") {
+        {
+            std::lock_guard lock(m_mutex);
+            m_consoleConsent = flag(params, "granted");
+            saveSettings();
+        }
+        publish();
+        return okMessage(flag(params, "granted") ? "Onaylandı." : "Onay geri alındı.");
+    }
     if (method == "autoStart.set" || method == "usageReport.set") {
         const bool on = flag(params, "enabled");
         const std::string key = method == "autoStart.set" ? "autoStart" : "usageReport";
@@ -834,7 +851,14 @@ Result Engine::startReading()
         if (m_blocked) return Result::error(MAKINE_E_DENIED, m_serverMessage);
         if (m_mode == "pc" && !m_pcRegion)
             return Result::error(MAKINE_E_FAILED, "Önce okunacak bölgeyi seç.");
+        if (m_mode == "console" && !m_consoleConsent)   // the screen asks once (consoleConsent.set)
+            return Result::error(MAKINE_E_DENIED, "consent_required: Konsol modunda okunan her satır Makine Çeviri'nin "
+                                                  "GTA VI çeviri havuzuna gider. Onaylıyor musun?");
         m_running = true;
+        if (!m_everStarted) {
+            m_everStarted = true;
+            saveSettings();
+        }
         m_sessionLines = 0;
         m_readingSince = static_cast<int64_t>(std::time(nullptr));
     }

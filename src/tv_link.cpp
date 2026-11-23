@@ -3,6 +3,8 @@
 
 #include "tv_link.h"
 
+#include "subtitle_web.h"   // lanIp()
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -153,6 +155,10 @@ std::vector<TvInfo> discoverTvs(int timeoutMs, int port, const std::vector<std::
     setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&on), sizeof on);
     sockaddr_in any{};
     any.sin_family = AF_INET;
+    if (targets.empty()) {   // the replies come in on the home-network interface only
+        const std::string ip = lanIp();
+        if (ip != "127.0.0.1") inet_pton(AF_INET, ip.c_str(), &any.sin_addr);
+    }
     bind(s, reinterpret_cast<sockaddr*>(&any), sizeof any);
     const std::string probe = encode({{"t", "discover"}, {"v", kProtocol}});
     for (const std::string& addr : targets.empty() ? broadcastAddresses() : targets) {

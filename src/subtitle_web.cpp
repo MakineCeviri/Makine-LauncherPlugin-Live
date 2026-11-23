@@ -110,7 +110,10 @@ void SubtitleWeb::configure(bool enabled, bool lan)
         sockaddr_in a{};
         a.sin_family = AF_INET;
         a.sin_port = htons(static_cast<u_short>(port));
-        a.sin_addr.s_addr = htonl(lan ? INADDR_ANY : INADDR_LOOPBACK);
+        // The home network interface only (not 0.0.0.0); without one, every interface
+        const std::string ip = lan ? lanIp() : std::string();
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (lan && (ip == "127.0.0.1" || inet_pton(AF_INET, ip.c_str(), &a.sin_addr) != 1)) a.sin_addr.s_addr = htonl(INADDR_ANY);
         if (bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 || listen(s, 8) != 0) {
             m_error = "kapı " + std::to_string(port) + " kullanılamıyor (" + std::to_string(WSAGetLastError()) + ")";
             closesocket(s);
@@ -119,7 +122,7 @@ void SubtitleWeb::configure(bool enabled, bool lan)
         m_listener = s;
         m_lan = lan;
         m_port = port;
-        m_lanIp = lan ? lanIp() : std::string();   // once, not on every state publish
+        m_lanIp = ip;   // once, not on every state publish
         std::thread([self = shared_from_this(), s, gen = m_generation] { self->acceptLoop(s, gen); }).detach();
         return;
     }
@@ -145,6 +148,8 @@ void SubtitleWeb::serve(uintptr_t sock, uint64_t generation)
 {
     DWORD timeout = 5000;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof timeout);
+    BOOL nodelay = TRUE;   // a subtitle line goes out at once
+    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof nodelay);
     std::string req;
     char buf[2048];
     while (req.find("\r\n\r\n") == std::string::npos && req.size() < 8192) {
@@ -295,7 +300,12 @@ std::string SubtitleWeb::error() const
     return m_error;
 }
 
-std::string SubtitleWeb::obsUrl() const { return "http://127.0.0.1:" + std::to_string(port() ? port() : kPort) + "/obs"; }
+std::string SubtitleWeb::obsUrl() const
+{
+    std::lock_guard lock(m_mutex);   // with the phone on, the server listens on the home-network address only
+    const std::string host = m_lan && !m_lanIp.empty() && m_lanIp != "127.0.0.1" ? m_lanIp : "127.0.0.1";
+    return "http://" + host + ":" + std::to_string(m_port ? m_port : kPort) + "/obs";
+}
 
 std::string SubtitleWeb::phoneUrl() const
 {

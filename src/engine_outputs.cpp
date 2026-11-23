@@ -182,6 +182,15 @@ void Engine::applyOutputs()
         saved = TvInfo::fromJson(m_tvSaved);
         code = m_tvCode;
     }
+    if (m_web && phone && !m_web->lan()) {
+        {
+            std::lock_guard lock(m_mutex);
+            m_firewallHeadsUp = !m_lanOnce;   // the first home-network listener: Windows will ask now
+            m_lanOnce = true;
+            saveSettings();
+        }
+        publish();
+    }
     if (m_web) m_web->configure(phone || obs, phone);
     if (m_tv) m_tv->pair(tv ? saved : std::nullopt, code);
     publish();
@@ -262,6 +271,7 @@ json Engine::outputsStateLocked() const
                {"obsUrl", m_web->obsUrl()},
                {"phoneUrl", lan ? m_web->phoneUrl() : std::string()},
                {"error", m_web->error()},
+               {"firewallHeadsUp", m_firewallHeadsUp},
                {"firewallNote", lan ? "Telefon sayfası ev ağına açılır. Windows ilk seferde \"makine-plugin-host.exe\" için "
                                       "güvenlik duvarı izni sorar: Özel ağlar'ı seçip İzin ver'e basın. Makine Live kendisi "
                                       "kural eklemez; izin verilmezse telefon bağlanamaz."
