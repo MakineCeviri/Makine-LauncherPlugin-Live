@@ -119,6 +119,7 @@ void SubtitleWeb::configure(bool enabled, bool lan)
         m_listener = s;
         m_lan = lan;
         m_port = port;
+        m_lanIp = lan ? lanIp() : std::string();   // once, not on every state publish
         std::thread([self = shared_from_this(), s, gen = m_generation] { self->acceptLoop(s, gen); }).detach();
         return;
     }
@@ -187,6 +188,11 @@ void SubtitleWeb::stream(uintptr_t sock, uint64_t generation)
         return;
     std::unique_lock lock(m_mutex);
     ++m_clients;
+    if (auto fn = m_onChange) {   // a phone / OBS connected
+        lock.unlock();
+        fn();
+        lock.lock();
+    }
     uint64_t seen = m_version;
     std::string data = sse(snapshotLocked());
     auto last = std::chrono::steady_clock::now();
@@ -207,6 +213,10 @@ void SubtitleWeb::stream(uintptr_t sock, uint64_t generation)
         }
     }
     --m_clients;
+    if (auto fn = m_onChange) {
+        lock.unlock();
+        fn();
+    }
 }
 
 json SubtitleWeb::snapshotLocked() const
@@ -287,6 +297,16 @@ std::string SubtitleWeb::error() const
 
 std::string SubtitleWeb::obsUrl() const { return "http://127.0.0.1:" + std::to_string(port() ? port() : kPort) + "/obs"; }
 
-std::string SubtitleWeb::phoneUrl() const { return "http://" + lanIp() + ":" + std::to_string(port() ? port() : kPort); }
+std::string SubtitleWeb::phoneUrl() const
+{
+    std::lock_guard lock(m_mutex);
+    return "http://" + (m_lanIp.empty() ? lanIp() : m_lanIp) + ":" + std::to_string(m_port ? m_port : kPort);
+}
+
+void SubtitleWeb::onChange(std::function<void()> fn)
+{
+    std::lock_guard lock(m_mutex);
+    m_onChange = std::move(fn);
+}
 
 } // namespace live

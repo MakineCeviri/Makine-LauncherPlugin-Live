@@ -155,6 +155,7 @@ bool DiscordPresence::connect()
         if (send(kHandshake, {{"v", 1}, {"client_id", kDiscordAppId}}) && recv(op, reply) && op == kFrame
             && reply.is_object() && reply.value("evt", std::string()) == "READY") {
             m_connected = true;
+            if (m_onChange) m_onChange();
             return true;
         }
         CloseHandle(m_pipe);
@@ -167,7 +168,7 @@ void DiscordPresence::disconnect()
 {
     if (m_pipe) CloseHandle(m_pipe);
     m_pipe = nullptr;
-    m_connected = false;
+    if (m_connected.exchange(false) && m_onChange) m_onChange();
 }
 
 void DiscordPresence::run()

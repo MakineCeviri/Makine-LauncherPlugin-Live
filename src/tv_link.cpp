@@ -225,8 +225,15 @@ void TvLink::pair(std::optional<TvInfo> tv, const std::string& code)
 void TvLink::put(json msg)
 {
     std::lock_guard lock(m_mutex);
+    m_shown = msg.value("t", std::string()) == "line" ? msg : json(nullptr);
     m_line = std::move(msg);
     m_cv.notify_all();
+}
+
+void TvLink::onChange(std::function<void()> fn)
+{
+    std::lock_guard lock(m_mutex);
+    m_onChange = std::move(fn);
 }
 
 void TvLink::sendLine(int id, const std::string& text, const std::string& kind)
@@ -257,9 +264,15 @@ std::optional<TvInfo> TvLink::tv() const
 
 void TvLink::setState(const std::string& state, const std::string& detail)
 {
-    std::lock_guard lock(m_mutex);
-    m_state = state;
-    m_detail = detail;
+    std::function<void()> fn;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_state == state && m_detail == detail) return;
+        m_state = state;
+        m_detail = detail;
+        fn = m_onChange;
+    }
+    if (fn) fn();
 }
 
 void TvLink::run()
@@ -320,12 +333,15 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
     }
     if (t != "ok") return finish();
     setState("connected", reply->contains("tv") && (*reply)["tv"].is_string() ? (*reply)["tv"].get<std::string>() : tv.name);
-    json sentStyle;
+    json sentStyle, shown;
     {
         std::lock_guard lock(m_mutex);
         sentStyle = m_style;
+        if (m_line.is_null()) shown = m_shown;   // the line on the PC screen shows on the TV at once
     }
-    if (!sentStyle.is_null() && !sendAll(s, encode(sentStyle))) return finish();
+    std::string first = sentStyle.is_null() ? std::string() : encode(sentStyle);
+    if (!shown.is_null()) first += encode(shown);
+    if (!first.empty() && !sendAll(s, first)) return finish();
     auto lastSend = Clock::now();
     for (;;) {
         if (peerClosed(s)) return finish();   // the TV app closed: reconnect at once

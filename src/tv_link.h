@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -51,6 +52,8 @@ public:
     /// idle | connecting | connected | bad_code | offline, and the TV's name
     std::pair<std::string, std::string> state() const;
     std::optional<TvInfo> tv() const;
+    /// Called (on the link's thread, no lock held) when state() changes.
+    void onChange(std::function<void()> fn);
 
 private:
     void run();
@@ -65,6 +68,8 @@ private:
     std::optional<TvInfo> m_tv;
     std::string m_code;
     nlohmann::json m_line = nullptr, m_style = nullptr;
+    nlohmann::json m_shown = nullptr;   // the line on screen: sent again when the TV (re)connects
+    std::function<void()> m_onChange;
     int m_gen = 0;
     bool m_closed = false;
     std::string m_state = "idle", m_detail;

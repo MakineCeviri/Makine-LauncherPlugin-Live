@@ -139,13 +139,20 @@ void Engine::onLogRequest(const std::string& requestId)
 
 void Engine::startOutputs()
 {
+    // The modules change on their own threads; the screen hears it through a publish
+    const auto changed = [weak = std::weak_ptr<Engine>(shared_from_this())] {
+        if (const auto self = weak.lock()) self->post([self] { self->publish(); });
+    };
     m_discord = std::make_shared<DiscordPresence>();
+    m_discord->onChange(changed);
     m_discord->start();   // always on in the launcher: no setting (product decision)
     const auto logo = win::readFile(m_init.pluginDir + L"\\resources\\logo.webp");
     m_web = std::make_shared<SubtitleWeb>(logo ? *logo : std::string());
+    m_web->onChange(changed);
     wchar_t pc[MAX_COMPUTERNAME_LENGTH + 1] = {};
     DWORD n = MAX_COMPUTERNAME_LENGTH + 1;
     m_tv = std::make_shared<TvLink>(GetComputerNameW(pc, &n) ? win::wideToUtf8(pc) : std::string("PC"));
+    m_tv->onChange(changed);
     m_tv->start();
     applyOutputs();
     applyStyleOutputs();
@@ -269,7 +276,9 @@ json Engine::outputsStateLocked() const
         {"obs", m_obs},
         {"web", web},
         {"tv", {{"state", tvState.first}, {"detail", tvState.second}, {"paired", m_tvSaved},
-                {"found", m_tvFound}, {"searching", m_tvSearching}}},
+                {"found", m_tvFound}, {"searching", m_tvSearching},
+                {"firewallNote", "TV aramasında Windows \"makine-plugin-host.exe\" için güvenlik duvarı izni sorabilir: "
+                                 "Özel ağlar'ı seçip İzin ver'e basın (TV'nin yanıtı bu izinle gelir). Makine Live kural eklemez."}}},
         {"tvInstall", tvInstall},
         {"discord", {{"connected", m_discord && m_discord->connected()}}},
         {"announcements", m_announcements},

@@ -165,8 +165,9 @@ public:
         if (!send(A_OPEN, local, 0, service + '\0')) return 0;
         for (;;) {
             const auto m = recv(30000);
-            if (!m || m->cmd == A_CLSE) return 0;
+            if (!m || (m->cmd == A_CLSE && m->arg1 == local)) return 0;
             if (m->cmd == A_OKAY && m->arg1 == local) return m->arg0;
+            // anything else belongs to an earlier stream (its late CLSE): not ours
         }
     }
 
@@ -177,7 +178,7 @@ public:
             if (!send(A_WRTE, local, remote, data.substr(off, m_maxData))) return false;
             for (;;) {
                 const auto m = recv(60000);
-                if (!m || m->cmd == A_CLSE) return false;
+                if (!m || (m->cmd == A_CLSE && m->arg1 == local)) return false;
                 if (m->cmd == A_OKAY && m->arg1 == local) break;
                 if (m->cmd == A_WRTE && m->arg1 == local) {
                     m_pending += m->data;

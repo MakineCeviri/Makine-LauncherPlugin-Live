@@ -40,7 +40,7 @@ constexpr double kCacheTtlS = 900;        // unapproved translations are reused 
 constexpr double kPoolSyncS = 180;        // local pool vs server while reading
 constexpr double kStatusPollS = 300;      // maintenance / version check
 constexpr double kOfflineRetryS = 30;
-constexpr auto kShutdownBudget = std::chrono::milliseconds(1800);
+constexpr auto kShutdownBudget = std::chrono::milliseconds(1500);
 constexpr auto kReadOnceTimeout = std::chrono::seconds(25);   // invoke times out at 30 s
 constexpr const char* kSourceLang = "en";  // product decision: English → Turkish only
 constexpr const char* kTargetLang = "tr";
@@ -124,7 +124,10 @@ std::optional<console::Source> pickSource(const std::string& key, unsigned long 
         if (pid && s.pid == pid) return s;
     for (const auto& s : found)
         if (!key.empty() && s.app.key == key) return s;
-    if (!found.empty()) return found.front();
+    // Steam Link, Moonlight, Parsec, GeForce NOW can show any PC game, and console mode is the GTA VI
+    // pool: they are read only when the user picked them (console.select)
+    for (const auto& s : found)
+        if (s.app.console != "stream" && s.app.console != "cloud") return s;
     return std::nullopt;
 }
 

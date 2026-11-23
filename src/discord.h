@@ -10,7 +10,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -36,6 +38,7 @@ public:
     void clear() { set(std::nullopt); }
     void stop();   // clears and closes; a thread stuck on the pipe is left to the process exit after 1 s
     bool connected() const { return m_connected; }
+    void onChange(std::function<void()> fn) { m_onChange = std::move(fn); }   // before start(): connected() changed
 
 private:
     void run();
@@ -53,7 +56,8 @@ private:
     std::optional<nlohmann::json> m_want;
     bool m_dirty = false, m_stop = false, m_done = false;
     void* m_pipe = nullptr;   // HANDLE
-    bool m_connected = false;
+    std::atomic<bool> m_connected{false};
+    std::function<void()> m_onChange;
     std::thread m_thread;
 };
 

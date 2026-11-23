@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -45,6 +46,8 @@ public:
     std::string error() const;
     std::string obsUrl() const;
     std::string phoneUrl() const;
+    /// Called (no lock held) when running / clients change.
+    void onChange(std::function<void()> fn);
 
 private:
     void acceptLoop(uintptr_t listener, uint64_t generation);
@@ -63,7 +66,8 @@ private:
     uintptr_t m_listener = ~uintptr_t(0);
     bool m_lan = false;
     int m_port = 0, m_clients = 0;
-    std::string m_error;
+    std::string m_error, m_lanIp;
+    std::function<void()> m_onChange;
 };
 
 } // namespace live

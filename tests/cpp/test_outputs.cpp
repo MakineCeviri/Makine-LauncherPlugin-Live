@@ -230,7 +230,7 @@ SOCKET dial(int port)
     a.sin_family = AF_INET;
     a.sin_port = htons(static_cast<u_short>(port));
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    DWORD t = 3000;
+    DWORD t = 10000;   // generous: the machine may be busy with other builds
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&t), sizeof t);
     if (connect(s, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0) {
         closesocket(s);

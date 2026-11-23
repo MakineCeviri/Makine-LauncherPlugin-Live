@@ -132,7 +132,7 @@ if(Python3_FOUND)
                 pack "${PACKAGE_DIR}"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
         VERBATIM)
-    add_dependencies(pack makine-live)
+    add_dependencies(pack makine-live stage-tv)
 else()
     message(STATUS "Python 3 not found: the pack target is not available")
 endif()
