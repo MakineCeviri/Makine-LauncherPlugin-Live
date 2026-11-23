@@ -51,6 +51,9 @@ private:
     std::map<int64_t, Item> m_items;
     std::unordered_map<std::u32string, int64_t> m_byKey;
     std::unordered_map<size_t, std::vector<int64_t>> m_byLen;
+    // Similar-line results, "not found" included: OCR reads the same line again and again (0.3.2)
+    mutable std::mutex m_fuzzyMutex;
+    mutable std::unordered_map<std::u32string, std::optional<int64_t>> m_fuzzy;
 };
 
 struct SyncStats {

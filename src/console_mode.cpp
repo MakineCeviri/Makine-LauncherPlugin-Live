@@ -3,6 +3,7 @@
 
 #include "console_mode.h"
 
+#include "garbage.h"
 #include "unitext.h"
 #include "winutil.h"
 
@@ -30,6 +31,12 @@ int floorDiv2(int v) { return v >= 0 ? v / 2 : -((-v + 1) / 2); }
 
 std::string lowerUtf8(const std::string& s) { return text::toUtf8(text::lower(text::fromUtf8(s))); }
 
+std::string stem(const std::string& exe)
+{
+    const size_t dot = exe.rfind('.');
+    return dot == std::string::npos ? exe : exe.substr(0, dot);
+}
+
 struct Known {
     SourceApp app;
     std::vector<std::string> exes;   // lower case
@@ -41,6 +48,7 @@ const std::vector<Known>& known()
     static const std::vector<Known> k{
         {{"ps-remote-play", "PS Remote Play", "ps5"}, {"remoteplay.exe"}, 0},
         {{"chiaki", "chiaki", "ps5"}, {"chiaki.exe", "chiaki-ng.exe"}, 0},
+        {{"asobi", "Asobi", "ps5"}, {"asobi.exe"}, 0},   // also any exe whose name contains "asobi" (exeStem)
         {{"xbox-app", "Xbox uygulaması", "xbox"}, {"xboxpcapp.exe"}, 0},
         {{"greenlight", "Greenlight", "xbox"}, {"greenlight.exe"}, 0},
         {{"elgato", "Elgato 4K Capture Utility", "capture"}, {"4kcaptureutility.exe", "gamecapture.exe"}, 0},
@@ -102,6 +110,19 @@ bool sourceWindow(HWND h)
 
 } // namespace
 
+bool isConsoleStream(const std::string& nameOrExe)
+{
+    const std::string s = lowerUtf8(nameOrExe);
+    const std::string base = s.substr(s.find_last_of("\\/") == std::string::npos ? 0 : s.find_last_of("\\/") + 1);
+    for (const char* exe : {"remoteplay.exe", "chiaki.exe", "chiaki-ng.exe", "xboxpcapp.exe", "greenlight.exe"})
+        if (base == exe) return true;
+    if (stem(base).find("asobi") != std::string::npos) return true;
+    const std::string slug = text::slugify(nameOrExe);   // the names a game library shows for them
+    for (const char* name : {"ps-remote-play", "chiaki", "chiaki-ng", "greenlight", "xbox"})
+        if (slug == name) return true;
+    return false;
+}
+
 Rect videoRect(const Rect& c, double aspect)
 {
     const int w = c.r - c.l, h = c.b - c.t;
@@ -145,7 +166,10 @@ bool matchSource(const std::string& exeName, const std::string& title, const std
     const std::string exe = lowerUtf8(exeName);
     const std::string t = lowerUtf8(title);
     for (const Known& k : known()) {
-        if (std::find(k.exes.begin(), k.exes.end(), exe) == k.exes.end()) continue;
+        // Asobi: Remote Play renames its exe between versions: matched by the name without extension
+        const bool hit = std::find(k.exes.begin(), k.exes.end(), exe) != k.exes.end()
+                         || (k.app.key == "asobi" && stem(exe).find("asobi") != std::string::npos);
+        if (!hit) continue;
         // OBS: r"project|projekt"; Windows Camera: r"^(camera|kamera)$" (re.IGNORECASE)
         if (k.title == 1 && t.find("project") == std::string::npos && t.find("projekt") == std::string::npos) continue;
         if (k.title == 2 && t != "camera" && t != "kamera") continue;

@@ -145,6 +145,13 @@ std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8) const
         return PoolHit{it->second, m_items.at(it->second).translation, true};
     const size_t n = key.size();
     if (n < kFuzzyMinKeyLen) return std::nullopt;
+    {
+        std::lock_guard lock(m_fuzzyMutex);
+        if (const auto it = m_fuzzy.find(key); it != m_fuzzy.end()) {
+            if (!it->second) return std::nullopt;
+            return PoolHit{*it->second, m_items.at(*it->second).translation, false};
+        }
+    }
     const int d = static_cast<int>(static_cast<double>(n) * (1 - kFuzzyMinSimilarity));
     std::optional<int64_t> best;
     int bestDist = 0;
@@ -161,6 +168,11 @@ std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8) const
                 bestDist = dist;
             }
         }
+    }
+    {
+        std::lock_guard lock(m_fuzzyMutex);
+        if (m_fuzzy.size() >= 5000) m_fuzzy.clear();
+        m_fuzzy[key] = best;
     }
     if (!best) return std::nullopt;
     return PoolHit{*best, m_items.at(*best).translation, false};

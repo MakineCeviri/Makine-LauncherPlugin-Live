@@ -44,6 +44,8 @@ public:
     ApiResult poolSync(const std::string& game, const std::string& rev, bool head);
     ApiResult poolHits(const std::string& game, const nlohmann::json& hits);
     ApiResult status();
+    /// Usage report (makine_live/net/telemetry.py): → {beat_s, log_request}; payload.bye on the way out.
+    ApiResult beat(const nlohmann::json& payload, int timeoutMs = 6000);
 
     /// Aborts requests in flight and refuses new ones (shutdown).
     void cancel();

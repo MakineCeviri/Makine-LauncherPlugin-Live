@@ -40,6 +40,7 @@ public:
         e.pluginDir = live::win::withoutTrailingSlash(live::win::utf8ToWide(str("pluginDir")));
         e.version = str("version").empty() ? MAKINE_LIVE_VERSION : str("version");
         e.launcherVersion = str("launcherVersion").empty() ? "unknown" : str("launcherVersion");
+        if (init.is_object() && init.contains("settings")) e.settings = init["settings"];
         if (e.dataDir.empty() || e.pluginDir.empty()) {
             host().error("init: dataDir ya da pluginDir yok");
             return MAKINE_E_INVALID_ARGUMENT;

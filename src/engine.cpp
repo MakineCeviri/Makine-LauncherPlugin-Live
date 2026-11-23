@@ -10,6 +10,8 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <cmath>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -38,7 +40,7 @@ constexpr double kCacheTtlS = 900;        // unapproved translations are reused 
 constexpr double kPoolSyncS = 180;        // local pool vs server while reading
 constexpr double kStatusPollS = 300;      // maintenance / version check
 constexpr double kOfflineRetryS = 30;
-constexpr auto kShutdownBudget = std::chrono::milliseconds(2500);
+constexpr auto kShutdownBudget = std::chrono::milliseconds(1800);
 constexpr auto kReadOnceTimeout = std::chrono::seconds(25);   // invoke times out at 30 s
 constexpr const char* kSourceLang = "en";  // product decision: English → Turkish only
 constexpr const char* kTargetLang = "tr";
@@ -176,6 +178,10 @@ Engine::Engine(makine::plugin::Host host, EngineInit init)
 {
     m_settings.load(win::wideToUtf8(m_init.dataDir + L"\\settings.cfg"));
     m_launcherPid = parentPid();
+    m_startedAt = static_cast<int64_t>(std::time(nullptr));
+    m_autoStart = flag(m_init.settings, "autoStart");
+    if (m_init.settings.is_object() && m_init.settings.contains("usageReport") && m_init.settings["usageReport"].is_boolean())
+        m_usageReport = m_init.settings["usageReport"].get<bool>();
     const std::string token = m_settings.get("authToken");
     if (validToken(token) && m_settings.get("authServer") == serverUrl()) {   // a token is for its own server
         m_server.setToken(token);
@@ -224,6 +230,12 @@ void Engine::shutdown()
     }
     m_captureCv.notify_all();
     m_netCv.notify_all();
+    json bye;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_usageReport && m_loginState == "signedIn") bye = beatPayloadLocked(true);
+    }
+    if (!bye.is_null()) m_server.beat(bye, 700);   // short: the host's whole shutdown budget is 3 s
     m_server.cancel();
     bool finished = false;
     {
@@ -273,6 +285,8 @@ json Engine::stateLocked() const
         {"server", {{"maintenance", m_maintenance}, {"message", m_serverMessage}}},
         {"notice", m_notice},
         {"style", m_style},
+        {"autoStart", m_autoStart},
+        {"usageReport", m_usageReport},
         {"game", {{"name", console ? console::kGameName : m_gameName},
                   {"slug", console ? console::kGameSlug : m_gameSlug}}},
     };
@@ -303,6 +317,7 @@ void Engine::notifyError(const std::string& message)
 {
     {
         std::lock_guard lock(m_mutex);
+        ++m_errors;
         if (message == m_lastError) return;
         m_lastError = message;
     }
@@ -334,6 +349,113 @@ std::string Engine::currentSlug() const
     return m_mode == "console" ? std::string(console::kGameSlug) : m_gameSlug;
 }
 
+void Engine::setHostSetting(const std::string& key, bool value)
+{
+    post([this, key, value] {
+        const Result r = m_host.call("settings.set", dump({{"key", key}, {"value", value}}));
+        if (!r.succeeded()) m_host.warn("Ayar Makine'ye kaydedilemedi: " + key);
+    });
+}
+
+// The launcher said a game started and the user wants Makine Live to open with it.
+void Engine::maybeAutoStart()
+{
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_autoStart || m_running) return;
+        if (m_loginState == "checking" || m_loginState == "offline") {   // the session is still being checked
+            m_pendingStart = true;
+            return;
+        }
+    }
+    const Result r = startReading();
+    if (!r.succeeded()) m_host.info("Kendiliğinden başlatılamadı: " + r.json);
+}
+
+// ── usage report (net/telemetry.py) ─────────────────────────────────────────
+
+json Engine::beatPayloadLocked(bool bye)
+{
+    static const json system = [] {
+        json info = json::object();
+        using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+        OSVERSIONINFOW v{};
+        v.dwOSVersionInfoSize = sizeof v;
+        if (const auto fn = reinterpret_cast<RtlGetVersionFn>(
+                reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"))))
+            fn(&v);
+        info["os"] = std::string(v.dwMajorVersion == 10 && v.dwBuildNumber >= 22000 ? "Windows 11"
+                                                                                     : "Windows " + std::to_string(v.dwMajorVersion))
+                     + " (" + std::to_string(v.dwBuildNumber) + ")";
+        wchar_t cpu[256] = {};
+        DWORD size = sizeof cpu;
+        if (RegGetValueW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                         L"ProcessorNameString", RRF_RT_REG_SZ, nullptr, cpu, &size) == ERROR_SUCCESS)
+            info["cpu"] = text::toUtf8(text::join(text::split(text::fromUtf8(win::wideToUtf8(cpu))), U" ")).substr(0, 120);
+        MEMORYSTATUSEX mem{};
+        mem.dwLength = sizeof mem;
+        if (GlobalMemoryStatusEx(&mem)) info["ram_gb"] = std::nearbyint(mem.ullTotalPhys / 107374182.4) / 10.0;
+        info["screen"] = std::to_string(GetSystemMetrics(SM_CXSCREEN)) + "x" + std::to_string(GetSystemMetrics(SM_CYSCREEN));
+        info["monitors"] = GetSystemMetrics(SM_CMONITORS);
+        info["scale"] = std::nearbyint(GetDpiForSystem() / 96.0 * 100) / 100;
+        return info;
+    }();
+    const auto median = [](const std::deque<double>& xs) -> json {
+        if (xs.empty()) return nullptr;
+        std::vector<double> v(xs.begin(), xs.end());
+        std::sort(v.begin(), v.end());
+        return static_cast<int64_t>(std::nearbyint(v[v.size() / 2]));
+    };
+    const bool console = m_mode == "console";
+    json info = system;
+    const int looked = m_poolCount + m_apiCount;
+    const auto pool = m_poolSlug.empty() ? nullptr : m_pool.get(m_poolSlug);
+    const json extra = {{"ocr_ms", median(m_ocrMs)}, {"pool_ms", median(m_poolMs)}, {"api_ms", median(m_apiMs)},
+                        {"hit_pct", looked ? json(static_cast<int64_t>(std::nearbyint(100.0 * m_poolCount / looked))) : json(nullptr)},
+                        {"local_lines", pool ? pool->size() : 0}, {"errors", m_errors}, {"last_error", m_lastError},
+                        {"uptime_s", static_cast<int64_t>(std::time(nullptr)) - m_startedAt},
+                        {"client", "launcher/" + m_init.launcherVersion}};
+    for (const auto& [k, v] : extra.items())
+        if (!v.is_null() && !(v.is_string() && v.get<std::string>().empty())) info[k] = v;
+    const int runS = static_cast<int>(m_runAcc);
+    m_runAcc -= runS;   // the fraction goes into the next report
+    const int lines = std::max(0, m_linesTotal - m_linesSent);
+    m_linesSent = std::max(m_linesTotal, m_linesSent);
+    json payload = {{"started_at", m_startedAt},
+                    {"running", m_running},
+                    {"mode", console ? "konsol" : "pc"},
+                    {"output", "box"},
+                    {"game", console ? std::string(console::kGameSlug) : m_gameSlug},
+                    {"game_name", console ? std::string(console::kGameName) : m_gameName},
+                    {"session_lines", m_sessionLines},
+                    {"info", info},
+                    {"run_s", runS},
+                    {"lines", lines}};
+    if (bye) payload["bye"] = true;
+    return payload;
+}
+
+void Engine::beatLoop(int gen)
+{
+    json payload;
+    {
+        std::lock_guard lock(m_mutex);
+        if (gen != m_beatGen || m_loginState != "signedIn" || !m_usageReport) return;
+        payload = beatPayloadLocked(false);
+    }
+    const ApiResult r = m_server.beat(payload);
+    double next = 300;
+    {
+        std::lock_guard lock(m_mutex);
+        if (gen != m_beatGen) return;
+        if (r.ok()) m_beatS = std::clamp(num(r.data, "beat_s", 300), 60.0, 1800.0);
+        next = m_beatS;
+    }
+    // r.data.log_request (the team asks for the app log) is not answered: the plugin keeps no log file of its
+    // own; its log lines are in the launcher's plugin log.
+    post([this, gen] { beatLoop(gen); }, next);
+}
+
 // ── launcher → plugin ───────────────────────────────────────────────────────
 
 Result Engine::invoke(std::string_view method, const json& params)
@@ -359,6 +481,12 @@ Result Engine::invoke(std::string_view method, const json& params)
     }
     if (method == "logout") {
         post([this] {
+            json bye;
+            {
+                std::lock_guard lock(m_mutex);
+                if (m_usageReport && m_loginState == "signedIn") bye = beatPayloadLocked(true);
+            }
+            if (!bye.is_null()) m_server.beat(bye, 1500);
             m_server.logout();
             signedOut("");
         });
@@ -391,6 +519,20 @@ Result Engine::invoke(std::string_view method, const json& params)
         return okMessage("Durduruldu.");
     }
     if (method == "readOnce") return readOnce();
+    if (method == "autoStart.set" || method == "usageReport.set") {
+        const bool on = flag(params, "enabled");
+        const std::string key = method == "autoStart.set" ? "autoStart" : "usageReport";
+        int gen = 0;
+        {
+            std::lock_guard lock(m_mutex);
+            (key == "autoStart" ? m_autoStart : m_usageReport) = on;
+            if (key == "usageReport" && on && m_loginState == "signedIn") gen = ++m_beatGen;
+        }
+        setHostSetting(key, on);   // the launcher keeps it: it starts the plugin on game.started without a host
+        publish();
+        if (gen) post([this, gen] { beatLoop(gen); }, 2);
+        return Result::ok(dump({{key, on}}));
+    }
     if (method == "style.set") {
         if (!params.is_object()) return Result::error(MAKINE_E_INVALID_ARGUMENT, "style: bir nesne bekleniyor");
         {
@@ -417,13 +559,28 @@ void Engine::onEvent(std::string_view event, const json& payload)
         if (name.empty()) return;
         {
             std::lock_guard lock(m_mutex);
-            m_gameName = name;
-            m_gameSlug = text::gameSlug(name);
+            // A console stream app (Remote Play, Asobi, Xbox…) shows the console's game: GTA VI (0.3.2)
+            const bool stream = console::isConsoleStream(name) || console::isConsoleStream(str(payload, "exe"));
+            m_gameName = stream ? std::string(console::kGameName) : name;
+            m_gameSlug = stream ? std::string(console::kGameSlug) : text::gameSlug(name);
             m_gamePid = static_cast<unsigned long>(num(payload, "pid", 0));   // optional (contract addition)
         }
         m_host.info("Oyun: " + name);
         publish();
         post([this] { syncPool(true); });
+        maybeAutoStart();
+    } else if (event == "settings.changed") {
+        const std::string key = str(payload, "key");
+        if (key != "autoStart" && key != "usageReport") return;
+        const bool on = flag(payload, "value");
+        int gen = 0;
+        {
+            std::lock_guard lock(m_mutex);
+            (key == "autoStart" ? m_autoStart : m_usageReport) = on;
+            if (key == "usageReport" && on && m_loginState == "signedIn") gen = ++m_beatGen;
+        }
+        publish();
+        if (gen) post([this, gen] { beatLoop(gen); }, 2);
     } else if (event == "game.stopped") {
         {
             std::lock_guard lock(m_mutex);
@@ -534,6 +691,15 @@ void Engine::signedIn(const json& profile)
     m_host.info("Giriş: " + m_user);
     publish();
     post([this] { syncPool(true); });
+    bool start = false;
+    int gen = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        gen = ++m_beatGen;
+        start = std::exchange(m_pendingStart, false);
+    }
+    post([this, gen] { beatLoop(gen); }, 2);   // usage report 2 s after sign-in
+    if (start) maybeAutoStart();
 }
 
 void Engine::signedOut(const std::string& message)
@@ -547,6 +713,7 @@ void Engine::signedOut(const std::string& message)
         m_loginUrl.clear();
         m_loginMessage = message;
         m_user.clear();
+        ++m_beatGen;
         m_running = false;
         saveSettings();
     }
@@ -643,6 +810,7 @@ Result Engine::startReading()
         if (m_mode == "pc" && !m_pcRegion)
             return Result::error(MAKINE_E_FAILED, "Önce okunacak bölgeyi seç.");
         m_running = true;
+        m_sessionLines = 0;
     }
     m_captureCv.notify_all();
     publish();
@@ -878,6 +1046,9 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
             {
                 std::lock_guard lock(m_mutex);
                 ++m_poolHits;
+                ++m_poolCount;
+                ++m_linesTotal;
+                ++m_sessionLines;
                 m_lastLine = {{"source", textUtf8}, {"text", hit->translation}, {"kind", "verified"}, {"origin", "local"}};
             }
             finish(hit->translation, "verified");
@@ -912,8 +1083,11 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
 
     ApiResult res;
     std::string notice;
+    double requestMs = 0;
     for (int attempt = 1; attempt <= 2; ++attempt) {
+        const auto sent = Clock::now();
         res = m_server.translate(slug, gameName, textUtf8, kSourceLang, kTargetLang);
+        requestMs = std::chrono::duration<double, std::milli>(Clock::now() - sent).count();
         bool retry = false;
         if (res.ok()) break;
         if (res.status == 401 || res.code() == "banned") {
@@ -963,6 +1137,12 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
             m_cache[key] = {translated, kind, now()};
             if (m_cache.size() > 1000) m_cache.erase(m_cache.begin());
             if (kind != "api") ++m_poolHits;
+            ++m_linesTotal;
+            ++m_sessionLines;
+            auto& samples = kind == "api" ? m_apiMs : m_poolMs;
+            samples.push_back(requestMs);
+            if (samples.size() > 50) samples.pop_front();
+            ++(kind == "api" ? m_apiCount : m_poolCount);
             m_lastLine = {{"source", textUtf8}, {"text", translated}, {"kind", kind},
                           {"origin", str(res.data, "origin", "deepl")}};
         }
@@ -1023,7 +1203,15 @@ bool Engine::readRegion(void* hwnd, const CaptureRegion& region, std::string& te
     }
     m_lastHash = hash;
     std::string text;
-    for (const auto& box : m_ocr->recognize(m_frame.pixels.data(), m_frame.width, m_frame.height)) {
+    const auto ocrStart = Clock::now();
+    const auto boxes = m_ocr->recognize(m_frame.pixels.data(), m_frame.width, m_frame.height);
+    const double ocrMs = std::chrono::duration<double, std::milli>(Clock::now() - ocrStart).count();
+    if (ocrMs > 40) {   // as the harness: only real OCR runs, not unchanged frames
+        std::lock_guard lock(m_mutex);
+        m_ocrMs.push_back(ocrMs);
+        if (m_ocrMs.size() > 50) m_ocrMs.pop_front();
+    }
+    for (const auto& box : boxes) {
         if (!text.empty()) text += "\n";
         text += box.text;
     }
@@ -1190,6 +1378,7 @@ void Engine::runCapture()
     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     std::string activeMode;
     int seenStyle = 0;
+    double lastLoop = 0;
     std::unique_lock lock(m_mutex);
     while (!m_quit) {
         if (!m_captureJobs.empty()) {
@@ -1211,6 +1400,11 @@ void Engine::runCapture()
 
         double wait = kPollS;
         const double t0 = now();
+        if (running && lastLoop > 0) {
+            std::lock_guard guard(m_mutex);
+            m_runAcc += std::min(1.0, t0 - lastLoop);   // reading time for the usage report
+        }
+        lastLoop = running ? t0 : 0;
         try {
             if (!running) {
                 if (m_active) {

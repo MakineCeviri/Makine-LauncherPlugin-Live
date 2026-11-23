@@ -17,6 +17,7 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -470,6 +471,11 @@ void testConsole()
     check(matchSource("RemotePlay.exe", "PS Remote Play", {}, s) && s.key == "ps-remote-play", "PS Remote Play");
     check(matchSource("XboxPcApp.exe", "Xbox", {}, s) && s.console == "xbox", "Xbox app");
     check(matchSource("4KCaptureUtility.exe", "", {}, s) && s.console == "capture", "Elgato");
+    check(matchSource("Asobi.exe", "Asobi", {}, s) && s.key == "asobi", "Asobi");
+    check(matchSource("AsobiRemotePlay.exe", "", {}, s) && s.console == "ps5", "Asobi under another exe name");
+    check(isConsoleStream("RemotePlay.exe") && isConsoleStream("AsobiRemotePlay.exe") && isConsoleStream("PS Remote Play")
+              && !isConsoleStream("Elden Ring") && !isConsoleStream("obs64.exe"),
+          "console stream apps count as GTA VI");
     check(matchSource("obs64.exe", "Windowed Projector (Preview)", {}, s), "OBS projector");
     check(matchSource("obs64.exe", "Pencereli Projektör (Önizleme)", {}, s), "OBS projector (Turkish)");
     check(!matchSource("obs64.exe", "OBS 31.0.0 - Profile: Untitled", {}, s), "OBS main window is not a source");
@@ -537,6 +543,17 @@ void testLocalPool()
     check(h && h->id == 1 && !h->exact, "OCR letter error: similar line");
     check(!p.lookup("Go to floor 4."), "different digit: no match");
     check(!p.lookup("Something never seen before in this game"), "unknown line: none");
+    {
+        json rows = json::array();
+        for (int i = 0; i < 20000; ++i)
+            rows.push_back(row(i, "Line number " + std::to_string(i) + " of the long dialogue tree here", "S"));
+        const GamePool big("g", "", "", rows, 0);
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < 20; ++i) big.lookup("A sentence that is not in the pool at all, really " + std::to_string(i));
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 20;
+        check(ms < 150, "20 000 lines, a line not in the pool: " + std::to_string(ms) + " ms");
+        check(!big.lookup("A sentence that is not in the pool at all, really 3"), "not found is remembered");
+    }
 
     const std::wstring dir = std::filesystem::temp_directory_path().wstring() + L"\\makine_pool_test_"
                              + std::to_wstring(GetCurrentProcessId());

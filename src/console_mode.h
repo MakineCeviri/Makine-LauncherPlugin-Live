@@ -39,6 +39,11 @@ constexpr int kMinWidth = 960, kMinHeight = 540;          // smaller: subtitles 
 inline const char* const kGameName = "Grand Theft Auto VI";
 inline const char* const kGameSlug = "grand-theft-auto-vi";
 
+/// An app that streams the console picture to the PC (PS Remote Play, Asobi, chiaki, the Xbox
+/// app, Greenlight), by exe name or the name a game library shows. In PC mode too it is GTA VI:
+/// the console pool is GTA VI's (game_library.is_console_stream_exe, 0.3.2).
+bool isConsoleStream(const std::string& nameOrExe);
+
 Rect videoRect(const Rect& client, double aspect = 16.0 / 9.0);
 Box regionToScreen(const Rect& video, const Frac& frac);
 Frac screenToRegion(const Rect& video, const Box& rect);

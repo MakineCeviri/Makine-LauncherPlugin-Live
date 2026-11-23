@@ -213,6 +213,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `region.pick` | PC'de ekrandan, konsolda kaynağın 16:9 video alanı içinden (`overlay.pickRegion {within}`) bölge seçtirir |
 | `start` / `stop` | okumayı başlatır / durdurur (giriş ve PC'de bölge gerekir) |
 | `readOnce` | → `{text, filtered, region, window}`: bölgeyi bir kez okur, çevirmez |
+| `autoStart.set` / `usageReport.set` | `{enabled}` → Makine'nin ayar deposuna `settings.set` ile yazılır (manifest ayarları; Makine `autoStart`'ı eklenti kapalıyken de okur) |
 | `style.set` | `{preset, font, sizePx, …}` (Makine'nin `overlay.show.style` anahtarları; `null` siler) → `{style}` |
 
 `ui.state` (her değişiklikte `emitEvent`):
@@ -240,6 +241,14 @@ Makine olmamalı ve bölgenin ortasını kapsamalı. Ekrandan okunan ve gösterd
 cümle birleştirilmeden önce atılır; yine de Makine'nin kaplama penceresinin `SetWindowDisplayAffinity(
 WDA_EXCLUDEFROMCAPTURE)` ile yakalamadan gizlenmesi gerekir. Yerel havuz, oyun Makine'nin kütüphanesinden
 geldiği için sormadan indirilir.
+
+**Ayarlar** (manifest `contributes.settings`, Makine saklar): `autoStart` (oyun başlayınca kendiliğinden aç; giriş
+doğrulanırken gelen `game.started` bekletilir) ve `usageReport` (varsayılan açık). Kullanım bildirimi 0.3.2'deki
+`net/telemetry.py` ile aynıdır: girişten 2 sn sonra ve sunucunun söylediği `beat_s` aralığında `POST /api/live/app?action=beat`
+(oyun, mod, okuma süresi, çevrilen satır, sistem ve hız bilgisi; ekran görüntüsü ya da okunan metin gitmez), çıkışta ve
+kapanışta `bye`. `usageReport` kapalıysa hiç gönderilmez. Yanıttaki `log_request` yanıtlanmaz: eklentinin kendi günlük
+dosyası yoktur, satırları Makine'nin eklenti günlüğündedir. Konsol görüntüsünü getiren uygulamalar (PS Remote Play, Asobi,
+chiaki, Xbox uygulaması, Greenlight) PC modunda da GTA VI sayılır.
 
 ## Proje yapısı
 

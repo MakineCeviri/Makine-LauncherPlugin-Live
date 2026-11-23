@@ -46,6 +46,7 @@ namespace live {
 struct EngineInit {
     std::wstring dataDir, pluginDir;
     std::string version, launcherVersion;
+    nlohmann::json settings;   // init.settings: the manifest's settings, kept by the launcher
 };
 
 class Engine : public std::enable_shared_from_this<Engine> {
@@ -111,6 +112,10 @@ private:
     void publish();
     void setStatus(const std::string& text);
     void notifyError(const std::string& message);
+    void maybeAutoStart();
+    void setHostSetting(const std::string& key, bool value);
+    void beatLoop(int gen);
+    nlohmann::json beatPayloadLocked(bool bye);
     void saveSettings();
     std::string currentSlug() const;   // under m_mutex
     double now() const;
@@ -160,6 +165,15 @@ private:
     std::map<std::u32string, CachedTranslation> m_cache;
     std::set<std::u32string> m_inflight;
     std::string m_lastError;
+    // launcher-kept settings (manifest contributes.settings)
+    bool m_autoStart = false, m_usageReport = true, m_pendingStart = false;
+    // usage report (port of net/telemetry.py + app._beat_payload)
+    int m_beatGen = 0;
+    double m_beatS = 300;
+    int64_t m_startedAt = 0;
+    double m_runAcc = 0;
+    int m_linesTotal = 0, m_linesSent = 0, m_sessionLines = 0, m_errors = 0, m_poolCount = 0, m_apiCount = 0;
+    std::deque<double> m_ocrMs, m_poolMs, m_apiMs;
 
     // ── capture thread only ──
     std::unique_ptr<ScreenCapture> m_capture;

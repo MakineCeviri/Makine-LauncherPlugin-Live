@@ -16,7 +16,14 @@
     { "id": "overlay", "reason": "Çeviriyi oyunun üstünde altyazı olarak gösterir ve okunacak bölgeyi seçtirir." }
   ],
   "contributes": {
-    "screen": { "title": "Makine Live", "icon": "live" },
-    "events": [ "game.started", "game.stopped" ]
+    "screen": { "title": "Makine Live", "icon": "scan" },
+    "settings": [
+      { "key": "autoStart", "type": "toggle", "label": "Oyun başlayınca kendiliğinden aç",
+        "description": "Giriş yaptıysan ve bölge seçtiysen, oyun açılınca okumaya başlar.", "default": false },
+      { "key": "usageReport", "type": "toggle", "label": "Kullanım bildirimini gönder",
+        "description": "Beş dakikada bir oyun, mod, çevrilen satır sayısı ve sistem bilgisi Makine Live ekibine gider. Ekran görüntüsü ve okunan metin gitmez.",
+        "default": true }
+    ],
+    "events": [ "game.started", "game.stopped", "settings.changed" ]
   }
 }

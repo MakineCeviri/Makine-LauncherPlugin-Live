@@ -68,7 +68,7 @@ add_library(makine-live SHARED
     src/settings.cpp
 )
 target_include_directories(makine-live PRIVATE include src)
-target_link_libraries(makine-live PRIVATE live-logic d3d11 dxgi winhttp crypt32 bcrypt)
+target_link_libraries(makine-live PRIVATE live-logic d3d11 dxgi winhttp crypt32 bcrypt advapi32)
 set_target_properties(makine-live PROPERTIES PREFIX "")   # makine-live.dll, not libmakine-live.dll
 live_warnings(makine-live)
 if(MINGW)

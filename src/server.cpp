@@ -242,6 +242,11 @@ ApiResult ServerClient::status()
     return call(L"GET", "/api/live/app?action=status", nullptr, 5000);
 }
 
+ApiResult ServerClient::beat(const json& payload, int timeoutMs)
+{
+    return call(L"POST", "/api/live/app?action=beat", &payload, timeoutMs);
+}
+
 std::string loadDeviceId(const std::wstring& dataDir)
 {
     const std::wstring path = dataDir + L"\\device_id";
