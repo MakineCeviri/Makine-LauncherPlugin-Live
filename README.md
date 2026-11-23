@@ -106,18 +106,20 @@ kadar ayrıntılı rehber: [docs/GTA6_MAKINE_LIVE_REHBERI.md](docs/GTA6_MAKINE_L
 
 ### OCR çalışma dosyaları
 
-Boyutları nedeniyle depoda değiller. [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) sürümünden
-`RapidOcrOnnx.dll` ve `onnxruntime.dll`'i, PaddleOCR ONNX modellerini şu düzenle yerleştirin:
+Boyutları nedeniyle depoda değiller. `python tools/fetch_ocr.py` hepsini adresi ve SHA-256'sı sabitlenmiş olarak
+`.cache/ocr/` altına indirir (ikinci çalıştırmada yalnızca doğrular): RapidOcrOnnx 1.2.3 C kütüphanesi (statik
+CRT; ONNX Runtime ve OpenCV içinde, tek DLL) ve PP-OCRv3 modelleri. CMake bunları `build/package/` ve
+`build/release/` altına kopyalar.
 
 ```
-third_party/rapidocr/
-├── RapidOcrOnnx.dll
-├── onnxruntime.dll
-└── models/
-    ├── ch_PP-OCRv3_det_infer.onnx
-    ├── ch_ppocr_mobile_v2.0_cls_infer.onnx
-    ├── ch_PP-OCRv3_rec_infer.onnx
-    └── ppocr_keys_v1.txt
+.cache/ocr/
+├── bin/RapidOcrOnnx.dll
+├── models/
+│   ├── ch_PP-OCRv3_det_infer.onnx
+│   ├── ch_ppocr_mobile_v2.0_cls_infer.onnx
+│   ├── ch_PP-OCRv3_rec_infer.onnx
+│   └── ppocr_keys_v1.txt
+└── licenses/
 ```
 
 ### Derleme ve paketleme
@@ -138,20 +140,23 @@ ayarlara dokunmaz; `test.cmd --exe` derlenmiş exe'yi, `test.cmd --temiz` ilk a�
 Adım adım:
 
 ```powershell
+python tools/fetch_ocr.py        # OCR çalışma dosyaları (bir kez)
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build              # → build/release/makine-live.dll (+ OCR dosyaları, modeller, ikon)
-
-py tools/pack.py                 # → makine-live.makine (Launcher eklenti paketi)
-py tools/build_exe.py            # → dist/MakineLive.exe (tek dosyalık uygulama)
-py -m makine_live                # uygulamayı derlemeden çalıştırma (geliştirme)
+cmake --build build              # → build/package/ (Makine'nin paketlediği eklenti) + build/release/ (Python koşucusu)
+cmake --build build --target pack   # → build/org.makineceviri.live-<sürüm>.mkplugin
+py -m makine_live                # test koşucusunu derlemeden çalıştırma (geliştirme)
 ```
+
+`build/package/`: `manifest.json`, `bin/makine-live.dll` (girdi), `bin/RapidOcrOnnx.dll`, `models/`,
+`resources/en_words.txt`, `licenses/`. Makine bu klasörü `plugins/org.makineceviri.live/` olarak paketine koyar.
 
 ### Testler
 
 ```powershell
 py tests/test_plugin.py          # DLL ABI, ayarlar ve DPAPI, gerçek OCR
 py tests/test_normalization.py   # ortak normalizasyon vektörleri
-ctest --test-dir build           # C++ boşluk düzeltici
+ctest --test-dir build           # C++: spec vektörleri (normalizasyon, çöp), OCR süzgeci, altyazı zamanlaması,
+                                 # konsol geometrisi, yerel havuz, boşluk düzeltici (tests/cpp/test_logic.cpp)
 ```
 
 Bütün testlerin listesi ve gereksinimleri: [tests/README.md](tests/README.md).
@@ -160,6 +165,75 @@ Bütün testlerin listesi ve gereksinimleri: [tests/README.md](tests/README.md).
 
 Uygulama varsayılan olarak `https://makineceviri.org` ile konuşur. Yerel bir sunucuya bağlamak için
 `MAKINE_LIVE_SERVER` ortam değişkenini ayarlayın.
+
+### Makine olmadan çalıştırma
+
+Eklentiyi Makine'nin gerçek eklenti süreciyle (`makine-plugin-host.exe`) ama Makine'yi açmadan çalıştırmak için:
+
+```powershell
+python tools/plugin_dev.py build/package --host <Makine klasörü>/makine-plugin-host.exe --invoke state --invoke readOnce
+```
+
+`--region X,Y,W,H` bölge seçimini yanıtlar; `--invoke login.start` giriş kodunu ister (kod `ui.state` olayında görünür).
+
+## Makine Launcher eklentisi (ABI 2)
+
+Makine Live, Makine'nin içinde gelen (bundled) bir eklentidir: `org.makineceviri.live`, eklenti ABI 2
+(`include/makine/plugin/abi.h`, `sdk.hpp`; Makine-Launcher `core/include/makine/plugin/` ile birebir aynı).
+Makine onu kendi `makine-plugin-host.exe` sürecinde çalıştırır; ekranını Makine çizer, eklenti yalnızca durum
+yayınlar. Python ya da `MakineLive.exe` gerekmez, eklenti hiçbir şey indirip çalıştırmaz.
+
+- `initialize` yalnız ayarları okur ve iş parçacıklarını başlatır (< 1 sn). OCR çalışma dosyaları ve modeller ilk
+  `start` / `readOnce`'ta yüklenir. Her şey `dataDir`'e yazılır (`settings.cfg`, `device_id`, `pool/`, `ocr/`);
+  `pluginDir` salt okunurdur (MSIX).
+- RapidOcrOnnx `char*` yolları bayt bayt genişlettiği için modellere ve görüntüye göreli ASCII adlarla, geniş API ile
+  ayarlanan çalışma klasöründen erişilir (`ocr_rapid.cpp` `setPaths`).
+- Oturum jetonu `settings.cfg`'de Windows DPAPI ile şifreli durur. Cihaz kimliği eklentiye özgü, `dataDir\device_id`.
+- İstekler `pool_client.py` ile aynı başlıkları taşır (`X-Makine-Device`, `X-Makine-Version`, `User-Agent:
+  MakineLive/<sürüm>`) ve `X-Makine-Client: launcher/<Makine sürümü>`. Sunucunun güncelleme yanıtındaki indirme
+  kullanılmaz (eklentiyi Makine günceller); bakım ve zorunlu güncelleme `ui.state` → `server` ile gösterilir.
+- Çöp / HUD süzgeci, normalizasyon ve havuz anahtarı, satır takibi ve altyazı zamanlaması Python koşucusunun birebir
+  C++ karşılığıdır (`src/garbage.cpp`, `src/subtitle_timing.cpp`, `src/unitext.cpp`); `ctest` aynı vektörlerle sınar.
+- ABI 1 dışa aktarımları (`src/abi1.cpp`) yalnız Python test koşucusu içindir.
+
+### Launcher screen API
+
+Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile çağırır. Her yanıt JSON'dur; hata
+`{"message"}` ile döner. Uzun işler (giriş, bölge seçimi) hemen döner, sonucu `ui.state` getirir.
+
+| Yöntem | Parametre → yanıt |
+|---|---|
+| `state` | → tam durum (aşağıda) |
+| `login.start` | → `{message}`; kod ve bağlantı `ui.state.login`'de, tarayıcı `ui.openUrl` ile açılır |
+| `login.cancel` | giriş beklemesini bırakır |
+| `logout` | oturumu kapatır (sunucuda da) |
+| `mode.set` | `{mode: "pc" \| "console"}` |
+| `console.sources` | `{all?: bool}` → `{sources: [{id, key, label, console, exe, title, pid}]}`; `all` başka büyük pencereleri de listeler |
+| `console.select` | `{sourceId}` (`console.sources`'tan); listede olmayan bir pencere seçilirse exe'si kaynak olarak hatırlanır |
+| `region.pick` | PC'de ekrandan, konsolda kaynağın 16:9 video alanı içinden (`overlay.pickRegion {within}`) bölge seçtirir |
+| `start` / `stop` | okumayı başlatır / durdurur (giriş ve PC'de bölge gerekir) |
+| `readOnce` | → `{text, filtered, region, window}`: bölgeyi bir kez okur, çevirmez |
+| `style.set` | `{preset, font, sizePx, …}` (Makine'nin `overlay.show.style` anahtarları; `null` siler) → `{style}` |
+
+`ui.state` (her değişiklikte `emitEvent`):
+
+```json
+{
+  "login": {"state": "signedOut|checking|starting|waiting|signedIn|offline", "code", "url", "user", "message"},
+  "mode": "pc|console",
+  "sources": [ ... ], "selectedSource": {"key", "pid"} | null,
+  "region": {"pc": {"x", "y", "width", "height"} | null, "console": {"x", "y", "width", "height"} (video alanına oran)},
+  "picking": false, "running": false, "status": "…",
+  "lastLine": {"source", "text", "kind", "origin"} | null,
+  "counters": {"lines", "poolHits"},
+  "server": {"maintenance", "message"}, "notice": "…",
+  "style": { ... }, "game": {"name", "slug"}
+}
+```
+
+Çeviri `overlay.show` ile gider: `text` (eski Makine'ler için), `lines: [{text, sourceText?}]`, bölge (`x, y, width,
+height`; konsolda video alanındaki bölgenin ekran karşılığı) ve kayıtlı `style`. PC oyununda oyun Makine'nin
+`game.started` / `game.stopped` olaylarından ve `games.running`'den gelir; konsol modu her zaman GTA VI havuzudur.
 
 ## Proje yapısı
 

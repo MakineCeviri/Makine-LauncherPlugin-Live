@@ -170,7 +170,15 @@ graph TD
   `RapidOcrOnnx.dll` `LOAD_WITH_ALTERED_SEARCH_PATH` ile yüklenir; böylece `onnxruntime.dll` Launcher'ın klasöründe değil
   eklentinin klasöründe aranır.
 
-### 3.1. C ABI (`src/plugin.cpp`)
+> [!NOTE]
+> **0.4.0'dan beri Makine Live, Makine Launcher'ın içinde gelen bir eklentidir (eklenti ABI 2).** Giriş noktası
+> `src/plugin.cpp` (`makine_plugin_entry`), iş `src/engine.cpp` (yakalama iş parçacığı + ağ iş parçacıkları),
+> sunucu istemcisi `src/server.cpp`, Python'dan taşınan kurallar `src/garbage.cpp`, `src/subtitle_timing.cpp`,
+> `src/console_mode.cpp`, `src/local_pool.cpp` (`ctest` ile aynı vektörler). Paket düzeni, OCR çalışma dosyaları
+> (`tools/fetch_ocr.py`; RapidOcrOnnx 1.2.3 tek DLL, `onnxruntime.dll` yok) ve Makine ekranının API'si: README
+> "Makine Launcher eklentisi (ABI 2)". Aşağıdaki ABI 1 (§3.1) artık yalnız Python test koşucusu içindir (`src/abi1.cpp`).
+
+### 3.1. C ABI (`src/abi1.cpp`, yalnız test koşucusu)
 
 ```c
 MakinePluginInfo makine_get_info(void);                 // id, name, version, apiVersion=1
