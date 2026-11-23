@@ -350,9 +350,9 @@ Bu test koşucusu oyunculara **tek bir `MakineLive.exe`** olarak verilir (`py to
 `makineceviri.org/live/`. Python ya da başka bir şey kurmak gerekmez. Nihai ürün yine DLL'dir; Launcher entegrasyonunda
 bu uygulamanın yerini Launcher alır.
 
-- **Sürüm:** `manifest.json` → `0.3.0`, kanal `beta` (ekranda "0.3.0 beta"; `.exe` FileVersion 0.3.0, ProductVersion
-  "0.3.0 beta"; DLL `makine_get_info` 0.3.0; Makine TV `versionName` aynı sayıyı manifest'ten alır; `tv-webos` paket
-  dosyaları da 0.3.0). 0.3.0 ilk açık sürümdür: sunucu makineceviri.org. Her istekte `X-Makine-Version` gider.
+- **Sürüm:** `manifest.json` → `0.3.2`, kanal `beta` (ekranda "0.3.2 beta"; `.exe` FileVersion 0.3.2, ProductVersion
+  "0.3.2 beta"; DLL `makine_get_info` 0.3.2; Makine TV `versionName` aynı sayıyı manifest'ten alır; `tv-webos` paket
+  dosyaları da 0.3.2). 0.3.0 ilk açık sürümdür: sunucu makineceviri.org. Her istekte `X-Makine-Version` gider.
 - **Açılış sırası:** önce `/api/live/app?action=status`: bakım (yönetici değilse) → bakım ekranı; zorunlu güncelleme → "Güncelleme
   gerekli" ekranı (**Şimdi güncelle**: `app_update` ile indir, SHA-256 doğrula, çalışan `.exe`'nin adını `.old` yap, yenisini
   yerine kopyala ve `--after-update <pid>` ile aç; yeni süreç eskisinin kapanmasını bekleyip `.old`'u siler; yazılamazsa yeni
@@ -600,7 +600,7 @@ py tools/pack.py           # → makine-live.makine (Launcher → Ayarlar → Ek
 py -m makine_live
 
 # Sürüm: DLL → testler → exe → selftest → SHA-256 tek adımda (çift tıklanınca sürüm numarasını sorar)
-build.cmd                  # ya da: py tools/build.py 0.3.1   |   py tools/build.py --hizli (testsiz)
+build.cmd                  # ya da: py tools/build.py 0.3.3   |   py tools/build.py --hizli (testsiz)
 
 # Makine Live uygulaması (tek dosya; önce DLL'i derleyin). Makine TV APK'sı eskiyse kendisi derler ve gömer.
 py tools/build_exe.py      # → dist/MakineLive.exe (ilk derlemede başlatıcıyı da kaynaktan derler: gcc gerekir)
