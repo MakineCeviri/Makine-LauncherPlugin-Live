@@ -17,7 +17,7 @@ namespace live::console {
 struct SourceApp {
     std::string key;       // ps-remote-play, chiaki, xbox-app, greenlight, elgato, obs-projector, windows-camera, custom
     std::string label;
-    std::string console;   // ps5 | xbox | capture | custom
+    std::string console;   // ps5 | xbox | stream | cloud | capture | custom
 };
 
 struct Rect {   // left, top, right, bottom

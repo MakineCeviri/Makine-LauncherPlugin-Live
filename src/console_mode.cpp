@@ -37,25 +37,67 @@ std::string stem(const std::string& exe)
     return dot == std::string::npos ? exe : exe.substr(0, dot);
 }
 
-struct Known {
-    SourceApp app;
-    std::vector<std::string> exes;   // lower case
-    int title;                        // 0 any, 1 OBS projector, 2 camera
+// Exe name without extension, lower case, spaces / dashes / underscores removed: apps that rename their
+// exe between versions ("AVerMedia Streaming Center.exe", "GeForceNOW.exe") match by a part of it.
+std::string squash(const std::string& exeLower)
+{
+    std::string out;
+    for (const char c : stem(exeLower))
+        if (c != ' ' && c != '-' && c != '_') out += c;
+    return out;
+}
+
+enum class TitleRule {
+    Any,
+    Projector,   // OBS / Streamlabs: only the projector window (r"project|projekt")
+    Camera,      // Windows Camera: the whole title is "camera" / "kamera"
+    Capture,     // a media player: only while it shows a capture device, not a film
 };
 
+struct Known {
+    SourceApp app;
+    std::vector<std::string> exes;     // exact, lower case
+    std::vector<std::string> parts;    // contained in squash(exe)
+    TitleRule title = TitleRule::Any;
+};
+
+// ps5 / xbox: the console's own streaming apps; stream: PC game streaming clients; cloud: cloud gaming;
+// capture: capture-card software (a Nintendo Switch, PS5 or Xbox on HDMI comes in through these).
 const std::vector<Known>& known()
 {
     static const std::vector<Known> k{
-        {{"ps-remote-play", "PS Remote Play", "ps5"}, {"remoteplay.exe"}, 0},
-        {{"chiaki", "chiaki", "ps5"}, {"chiaki.exe", "chiaki-ng.exe"}, 0},
-        {{"asobi", "Asobi", "ps5"}, {"asobi.exe"}, 0},   // also any exe whose name contains "asobi" (exeStem)
-        {{"xbox-app", "Xbox uygulaması", "xbox"}, {"xboxpcapp.exe"}, 0},
-        {{"greenlight", "Greenlight", "xbox"}, {"greenlight.exe"}, 0},
-        {{"elgato", "Elgato 4K Capture Utility", "capture"}, {"4kcaptureutility.exe", "gamecapture.exe"}, 0},
-        {{"obs-projector", "OBS projektör", "capture"}, {"obs64.exe", "obs32.exe"}, 1},
-        {{"windows-camera", "Windows Kamera", "capture"}, {"applicationframehost.exe", "windowscamera.exe"}, 2},
+        {{"ps-remote-play", "PS Remote Play", "ps5"}, {"remoteplay.exe"}, {}},
+        {{"chiaki", "chiaki", "ps5"}, {"chiaki.exe", "chiaki-ng.exe"}, {"chiaki"}},
+        {{"asobi", "Asobi", "ps5"}, {"asobi.exe"}, {"asobi"}},
+        {{"pxplay", "PXPlay", "ps5"}, {}, {"pxplay"}},
+        {{"xbox-app", "Xbox uygulaması", "xbox"}, {"xboxpcapp.exe"}, {}},   // also Xbox Cloud Gaming
+        {{"greenlight", "Greenlight", "xbox"}, {"greenlight.exe"}, {}},
+        {{"steam-link", "Steam Link", "stream"}, {"steamlink.exe", "streaming_client.exe"}, {}},
+        {{"moonlight", "Moonlight", "stream"}, {}, {"moonlight"}},
+        {{"parsec", "Parsec", "stream"}, {"parsecd.exe", "parsec.exe"}, {}},
+        {{"geforce-now", "GeForce NOW", "cloud"}, {}, {"geforcenow"}},
+        {{"elgato", "Elgato 4K Capture Utility", "capture"}, {"4kcaptureutility.exe", "gamecapture.exe"}, {}},
+        {{"elgato-studio", "Elgato Studio", "capture"}, {}, {"elgatostudio"}},
+        {{"avermedia-recentral", "AVerMedia RECentral", "capture"}, {}, {"recentral"}},
+        {{"avermedia-streaming-center", "AVerMedia Streaming Center", "capture"}, {}, {"streamingcenter"}},
+        {{"obs-projector", "OBS projektör", "capture"}, {"obs64.exe", "obs32.exe"}, {}, TitleRule::Projector},
+        {{"streamlabs-projector", "Streamlabs projektör", "capture"}, {}, {"streamlabs"}, TitleRule::Projector},
+        {{"windows-camera", "Windows Kamera", "capture"}, {"applicationframehost.exe", "windowscamera.exe"}, {},
+         TitleRule::Camera},
+        {{"vlc", "VLC (yakalama aygıtı)", "capture"}, {"vlc.exe"}, {}, TitleRule::Capture},
+        {{"potplayer", "PotPlayer (yakalama aygıtı)", "capture"}, {}, {"potplayer"}, TitleRule::Capture},
+        {{"mpc", "MPC-HC (yakalama aygıtı)", "capture"}, {"mpc-hc.exe", "mpc-hc64.exe", "mpc-be.exe", "mpc-be64.exe"},
+         {}, TitleRule::Capture},
     };
     return k;
+}
+
+bool titleShowsCaptureDevice(const std::string& t)
+{
+    for (const char* w : {"capture", "yakalama", "dshow", "directshow", "cam link", "camlink", "usb video", "hdmi",
+                          "elgato", "avermedia", "live gamer", "webcam", "device", "aygıt", "cihaz", "uvc"})
+        if (t.find(w) != std::string::npos) return true;
+    return false;
 }
 
 std::wstring className(HWND h)
@@ -165,14 +207,15 @@ bool matchSource(const std::string& exeName, const std::string& title, const std
 {
     const std::string exe = lowerUtf8(exeName);
     const std::string t = lowerUtf8(title);
+    const std::string squashed = squash(exe);
     for (const Known& k : known()) {
-        // Asobi: Remote Play renames its exe between versions: matched by the name without extension
-        const bool hit = std::find(k.exes.begin(), k.exes.end(), exe) != k.exes.end()
-                         || (k.app.key == "asobi" && stem(exe).find("asobi") != std::string::npos);
+        bool hit = std::find(k.exes.begin(), k.exes.end(), exe) != k.exes.end();
+        for (const std::string& part : k.parts) hit = hit || (!exe.empty() && squashed.find(part) != std::string::npos);
         if (!hit) continue;
-        // OBS: r"project|projekt"; Windows Camera: r"^(camera|kamera)$" (re.IGNORECASE)
-        if (k.title == 1 && t.find("project") == std::string::npos && t.find("projekt") == std::string::npos) continue;
-        if (k.title == 2 && t != "camera" && t != "kamera") continue;
+        if (k.title == TitleRule::Projector && t.find("project") == std::string::npos && t.find("projekt") == std::string::npos)
+            continue;
+        if (k.title == TitleRule::Camera && t != "camera" && t != "kamera") continue;
+        if (k.title == TitleRule::Capture && !titleShowsCaptureDevice(t)) continue;
         out = k.app;
         return true;
     }
