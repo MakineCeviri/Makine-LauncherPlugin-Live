@@ -215,6 +215,17 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `readOnce` | → `{text, filtered, region, window}`: bölgeyi bir kez okur, çevirmez |
 | `autoStart.set` / `usageReport.set` | `{enabled}` → Makine'nin ayar deposuna `settings.set` ile yazılır (manifest ayarları; Makine `autoStart`'ı eklenti kapalıyken de okur) |
 | `style.set` | `{preset, font, sizePx, …}` (Makine'nin `overlay.show.style` anahtarları; `null` siler) → `{style}` |
+| `output.set` | `{output: "pc" \| "tv" \| "phone"}`: konsol modunda altyazı nerede (Remote Play penceresinin üstü / Makine TV / telefon-tablet sayfası) |
+| `obs.set` | `{enabled}` → `{obsUrl}`: OBS tarayıcı kaynağı (`http://127.0.0.1:47712/obs`, yalnız bu bilgisayar) |
+| `tv.discover` | ev ağında Makine TV arar (~1,6 sn); sonuç `ui.state.tv.found` |
+| `tv.pair` | `{id, code}` (`tv.found`'dan) ya da `{host, port?, code}` (adresle bağlan); konsol modunda çıktıyı `tv` yapar |
+| `tv.unpair` | eşleşmeyi siler |
+| `tv.install.scan` | `{platform: "android" \| "lg"}`: ev ağında ADB (5555) / LG geliştirici modu (9922) açık cihazlar → `tvInstall.hosts` |
+| `tv.install` | `{platform: "android", host, port?}`: Android TV / Google TV / Fire TV'ye ADB ile kurar; ilerleme `tvInstall.step`, sonuç `tvInstall.state` (`running` · `done` · `error`) ve `message`. `lg` → `E_UNSUPPORTED` (elle kurulum: `tvInstall.guide.lg`) |
+| `tv.install.saveFile` | `{platform: "android" \| "lg"}` → `{path}`: `makine-tv.apk` / `.ipk` İndirilenler klasörüne (USB bellek ya da elle kurulum) |
+| `announcement.read` | `{id}`: duyuruyu kapatır (sunucuya `ann_read`) |
+| `support.dismiss` | "kayıt gönderildi" kartını kapatır |
+| `donate` / `donate.dismiss` | bağış sayfasını `ui.openUrl` ile açar (kreosus.com) / ilk açılış kartını kapatır |
 
 `ui.state` (her değişiklikte `emitEvent`):
 
@@ -229,6 +240,16 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "counters": {"lines", "poolHits"},
   "server": {"maintenance", "message"}, "notice": "…",
   "style": { ... }, "game": {"name", "slug"}
+  "autoStart": false, "usageReport": true,
+  "output": "pc|tv|phone", "obs": false,
+  "web": {"running", "lan", "port", "clients", "obsUrl", "phoneUrl", "error", "firewallNote"},
+  "tv": {"state": "idle|connecting|connected|bad_code|offline", "detail", "paired": {...} | null, "found": [{"id", "name", "host", "port"}], "searching"},
+  "tvInstall": {"platform", "state", "step", "message", "hosts": [...], "scanning", "apkAvailable", "ipkAvailable",
+                "guide": {"android": [...], "firetv": [...], "lg": [...]}},
+  "discord": {"connected"},
+  "announcements": [{"id", "kind", "kindLabel", "title", "body", "author", "createdAt"}],
+  "support": {"time", "sizeKb"} | null,
+  "donate": {"url", "seen"}
 }
 ```
 
@@ -241,6 +262,33 @@ Makine olmamalı ve bölgenin ortasını kapsamalı. Ekrandan okunan ve gösterd
 cümle birleştirilmeden önce atılır; yine de Makine'nin kaplama penceresinin `SetWindowDisplayAffinity(
 WDA_EXCLUDEFROMCAPTURE)` ile yakalamadan gizlenmesi gerekir. Yerel havuz, oyun Makine'nin kütüphanesinden
 geldiği için sormadan indirilir.
+
+**Çıktılar.** Çeviri, PC modunda ve konsol modunda `output: "pc"` iken Makine'nin kaplamasıyla gösterilir; `tv` iken
+Makine TV'ye (UDP 47710 keşif, TCP satır-JSON, TV'deki 4 haneli kod; `src/tv_link.cpp`), `phone` iken telefon / tablet
+sayfasına (`http://<PC>:47712`, SSE) gider. OBS kaynağı (`/obs`) her modda açılabilir. Sayfalar Python koşucusunun
+sayfalarıyla aynıdır (`tools/gen_web_pages.py` → `src/web_pages.inc`), dışarıdan bir şey yüklemez (CSP). Sunucu
+telefon açık değilken yalnız 127.0.0.1'i dinler; telefon açılınca ev ağını dinler ve Windows bir kez güvenlik duvarı
+izni sorar (`web.firewallNote`). Eklenti güvenlik duvarına kural eklemez.
+
+**Discord** (`src/discord.cpp`): okuma açıkken profilde "… · Türkçe oynuyor", oturum süresi ve çevrilen diyalog;
+GTA VI'da Makine × GTA VI görseli. Discord'un yerel IPC kanalı kullanılır, ağa çıkılmaz. Makine'de her zaman açık.
+
+**TV'ye kur.** Android TV, Google TV ve Fire TV: eklenti ADB protokolünü kendisi konuşur (`src/adb.cpp`; adb.exe yok):
+RSA-2048 anahtarı Windows CNG ile üretilir, DPAPI ile `dataDir\adbkey.bin`'de durur; TV bir kez "bu bilgisayara izin
+verilsin mi" diye sorar. APK `sync:` ile yüklenir, `pm install` ile kurulur, altyazı katmanı izni verilir, uygulama
+açılır. LG webOS: SSH istemcisi gerektirdiği için şimdilik elle kurulum (`tvInstall.guide.lg`, `tv.install.saveFile`).
+Paketler: `resources/makine-tv.apk` (`tv\gradlew.bat assembleRelease`; imzalı sürüm için `MAKINE_TV_KEYSTORE`) ve
+`resources/makine-tv.ipk` (`tools/build_webos.py`, derlemede kendiliğinden).
+
+**Duyurular, destek, bağış.** Sunucunun duyuruları `announcements`'ta; ekip bir oturumun kaydını isterse
+(`beat` → `log_request`) eklentinin kendi kayıt satırları (bellekte son 512 KB) gzip ile gider ve `support` kartı çıkar.
+Bağış bağlantısı `ui.openUrl` ile açılır; Makine'nin izin listesine `https://kreosus.com/makineceviri/…` eklenmelidir.
+
+**Konsol / yakalama kaynakları:** PS Remote Play, chiaki / chiaki-ng, Asobi, PXPlay (PS5); Xbox uygulaması (Xbox Cloud
+Gaming dahil), Greenlight (Xbox); Steam Link, Moonlight, Parsec (yayın); GeForce NOW (bulut); Elgato 4K Capture Utility,
+Elgato Studio, AVerMedia RECentral, AVerMedia Streaming Center, OBS ve Streamlabs projektörü, Windows Kamera, yakalama
+aygıtı gösteren VLC / PotPlayer / MPC-HC (yakalama kartı; Nintendo Switch de bu yoldan). Hepsi aynı 16:9 bölge
+mantığıyla okunur.
 
 **Ayarlar** (manifest `contributes.settings`, Makine saklar): `autoStart` (oyun başlayınca kendiliğinden aç; giriş
 doğrulanırken gelen `game.started` bekletilir) ve `usageReport` (varsayılan açık). Kullanım bildirimi 0.3.2'deki

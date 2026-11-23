@@ -47,10 +47,15 @@ add_library(live-logic STATIC
     src/console_mode.cpp
     src/local_pool.cpp
     src/text_fix.cpp
+    src/discord.cpp
+    src/subtitle_web.cpp
+    src/tv_link.cpp
+    src/adb.cpp
+    src/gzip_store.cpp
 )
 target_include_directories(live-logic PUBLIC src)
 target_compile_definitions(live-logic PUBLIC ${LIVE_DEFINES})
-target_link_libraries(live-logic PUBLIC nlohmann_json::nlohmann_json user32 gdi32 dwmapi)
+target_link_libraries(live-logic PUBLIC nlohmann_json::nlohmann_json user32 gdi32 dwmapi ws2_32 bcrypt crypt32)
 live_warnings(live-logic)
 
 # ── makine-live.dll ─────────────────────────────────────────────────────────
@@ -59,6 +64,7 @@ live_warnings(live-logic)
 add_library(makine-live SHARED
     src/plugin.cpp
     src/engine.cpp
+    src/engine_outputs.cpp
     src/server.cpp
     src/abi1.cpp
     src/live_core.cpp
@@ -68,7 +74,7 @@ add_library(makine-live SHARED
     src/settings.cpp
 )
 target_include_directories(makine-live PRIVATE include src)
-target_link_libraries(makine-live PRIVATE live-logic d3d11 dxgi winhttp crypt32 bcrypt advapi32)
+target_link_libraries(makine-live PRIVATE live-logic d3d11 dxgi winhttp crypt32 bcrypt advapi32 shell32 ole32)
 set_target_properties(makine-live PROPERTIES PREFIX "")   # makine-live.dll, not libmakine-live.dll
 live_warnings(makine-live)
 if(MINGW)
@@ -85,6 +91,7 @@ set(RELEASE_DIR "${CMAKE_BINARY_DIR}/release")
 string(JSON PLUGIN_ENTRY GET "${MANIFEST_JSON}" entry)
 configure_file(manifest.json "${PACKAGE_DIR}/manifest.json" COPYONLY)
 configure_file(resources/en_words.txt "${PACKAGE_DIR}/resources/en_words.txt" COPYONLY)
+configure_file(assets/logo_white-96.webp "${PACKAGE_DIR}/resources/logo.webp" COPYONLY)   # phone / OBS pages
 configure_file(LICENSE "${PACKAGE_DIR}/licenses/Makine-Live-LICENSE.txt" COPYONLY)
 configure_file(licenses/NOTICE.txt "${PACKAGE_DIR}/licenses/NOTICE.txt" COPYONLY)
 configure_file("${json_SOURCE_DIR}/LICENSE.MIT" "${PACKAGE_DIR}/licenses/nlohmann-json-LICENSE.txt" COPYONLY)
@@ -104,8 +111,20 @@ add_custom_target(stage-ocr ALL
     COMMAND "${CMAKE_COMMAND}" "-DSRC=${LIVE_OCR_DIR}" "-DDST=${RELEASE_DIR}" -DFLAT=ON ${STAGE_OCR_SCRIPT}
     VERBATIM)
 
-# cmake --build build --target pack  ->  build/<id>-<version>.mkplugin
+# Makine TV packages for "TV'ye kur": the LG .ipk (tools/build_webos.py, pure Python, ms) and the
+# Android TV APK (tv\gradlew.bat assembleRelease; release-signed only with MAKINE_TV_KEYSTORE set).
+set(LIVE_TV_APK "${CMAKE_CURRENT_SOURCE_DIR}/tv/app/build/outputs/apk/release/app-release.apk" CACHE FILEPATH
+    "Makine TV APK put into the package")
 find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+    add_custom_target(stage-tv ALL
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/build_webos.py" "${PACKAGE_DIR}/resources/makine-tv.ipk"
+        COMMAND "${CMAKE_COMMAND}" "-DSRC=${LIVE_TV_APK}" "-DDST=${PACKAGE_DIR}/resources/makine-tv.apk"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stage_file.cmake"
+        VERBATIM)
+endif()
+
+# cmake --build build --target pack  ->  build/<id>-<version>.mkplugin
 if(Python3_FOUND)
     add_custom_target(pack
         COMMAND "${CMAKE_COMMAND}" "-DSRC=${LIVE_OCR_DIR}" "-DDST=${PACKAGE_DIR}" -DREQUIRE=ON ${STAGE_OCR_SCRIPT}
@@ -132,4 +151,13 @@ endif()
 add_test(NAME text_fix COMMAND text_fix_test ${CMAKE_SOURCE_DIR}/resources/en_words.txt)
 foreach(case normalization garbage ocr_filter subtitle console local_pool)
     add_test(NAME ${case} COMMAND live_logic_test ${case} ${CMAKE_SOURCE_DIR})
+endforeach()
+add_executable(live_outputs_test tests/cpp/test_outputs.cpp)
+target_link_libraries(live_outputs_test PRIVATE live-logic)
+live_warnings(live_outputs_test)
+if(MINGW)
+    target_link_options(live_outputs_test PRIVATE -static)
+endif()
+foreach(case discord discord_pipe gzip adb_key web tv_link)
+    add_test(NAME ${case} COMMAND live_outputs_test ${case})
 endforeach()

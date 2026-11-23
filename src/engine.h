@@ -13,7 +13,9 @@
 // Every thread holds a shared_ptr to the Engine, so one that misses the shutdown budget is
 // detached and finishes on memory that is still alive.
 
+#include "adb.h"
 #include "capture.h"
+#include "discord.h"
 #include "console_mode.h"
 #include "garbage.h"
 #include "local_pool.h"
@@ -21,6 +23,8 @@
 #include "server.h"
 #include "settings.h"
 #include "subtitle_timing.h"
+#include "subtitle_web.h"
+#include "tv_link.h"
 #include "text_fix.h"
 
 #include <makine/plugin/sdk.hpp>
@@ -113,6 +117,21 @@ private:
     void setStatus(const std::string& text);
     void notifyError(const std::string& message);
     void maybeAutoStart();
+    void logLine(int32_t level, const std::string& message);   // to the host log and the support log ring
+
+    // engine_outputs.cpp: overlay / TV / phone / OBS routing, Discord, TV install, announcements, support
+    void startOutputs();
+    void stopOutputs();
+    void applyOutputs();
+    void applyStyleOutputs();
+    bool boxWanted() const;
+    void routeLine(const Display& d);
+    void routeClear();
+    void updateDiscord();
+    nlohmann::json outputsStateLocked() const;
+    std::optional<makine::plugin::Result> invokeOutputs(std::string_view method, const nlohmann::json& params);
+    void onStatus(const nlohmann::json& data);
+    void onLogRequest(const std::string& requestId);
     void setHostSetting(const std::string& key, bool value);
     void beatLoop(int gen);
     nlohmann::json beatPayloadLocked(bool bye);
@@ -174,6 +193,16 @@ private:
     double m_runAcc = 0;
     int m_linesTotal = 0, m_linesSent = 0, m_sessionLines = 0, m_errors = 0, m_poolCount = 0, m_apiCount = 0;
     std::deque<double> m_ocrMs, m_poolMs, m_apiMs;
+    // outputs (engine_outputs.cpp)
+    std::string m_output = "pc";               // console mode: pc | tv | phone
+    bool m_obs = false, m_donateSeen = false, m_tvSearching = false;
+    nlohmann::json m_tvSaved = nullptr;        // the paired TV
+    std::string m_tvCode;
+    nlohmann::json m_tvFound = nlohmann::json::array(), m_tvInstall = nlohmann::json::object();
+    nlohmann::json m_announcements = nlohmann::json::array(), m_support = nullptr;
+    std::set<int64_t> m_annSeen;
+    std::string m_logSending;
+    int64_t m_readingSince = 0;
 
     // ── capture thread only ──
     std::unique_ptr<ScreenCapture> m_capture;
@@ -192,6 +221,16 @@ private:
     size_t m_shownCount = 0, m_filteredWith = 0;
     std::optional<console::Source> m_source;
     double m_nextPick = 0;
+
+    std::shared_ptr<DiscordPresence> m_discord;
+    std::shared_ptr<SubtitleWeb> m_web;
+    std::shared_ptr<TvLink> m_tv;
+    adb::Key m_adbKey;
+    int m_lineSeq = 0;      // capture thread
+    bool m_boxShown = false;
+    std::mutex m_logMutex;
+    std::deque<std::string> m_logRing;
+    size_t m_logBytes = 0;
 
     std::thread m_captureThread;
     std::vector<std::thread> m_netThreads;

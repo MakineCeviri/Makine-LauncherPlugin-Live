@@ -46,13 +46,16 @@ public:
     ApiResult status();
     /// Usage report (makine_live/net/telemetry.py): → {beat_s, log_request}; payload.bye on the way out.
     ApiResult beat(const nlohmann::json& payload, int timeoutMs = 6000);
+    /// The log the team asked for (beat → log_request), gzip.
+    ApiResult uploadLog(const std::string& requestId, const std::string& gzip);
+    ApiResult announcementRead(int64_t id);
 
     /// Aborts requests in flight and refuses new ones (shutdown).
     void cancel();
 
 private:
     ApiResult call(const wchar_t* method, const std::string& pathAndQuery, const nlohmann::json* payload,
-                   int timeoutMs);
+                   int timeoutMs, const std::string* gzipBody = nullptr);
 
     bool m_secure = true;
     std::wstring m_host;

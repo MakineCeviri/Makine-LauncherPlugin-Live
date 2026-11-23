@@ -112,7 +112,7 @@ void ServerClient::cancel()
 }
 
 ApiResult ServerClient::call(const wchar_t* method, const std::string& pathAndQuery, const json* payload,
-                             int timeoutMs)
+                             int timeoutMs, const std::string* gzipBody)
 {
     ApiResult r;
     r.data = json::object();
@@ -149,6 +149,9 @@ ApiResult ServerClient::call(const wchar_t* method, const std::string& pathAndQu
     if (payload) {
         headers += "Content-Type: application/json\r\n";
         body = payload->dump(-1, ' ', false, json::error_handler_t::replace);
+    } else if (gzipBody) {
+        headers += "Content-Type: application/gzip\r\n";
+        body = *gzipBody;
     }
     const std::wstring wHeaders = win::utf8ToWide(headers);
 
@@ -245,6 +248,17 @@ ApiResult ServerClient::status()
 ApiResult ServerClient::beat(const json& payload, int timeoutMs)
 {
     return call(L"POST", "/api/live/app?action=beat", &payload, timeoutMs);
+}
+
+ApiResult ServerClient::uploadLog(const std::string& requestId, const std::string& gzip)
+{
+    return call(L"POST", "/api/live/app?action=log_upload&id=" + urlEncode(requestId), nullptr, 30000, &gzip);
+}
+
+ApiResult ServerClient::announcementRead(int64_t id)
+{
+    const json body = {{"id", id}};
+    return call(L"POST", "/api/live/app?action=ann_read", &body, 5000);
 }
 
 std::string loadDeviceId(const std::wstring& dataDir)

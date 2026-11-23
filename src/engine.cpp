@@ -202,6 +202,12 @@ Engine::Engine(makine::plugin::Host host, EngineInit init)
         if (console::validRegion(f)) m_consoleRegion = f;
     }
     m_sourceKey = m_settings.get("consoleSource");
+    if (const std::string out = m_settings.get("output"); out == "tv" || out == "phone") m_output = out;
+    m_obs = m_settings.get("obs") == "true";
+    m_donateSeen = m_settings.get("donateSeen") == "true";
+    m_tvSaved = json::parse(m_settings.get("tv", "null"), nullptr, false);
+    if (m_tvSaved.is_discarded()) m_tvSaved = nullptr;
+    m_tvCode = m_settings.get("tvCode");
     m_customExes = splitOn(m_settings.get("customExes"), '|');
     const json style = json::parse(m_settings.get("style", "{}"), nullptr, false);
     if (style.is_object()) m_style = style;
@@ -211,6 +217,7 @@ void Engine::launch()
 {
     m_captureThread = std::thread([self = shared_from_this()] { self->runCapture(); });
     for (int i = 0; i < 2; ++i) m_netThreads.emplace_back([self = shared_from_this()] { self->runNet(); });
+    startOutputs();
     if (m_loginState == "checking") post([this] { validateSession(); });
     post([this] { statusLoop(); });
     post([this] {   // the game the launcher already sees running
@@ -236,6 +243,7 @@ void Engine::shutdown()
         if (m_usageReport && m_loginState == "signedIn") bye = beatPayloadLocked(true);
     }
     if (!bye.is_null()) m_server.beat(bye, 700);   // short: the host's whole shutdown budget is 3 s
+    stopOutputs();
     m_server.cancel();
     bool finished = false;
     {
@@ -251,7 +259,7 @@ void Engine::shutdown()
     for (auto& t : m_netThreads) end(t);
     if (!finished) {
         // Inside OCR or a host call that waits for the user; the host ends the process right after.
-        m_host.warn("İş parçacıkları zamanında durmadı; süreç kapanırken kesilecek.");
+        logLine(MAKINE_LOG_WARN, "İş parçacıkları zamanında durmadı; süreç kapanırken kesilecek.");
         m_host.emitEvent("overlay.hide", "{}");
     }
 }
@@ -268,7 +276,7 @@ json Engine::stateLocked() const
     json selected = nullptr;
     if (!m_sourceKey.empty() || m_sourcePid) selected = {{"key", m_sourceKey}, {"pid", m_sourcePid}};
     const bool console = m_mode == "console";
-    return {
+    json state = {
         {"login", {{"state", m_loginState}, {"code", m_loginCode}, {"url", m_loginUrl}, {"user", m_user},
                    {"message", m_loginMessage}}},
         {"mode", m_mode},
@@ -290,6 +298,9 @@ json Engine::stateLocked() const
         {"game", {{"name", console ? console::kGameName : m_gameName},
                   {"slug", console ? console::kGameSlug : m_gameSlug}}},
     };
+    const json outputs = outputsStateLocked();   // a named value: items() of a temporary would dangle
+    for (const auto& [k, v] : outputs.items()) state[k] = v;
+    return state;
 }
 
 void Engine::publish()
@@ -300,6 +311,7 @@ void Engine::publish()
         payload = dump(stateLocked());
     }
     m_host.emitEvent("ui.state", payload);
+    updateDiscord();
 }
 
 void Engine::setStatus(const std::string& text)
@@ -321,7 +333,7 @@ void Engine::notifyError(const std::string& message)
         if (message == m_lastError) return;
         m_lastError = message;
     }
-    m_host.error(message);
+    logLine(MAKINE_LOG_ERROR, message);
     m_host.emitEvent("ui.notify", dump({{"title", "Makine Live"}, {"message", message}, {"kind", "error"}}));
 }
 
@@ -338,10 +350,15 @@ void Engine::saveSettings()   // under m_mutex
     for (const auto& e : m_customExes) exes += (exes.empty() ? "" : "|") + e;
     m_settings.set("customExes", exes);
     m_settings.set("style", dump(m_style));
+    m_settings.set("output", m_output);
+    m_settings.set("obs", m_obs ? "true" : "false");
+    m_settings.set("donateSeen", m_donateSeen ? "true" : "false");
+    m_settings.set("tv", dump(m_tvSaved));
+    m_settings.set("tvCode", m_tvCode);
     m_settings.set("user", m_user);
     m_settings.set("authToken", m_server.token());
     m_settings.set("authServer", m_server.token().empty() ? std::string() : serverUrl());
-    if (!m_settings.save()) m_host.warn("Ayarlar kaydedilemedi (settings.cfg).");
+    if (!m_settings.save()) logLine(MAKINE_LOG_WARN, "Ayarlar kaydedilemedi (settings.cfg).");
 }
 
 std::string Engine::currentSlug() const
@@ -353,7 +370,7 @@ void Engine::setHostSetting(const std::string& key, bool value)
 {
     post([this, key, value] {
         const Result r = m_host.call("settings.set", dump({{"key", key}, {"value", value}}));
-        if (!r.succeeded()) m_host.warn("Ayar Makine'ye kaydedilemedi: " + key);
+        if (!r.succeeded()) logLine(MAKINE_LOG_WARN, "Ayar Makine'ye kaydedilemedi: " + key);
     });
 }
 
@@ -369,7 +386,7 @@ void Engine::maybeAutoStart()
         }
     }
     const Result r = startReading();
-    if (!r.succeeded()) m_host.info("Kendiliğinden başlatılamadı: " + r.json);
+    if (!r.succeeded()) logLine(MAKINE_LOG_INFO, "Kendiliğinden başlatılamadı: " + r.json);
 }
 
 // ── usage report (net/telemetry.py) ─────────────────────────────────────────
@@ -451,6 +468,7 @@ void Engine::beatLoop(int gen)
         if (r.ok()) m_beatS = std::clamp(num(r.data, "beat_s", 300), 60.0, 1800.0);
         next = m_beatS;
     }
+    if (r.ok()) onLogRequest(str(r.data, "log_request"));   // the team asked for this session's log
     // r.data.log_request (the team asks for the app log) is not answered: the plugin keeps no log file of its
     // own; its log lines are in the launcher's plugin log.
     post([this, gen] { beatLoop(gen); }, next);
@@ -501,7 +519,7 @@ Result Engine::invoke(std::string_view method, const json& params)
             saveSettings();
         }
         m_captureCv.notify_all();
-        publish();
+        applyOutputs();
         post([this] { syncPool(true); });
         return okMessage(mode == "console" ? "Konsol modu" : "PC modu");
     }
@@ -545,10 +563,12 @@ Result Engine::invoke(std::string_view method, const json& params)
             saveSettings();
         }
         m_captureCv.notify_all();
+        applyStyleOutputs();
         publish();
         std::lock_guard lock(m_mutex);
         return Result::ok(dump({{"style", m_style}}));
     }
+    if (auto r = invokeOutputs(method, params)) return *r;
     return Result::notFound(method);
 }
 
@@ -565,7 +585,7 @@ void Engine::onEvent(std::string_view event, const json& payload)
             m_gameSlug = stream ? std::string(console::kGameSlug) : text::gameSlug(name);
             m_gamePid = static_cast<unsigned long>(num(payload, "pid", 0));   // optional (contract addition)
         }
-        m_host.info("Oyun: " + name);
+        logLine(MAKINE_LOG_INFO, "Oyun: " + name);
         publish();
         post([this] { syncPool(true); });
         maybeAutoStart();
@@ -628,7 +648,7 @@ Result Engine::loginStart()
         const std::string url = str(r.data, "url");
         if (!url.empty()) {
             const Result opened = m_host.call("ui.openUrl", dump({{"url", url}}));
-            if (!opened.succeeded()) m_host.warn("Tarayıcı açılamadı; bağlantı ekranda: " + url);
+            if (!opened.succeeded()) logLine(MAKINE_LOG_WARN, "Tarayıcı açılamadı; bağlantı ekranda: " + url);
         }
         const double interval = std::max(2.0, num(r.data, "interval", 3));
         loginPoll(gen, str(r.data, "device"), now() + num(r.data, "expires_in", 600), interval);
@@ -688,7 +708,7 @@ void Engine::signedIn(const json& profile)
             m_notice = "Sunucuda çeviri anahtarı yok · yalnızca havuzdaki satırlar gelir";
         saveSettings();
     }
-    m_host.info("Giriş: " + m_user);
+    logLine(MAKINE_LOG_INFO, "Giriş: " + m_user);
     publish();
     post([this] { syncPool(true); });
     bool start = false;
@@ -699,6 +719,7 @@ void Engine::signedIn(const json& profile)
         start = std::exchange(m_pendingStart, false);
     }
     post([this, gen] { beatLoop(gen); }, 2);   // usage report 2 s after sign-in
+    post([this] { refreshStatus(); });          // announcements need the session
     if (start) maybeAutoStart();
 }
 
@@ -746,6 +767,7 @@ void Engine::validateSession()
 void Engine::refreshStatus()
 {
     const ApiResult r = m_server.status();
+    if (r.ok()) onStatus(r.data);
     if (r.ok()) {
         const json m = r.data.value("maintenance", json::object());
         const json upd = r.data.value("update", json::object());
@@ -797,7 +819,7 @@ void Engine::syncPool(bool force)
     if (!r.ok()) return;
     const SyncStats st = m_pool.applySync(slug, r.data);
     if (!st.unchanged)
-        m_host.info("Yerel havuz " + slug + ": +" + std::to_string(st.added) + " ~" + std::to_string(st.changed) + " −"
+        logLine(MAKINE_LOG_INFO, "Yerel havuz " + slug + ": +" + std::to_string(st.added) + " ~" + std::to_string(st.changed) + " −"
                     + std::to_string(st.removed) + " (" + std::to_string(st.total) + " onaylı satır)");
 }
 
@@ -811,6 +833,7 @@ Result Engine::startReading()
             return Result::error(MAKINE_E_FAILED, "Önce okunacak bölgeyi seç.");
         m_running = true;
         m_sessionLines = 0;
+        m_readingSince = static_cast<int64_t>(std::time(nullptr));
     }
     m_captureCv.notify_all();
     publish();
@@ -1010,7 +1033,7 @@ void Engine::runNet()
         try {
             fn();
         } catch (const std::exception& e) {
-            m_host.error(std::string("İş: ") + e.what());
+            logLine(MAKINE_LOG_ERROR, std::string("İş: ") + e.what());
         }
         lock.lock();
     }
@@ -1100,7 +1123,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
         } else if (res.status == 422) {
             std::lock_guard lock(m_mutex);
             m_skipKeys.insert(key);
-            m_host.debug("Sunucu çöp saydı (" + str(res.data, "reason") + "): " + textUtf8);
+            logLine(MAKINE_LOG_DEBUG, "Sunucu çöp saydı (" + str(res.data, "reason") + "): " + textUtf8);
             break;
         } else if (res.status == 429) {
             notice = "Günlük çeviri sınırı doldu — havuzdaki çeviriler gelmeye devam ediyor";
@@ -1112,7 +1135,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
             notice = "Sunucuda çeviri anahtarı yok · yalnızca havuzdaki satırlar gelir";
             break;
         } else {
-            m_host.warn("Sunucu " + std::to_string(res.status) + ": " + res.error);
+            logLine(MAKINE_LOG_WARN, "Sunucu " + std::to_string(res.status) + ": " + res.error);
             retry = res.status == 502 || res.status == 504;
             if (retry) notice = "Çeviri servisi yanıt vermedi · yeniden deneniyor";
         }
@@ -1179,7 +1202,7 @@ bool Engine::ensureOcr(std::string& error)
         return false;
     }
     m_frame.pixels.reserve(1920 * 200 * 4);
-    m_host.info("OCR hazır (RapidOcrOnnx, PP-OCRv3)");
+    logLine(MAKINE_LOG_INFO, "OCR hazır (RapidOcrOnnx, PP-OCRv3)");
     return true;
 }
 
@@ -1321,7 +1344,14 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
     json payload = {{"text", text}, {"lines", json::array({line})}, {"x", rect.x}, {"y", rect.y},
                     {"width", rect.w}, {"height", rect.h}, {"kind", d.kind}};
     if (!style.empty()) payload["style"] = style;
-    m_host.emitEvent("overlay.show", dump(payload));
+    if (boxWanted()) {   // console on the TV / phone: no box over the Remote Play window
+        m_host.emitEvent("overlay.show", dump(payload));
+        m_boxShown = true;
+    } else if (m_boxShown) {
+        m_host.emitEvent("overlay.hide", "{}");
+        m_boxShown = false;
+    }
+    routeLine(d);
     m_overlayShown = true;
     m_shownKeys.push_back(text::compactPoolKey(d.text));
     ++m_shownCount;
@@ -1355,7 +1385,9 @@ std::string Engine::withoutOwnOverlay(const std::string& raw) const
 void Engine::hideOverlay()
 {
     if (!m_overlayShown) return;
-    m_host.emitEvent("overlay.hide", "{}");
+    if (m_boxShown) m_host.emitEvent("overlay.hide", "{}");
+    m_boxShown = false;
+    routeClear();
     m_overlayShown = false;
 }
 
@@ -1388,7 +1420,7 @@ void Engine::runCapture()
             try {
                 job();
             } catch (const std::exception& e) {
-                m_host.error(std::string("Okuma: ") + e.what());
+                logLine(MAKINE_LOG_ERROR, std::string("Okuma: ") + e.what());
             }
             lock.lock();
             continue;
