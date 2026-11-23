@@ -15,6 +15,7 @@
 #include "rapid_dll.h"
 
 #include <windows.h>
+#include <shellapi.h>  // CommandLineToArgvW (WIN32_LEAN_AND_MEAN leaves it out)
 
 #include <cstdio>
 #include <filesystem>
@@ -154,8 +155,17 @@ int run(std::map<std::string, std::string>& o)
 
 } // namespace
 
-int main(int argc, char** argv)
+int main()
 {
+    // UTF-8 arguments (labels carry Turkish text; char** argv would be in the ANSI code page)
+    int argc = 0;
+    wchar_t** wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::vector<std::string> args;
+    for (int i = 0; i < argc; ++i) args.push_back(narrow(wargv[i]));
+    LocalFree(wargv);
+    std::vector<const char*> argvPtrs;
+    for (const auto& a : args) argvPtrs.push_back(a.c_str());
+    const char* const* argv = argvPtrs.data();
     if (argc < 2) {
         std::fprintf(stderr, "usage: ocr_bench run|report [--key value]... [files]\n");
         return 2;

@@ -25,7 +25,7 @@ add_executable(ocr_bench
 target_include_directories(ocr_bench PRIVATE src ${LIVE_ROOT}/src)
 target_include_directories(ocr_bench SYSTEM PRIVATE ${OCR_BENCH_ORT_INCLUDE})
 target_compile_definitions(ocr_bench PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(ocr_bench PRIVATE windowscodecs ole32 advapi32)
+target_link_libraries(ocr_bench PRIVATE windowscodecs ole32 advapi32 shell32)
 if(MINGW)
     target_link_options(ocr_bench PRIVATE -static -static-libgcc -static-libstdc++)
 endif()

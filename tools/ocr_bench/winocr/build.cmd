@@ -7,4 +7,4 @@ for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\
 if "%VS%"=="" (echo MSVC not found & exit /b 1)
 call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 if not exist "%OUT%" mkdir "%OUT%"
-cl /nologo /std:c++20 /EHsc /O2 /utf-8 /W3 "%~dp0winocr_bench.cpp" /Fo"%OUT%\\" /Fe"%OUT%\winocr_bench.exe" windowsapp.lib advapi32.lib
+cl /nologo /std:c++20 /EHsc /O2 /MT /utf-8 /W3 "%~dp0winocr_bench.cpp" /Fo"%OUT%\\" /Fe"%OUT%\winocr_bench.exe" windowsapp.lib advapi32.lib
