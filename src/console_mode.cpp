@@ -51,7 +51,6 @@ enum class TitleRule {
     Any,
     Projector,   // OBS / Streamlabs: only the projector window (r"project|projekt")
     Camera,      // Windows Camera: the whole title is "camera" / "kamera"
-    Capture,     // a media player: only while it shows a capture device, not a film
 };
 
 struct Known {
@@ -61,8 +60,7 @@ struct Known {
     TitleRule title = TitleRule::Any;
 };
 
-// ps5 / xbox: the console's own streaming apps; stream: PC game streaming clients; cloud: cloud gaming;
-// capture: capture-card software (a Nintendo Switch, PS5 or Xbox on HDMI comes in through these).
+// ps5 / xbox: the console's own streaming apps; capture: capture-card software (a PS5 or Xbox on HDMI).
 const std::vector<Known>& known()
 {
     static const std::vector<Known> k{
@@ -72,32 +70,15 @@ const std::vector<Known>& known()
         {{"pxplay", "PXPlay", "ps5"}, {}, {"pxplay"}},
         {{"xbox-app", "Xbox uygulaması", "xbox"}, {"xboxpcapp.exe"}, {}},   // also Xbox Cloud Gaming
         {{"greenlight", "Greenlight", "xbox"}, {"greenlight.exe"}, {}},
-        {{"steam-link", "Steam Link", "stream"}, {"steamlink.exe", "streaming_client.exe"}, {}},
-        {{"moonlight", "Moonlight", "stream"}, {}, {"moonlight"}},
-        {{"parsec", "Parsec", "stream"}, {"parsecd.exe", "parsec.exe"}, {}},
-        {{"geforce-now", "GeForce NOW", "cloud"}, {}, {"geforcenow"}},
         {{"elgato", "Elgato 4K Capture Utility", "capture"}, {"4kcaptureutility.exe", "gamecapture.exe"}, {}},
         {{"elgato-studio", "Elgato Studio", "capture"}, {}, {"elgatostudio"}},
         {{"avermedia-recentral", "AVerMedia RECentral", "capture"}, {}, {"recentral"}},
         {{"avermedia-streaming-center", "AVerMedia Streaming Center", "capture"}, {}, {"streamingcenter"}},
         {{"obs-projector", "OBS projektör", "capture"}, {"obs64.exe", "obs32.exe"}, {}, TitleRule::Projector},
-        {{"streamlabs-projector", "Streamlabs projektör", "capture"}, {}, {"streamlabs"}, TitleRule::Projector},
         {{"windows-camera", "Windows Kamera", "capture"}, {"applicationframehost.exe", "windowscamera.exe"}, {},
          TitleRule::Camera},
-        {{"vlc", "VLC (yakalama aygıtı)", "capture"}, {"vlc.exe"}, {}, TitleRule::Capture},
-        {{"potplayer", "PotPlayer (yakalama aygıtı)", "capture"}, {}, {"potplayer"}, TitleRule::Capture},
-        {{"mpc", "MPC-HC (yakalama aygıtı)", "capture"}, {"mpc-hc.exe", "mpc-hc64.exe", "mpc-be.exe", "mpc-be64.exe"},
-         {}, TitleRule::Capture},
     };
     return k;
-}
-
-bool titleShowsCaptureDevice(const std::string& t)
-{
-    for (const char* w : {"capture", "yakalama", "dshow", "directshow", "cam link", "camlink", "usb video", "hdmi",
-                          "elgato", "avermedia", "live gamer", "webcam", "device", "aygıt", "cihaz", "uvc"})
-        if (t.find(w) != std::string::npos) return true;
-    return false;
 }
 
 std::wstring className(HWND h)
@@ -215,7 +196,6 @@ bool matchSource(const std::string& exeName, const std::string& title, const std
         if (k.title == TitleRule::Projector && t.find("project") == std::string::npos && t.find("projekt") == std::string::npos)
             continue;
         if (k.title == TitleRule::Camera && t != "camera" && t != "kamera") continue;
-        if (k.title == TitleRule::Capture && !titleShowsCaptureDevice(t)) continue;
         out = k.app;
         return true;
     }

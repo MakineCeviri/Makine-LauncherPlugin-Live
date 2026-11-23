@@ -225,7 +225,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `tv.install.saveFile` | `{platform: "android" \| "lg"}` → `{path}`: `makine-tv.apk` / `.ipk` İndirilenler klasörüne (USB bellek ya da elle kurulum) |
 | `announcement.read` | `{id}`: duyuruyu kapatır (sunucuya `ann_read`) |
 | `support.dismiss` | "kayıt gönderildi" kartını kapatır |
-| `donate` / `donate.dismiss` | bağış sayfasını `ui.openUrl` ile açar (kreosus.com) / ilk açılış kartını kapatır |
+| `donate` / `donate.dismiss` | bağış sayfasını (`makineceviri.org/destek`) `ui.openUrl` ile açar / ilk açılış kartını kapatır |
 
 `ui.state` (her değişiklikte `emitEvent`):
 
@@ -282,13 +282,12 @@ Paketler: `resources/makine-tv.apk` (`tv\gradlew.bat assembleRelease`; imzalı s
 
 **Duyurular, destek, bağış.** Sunucunun duyuruları `announcements`'ta; ekip bir oturumun kaydını isterse
 (`beat` → `log_request`) eklentinin kendi kayıt satırları (bellekte son 512 KB) gzip ile gider ve `support` kartı çıkar.
-Bağış bağlantısı `ui.openUrl` ile açılır; Makine'nin izin listesine `https://kreosus.com/makineceviri/…` eklenmelidir.
+Bağış bağlantısı `https://makineceviri.org/destek` (site bağış sayfasına yönlendirir), `ui.openUrl` ile açılır.
 
-**Konsol / yakalama kaynakları:** PS Remote Play, chiaki / chiaki-ng, Asobi, PXPlay (PS5); Xbox uygulaması (Xbox Cloud
-Gaming dahil), Greenlight (Xbox); Steam Link, Moonlight, Parsec (yayın); GeForce NOW (bulut); Elgato 4K Capture Utility,
-Elgato Studio, AVerMedia RECentral, AVerMedia Streaming Center, OBS ve Streamlabs projektörü, Windows Kamera, yakalama
-aygıtı gösteren VLC / PotPlayer / MPC-HC (yakalama kartı; Nintendo Switch de bu yoldan). Hepsi aynı 16:9 bölge
-mantığıyla okunur.
+**Konsol / yakalama kaynakları** (öncelik: GTA VI, PlayStation ve Xbox): PS Remote Play, chiaki / chiaki-ng, Asobi,
+PXPlay (PS5); Xbox uygulaması (bulut ve uzaktan oynatma dahil), Greenlight (Xbox); Elgato 4K Capture Utility, Elgato
+Studio, AVerMedia RECentral, AVerMedia Streaming Center, OBS projektörü, Windows Kamera (yakalama kartı). Hepsi aynı
+16:9 bölge mantığıyla okunur.
 
 **Ayarlar** (manifest `contributes.settings`, Makine saklar): `autoStart` (oyun başlayınca kendiliğinden aç; giriş
 doğrulanırken gelen `game.started` bekletilir) ve `usageReport` (varsayılan açık). Kullanım bildirimi 0.3.2'deki

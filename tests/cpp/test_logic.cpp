@@ -478,24 +478,14 @@ void testConsole()
         {"chiaki-ng.exe", "chiaki-ng", "chiaki"},
         {"PXPlay.exe", "PXPlay", "pxplay"},
         {"XboxPcApp.exe", "Xbox Cloud Gaming", "xbox-app"},
-        {"streaming_client.exe", "Steam Remote Play", "steam-link"},
-        {"SteamLink.exe", "Steam Link", "steam-link"},
-        {"Moonlight.exe", "Moonlight", "moonlight"},
-        {"parsecd.exe", "Parsec", "parsec"},
-        {"GeForceNOW.exe", "GeForce NOW", "geforce-now"},
         {"RECentral.exe", "RECentral 4", "avermedia-recentral"},
         {"AVerMedia Streaming Center.exe", "Streaming Center", "avermedia-streaming-center"},
         {"Elgato Studio.exe", "Elgato Studio", "elgato-studio"},
-        {"Streamlabs Desktop.exe", "Projector - Preview", "streamlabs-projector"},
-        {"vlc.exe", "dshow:// - VLC media player", "vlc"},
-        {"PotPlayerMini64.exe", "PotPlayer - Live Gamer Ultra 2.1", "potplayer"},
-        {"mpc-hc64.exe", "Video Capture - MPC-HC", "mpc"},
     };
     for (const auto& w : wider)
         check(matchSource(w.exe, w.title, {}, s) && s.key == w.key, std::string("source ") + w.exe + " -> " + w.key);
-    check(!matchSource("Streamlabs Desktop.exe", "Streamlabs Desktop", {}, s), "Streamlabs main window is not a source");
-    check(!matchSource("vlc.exe", "Movie.mkv - VLC media player", {}, s), "VLC playing a film is not a source");
-    check(!matchSource("PotPlayerMini64.exe", "film.mp4 - PotPlayer", {}, s), "PotPlayer playing a film is not a source");
+    for (const char* exe : {"Moonlight.exe", "parsecd.exe", "GeForceNOW.exe", "vlc.exe", "SteamLink.exe"})
+        check(!matchSource(exe, "dshow:// capture", {}, s), std::string("dropped for now: ") + exe);
     check(matchSource("AsobiRemotePlay.exe", "", {}, s) && s.console == "ps5", "Asobi under another exe name");
     check(isConsoleStream("RemotePlay.exe") && isConsoleStream("AsobiRemotePlay.exe") && isConsoleStream("PS Remote Play")
               && !isConsoleStream("Elden Ring") && !isConsoleStream("obs64.exe"),

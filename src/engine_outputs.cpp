@@ -30,7 +30,7 @@ namespace live {
 
 namespace {
 
-constexpr const char* kDonateUrl = "https://kreosus.com/makineceviri/posts";
+constexpr const char* kDonateUrl = "https://makineceviri.org/destek";   // the site redirects to the donation page
 constexpr size_t kLogRingBytes = 512 * 1024;
 
 std::string dump(const json& j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }

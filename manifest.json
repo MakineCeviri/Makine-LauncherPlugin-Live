@@ -16,7 +16,7 @@
     { "id": "overlay", "reason": "Çeviriyi oyunun üstünde altyazı olarak gösterir ve okunacak bölgeyi seçtirir." }
   ],
   "contributes": {
-    "screen": { "title": "Makine Live", "icon": "scan" },
+    "screen": { "title": "Makine Live", "icon": "messageSquareText" },
     "settings": [
       { "key": "autoStart", "type": "toggle", "label": "Oyun başlayınca kendiliğinden aç",
         "description": "Giriş yaptıysan ve bölge seçtiysen, oyun açılınca okumaya başlar.", "default": false },
