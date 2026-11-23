@@ -57,6 +57,7 @@ OCR ≈ X ms ise yerel havuz isabetinde en iyi durum ≈ `150 + 2·X + 16` ms (V
 | A7 | `PrintWindow` değişiklik bildirmez | Konsol yolunda her turda tam kopya (~9 ms, Ö: MIMARI §5) |
 | A8 | Launcher'ın `TranslationOverlay` penceresinde `WDA_EXCLUDEFROMCAPTURE` yok (Launcher'da `SetWindowDisplayAffinity` geçmiyor) | Kutu bandın üstündeyse DXGI kendi çevirimizi okur; bugün yalnız motorun "kendi metnimiz" süzgeci koruyor |
 | A9 | Her yeni satır için iki tam OCR (kararlılık iki OCR sonucunun eşitliğiyle) | Gecikmenin en büyük kalemi büyük olasılıkla bu (V) |
+| **A10** | **RapidOcrOnnx bir altyazı satırını iki dedektör kutusuna bölüp yanlış sırayla döndürüyor; C API kutu koordinatı vermiyor** (Ö: C++ ABI 2 taşıması, RapidOcrOnnx 1.2.2 ve 1.2.3, 5 parametre seti) | `"I was going to find you, Shaun."` → `"going to find you, Shaun.\nI was"`; `"Press X to call Jason"` → `"Press\ns X to call Jason"`. Sonradan sıralanamaz; yanlış metin havuza ve DeepL'e gider. **Geometriye sahip olmak zorunlu gereksinimdir (G1, §4)** |
 
 ## 3. Hedef hat
 
@@ -91,15 +92,26 @@ Scheduler'ı beklemez.
 
 Her karar: **Karar** · **Neden** · **Sıra** (F1 = ilk faz) · **Ölçüm/kapı**. "Giriyor / girmiyor" açıkça yazılıdır.
 
-### K1 — Tanıyıcıyı kendimiz çağırıyoruz: ONNX Runtime C API, bellekten girdi (GİRİYOR, F1)
-- **Karar:** RapidOcrOnnx'in `OcrDetect(dosya)` çağrısı yerine kendi ince sarmalayıcımız: ORT C API ile det ve rec
-  oturumları, girdi doğrudan bellekteki BGRA banttan. BMP dosyası kalkar. `onnxruntime.dll` Microsoft'un imzalı
-  resmî sürümü olarak eklenti klasöründe (C API, MinGW'den içe aktarma sorun değil (V)).
-- **Neden:** (1) Dedektörsüz yol (K4) RapidOcrOnnx'in C API'siyle yapılamaz; o her çağrıda dedektörü çalıştırır.
-  (2) Karede disk G/Ç ve antivirüs tarama yüzeyi kalkar (A2). (3) İş parçacığı/spin/bellek ayarları bizde olur (K8).
-  (4) İmzalı resmî ORT, imzasız üçüncü taraf DLL'den antivirüs açısından daha temizdir (V).
-- **Ölçüm:** B0 taban ile aynı model + aynı kırpıntıda **çıktı birebir aynı** olmalı (sarmalayıcı doğruluğu), S4 süresi
-  ≤ taban. Paket boyutu farkı raporlanır.
+### G1 — Birinci sınıf gereksinim: satır geometrisi bizimdir
+Bir altyazı satırı **tek parça ve doğru sırada** okunur. Kutu koordinatları, satır gruplama, satır içi sıralama ve
+kırpma kodumuzun içindedir; hiçbir kara kutu OCR kütüphanesi satır sırasına karar vermez (A10). İki yol vardır, ikisi
+de geometriyi bize verir: (a) dedektörsüz bant bölme → rec (K4, birincil), (b) kendi det → kutular → satır gruplama →
+rec (K4a, yedek). Kapı: **G-ORDER = 0** (§6.3). Bu gereksinim hız kazancından önce gelir: hızlı ama sırası bozuk
+metin havuzu kirletir ve DeepL kotası yakar.
+
+### K1 — RapidOcrOnnx tamamen çıkıyor; kendi ONNX Runtime hattımız (GİRİYOR, F1)
+- **Karar:** RapidOcrOnnx kaldırılır (yalnız atlanmaz, paketten de çıkar). Kendi ince hattımız: ORT C API ile det ve
+  rec oturumları, ön/son işlem (DB son işlemi → kutular, CTC çözme) bizim kodumuzda, girdi doğrudan bellekteki BGRA
+  banttan. BMP dosyası kalkar. `onnxruntime.dll` Microsoft'un imzalı resmî sürümü olarak eklenti klasöründe
+  (C API, MinGW'den içe aktarma sorun değil (V)).
+- **Neden:** (1) **A10:** RapidOcrOnnx satırı bölüp ters sırada döndürüyor ve C API kutu koordinatı vermediği için
+  düzeltilemiyor (Ö: iki sürüm, beş parametre seti). (2) Dedektörsüz yol (K4) onun C API'siyle yapılamaz; her çağrıda
+  dedektörü çalıştırır. (3) Karede disk G/Ç ve antivirüs tarama yüzeyi kalkar (A2). (4) İş parçacığı/spin/bellek
+  ayarları bizde olur (K8). (5) RapidOcrOnnx paketteki **tek imzasız üçüncü taraf DLL**; çıkınca yerine yalnız
+  Microsoft imzalı ORT kalır (antivirüs kazancı).
+- **Ölçüm:** Aynı model + aynı **satır kırpıntısında** rec metni RapidOcrOnnx'inkiyle birebir aynı (CTC/ön işlem
+  doğruluğu); tam karede ise G-ORDER = 0 (RapidOcrOnnx'in bozduğu satırlar dahil). S4 süresi ≤ taban. Paket boyutu
+  farkı raporlanır.
 
 ### K2 — Değişiklik güdümlü yakalama (GİRİYOR, F2)
 - **Karar:** Kör 100 ms uykusu yerine `AcquireNextFrame(timeout ≈ 33 ms)` uyandırma sinyalidir; `GetFrameDirtyRects`
@@ -130,7 +142,22 @@ Her karar: **Karar** · **Neden** · **Sıra** (F1 = ilk faz) · **Ölçüm/kap�
 - **Öğrenilmiş bant:** Dedektörün ilk K başarılı okumasından (V: K=5) satır yüksekliği aralığı, sol/sağ sınırlar ve
   maske eşiği oyun başına `dataDir`'e yazılır; sonraki oturum doğrudan dedektörsüz başlar.
 - **Neden:** Dedektör hattın en pahalı aşaması (V); altyazı bandında satırlar yataydır ve maskeyle zaten ayrılır.
-- **Ölçüm:** B2 — aynı karelerde dedektörsüz vs dedektörlü CER farkı ≤ 0,3 puan (V), S3+S4 vs S4d+S4 süresi.
+- **Satır bütünlüğü:** İzdüşüm bir satırı bütün genişliğiyle tek kırpıntı yapar; kelime arası boşluk satırı bölmez.
+  Bölme yalnız **dikey** (satırlar arası boş bant) yapılır, satırlar yukarıdan aşağıya sıralanır. Yatay bölme yalnız
+  bandın öğrenilmiş genişliğinden belirgin büyük boşlukta (iki ayrı altyazı bloğu, V) olur ve soldan sağa sıralanır.
+- **Ölçüm:** B2 — aynı karelerde dedektörsüz vs dedektörlü CER farkı ≤ 0,3 puan (V), S3+S4 vs S4d+S4 süresi, G-ORDER = 0.
+
+### K4a — Dedektör yolunda satır gruplama (GİRİYOR, F1 — G1'in yedek yolu)
+- **Karar:** Kendi DB son işlemimizden gelen kutular:
+  1. **Satıra gruplama:** iki kutu, dikey örtüşmesi küçük kutunun yüksekliğinin ≥ %50'si (V) **ve** taban çizgisi farkı
+     ≤ 0,3 × satır yüksekliği (V) ise aynı satırdır.
+  2. **Satır içi sıra:** x'e göre soldan sağa; satırlar taban çizgisine göre yukarıdan aşağıya.
+  3. **Birleştirme:** aynı satırdaki komşu kutular arasındaki yatay boşluk ≤ 1,5 × satır yüksekliği (V) ise kutular
+     **tek kırpıntıda birleştirilir ve rec bir kez çalışır** — metinler sonradan yan yana yapıştırılmaz. Bu,
+     `"Press\ns X"` gibi kelime ortasından bölünmeyi ve iki parçada tekrarlanan harfi kökten kaldırır.
+  4. Boşluk daha büyükse ayrı blok (ör. sol ve sağ köşede iki konuşmacı); soldan sağa sırayla birleştirilir.
+- **Neden:** A10'un iki belirtisi (ters sıra, bölünmüş kelime) tam bu üç adımın yokluğundan doğar.
+- **Ölçüm:** G-ORDER = 0, G-SPLIT = 0 (§6.3); gruplama + birleştirme süresi S4d içinde raporlanır.
 
 ### K5 — Açı sınıflandırıcı (GİRMİYOR, F1)
 - `doAngle`/`mostAngle` zaten 0; kazanç süre değil. Karar: cls modeli **yüklenmez ve pakete konmaz** (bellek + paket boyutu).
@@ -271,7 +298,7 @@ Her karar: **Karar** · **Neden** · **Sıra** (F1 = ilk faz) · **Ölçüm/kap�
 | Faz | İçerik | Ön koşul |
 |---|---|---|
 | **F0** | Kıyas düzeni + veri setleri + taban ölçümü (B0) | — (ocr-bench sürüyor) |
-| **F1** | K1 (ORT sarmalayıcı, bellekten girdi, cls yok), K8 (iş parçacığı/spin/öncelik/ısınma), K6 ölçümü (B1), K13 bağlantı | B0 |
+| **F1** | G1 + K1 (RapidOcrOnnx çıkar, kendi ORT hattı, bellekten girdi, cls yok), K4a (satır gruplama), K8 (iş parçacığı/spin/öncelik/ısınma), K6 ölçümü (B1), K13 bağlantı | B0 |
 | **F2** | K3 maske + K2 uyandırma, K4 dedektörsüz yol + öğrenilmiş bant, K7 ön işlem, K11 kararlılık, K12 tam anahtar erken arama, K6 geçişi (kazanan model), K14 ölçümü | F1 |
 | **F3** | K9 daktilo, K10 gösterim tarafı ad, K12 önek ön-yükleme, K16 HDR, K17 çoklu monitör, K18 WGC, K15 ölçümü, Launcher `WDA_EXCLUDEFROMCAPTURE` (paralel yürüyebilir) | F2 |
 
@@ -314,6 +341,8 @@ Fable/Sezer ile kesinleşir. Yüzdelikler en az 200 olaydan (V) hesaplanır.
 | G-CER | Karakter hata oranı, oyun seti (D-A + D-B) | Varsayılan olacak model taban `ch` v3'ten **düşük**; mutlak ≤ %2 temiz, ≤ %5 zor set (V) |
 | G-CER-C | CER, sıkıştırılmış Remote Play seti (D-C) | ≤ taban; mutlak ≤ %6 (V) |
 | G-KEY | Havuz anahtarı (`compact key`) tam eşleşme oranı, satır başına | ≥ %97 (V); taban'dan düşük olamaz |
+| **G-ORDER** | Sırası bozulmuş satır: bir altyazı satırının parçaları yanlış sırada (`"going to find you, Shaun.\nI was"`) ya da satırlar ters sırada | **0** — bütün setlerde, her model ve her yolda (dedektörsüz + dedektör yedeği); tek ihlal kapıyı düşürür |
+| **G-SPLIT** | Tek satırın iki parçaya bölünmesi ya da kelime ortasından bölünüp harf tekrarı (`"Press\ns X"`) | **0** |
 | G-WRONG | Yanlış satırın çevirisini gösterme (önek/benzer eşleşme) | **0** |
 | G-MISS | Maske "değişmedi" dedi, metin değişmişti | **0** |
 | G-HALF | Yarım (kararsız) satır gönderme oranı | ≤ taban |
@@ -355,6 +384,10 @@ Fable/Sezer ile kesinleşir. Yüzdelikler en az 200 olaydan (V) hesaplanır.
 - **D-A Sentetik:** Bilinen metin, oyun yazı tipleri (kalın/ince, konturlu, gölgeli, sarı, koyu kutulu), farklı
   yükseklikler (18–48 px (V)), gerçek oyun arka planları (3B sahne kareleri) üstüne çizilir. Gerçek değer kesin.
 - **D-B Elle etiketli gerçek oyun kareleri:** En az 5 oyun (V), etiket iki kişi kontrolünde.
+- **D-R Gerileme seti (A10):** RapidOcrOnnx'in böldüğü/ters sıraladığı kareler (C++ taşımasında yakalananlar:
+  `"I was going to find you, Shaun."`, `"Press X to call Jason"`) + sentetik zorlayıcılar: geniş kelime aralıklı satır,
+  ortasında büyük boşluk olan satır, iki satırlı altyazıda kısa üst satır, sağa yaslı kısa satır. G-ORDER/G-SPLIT için
+  her koşuda zorunlu; B0'da RapidOcrOnnx'in bu setteki hatası sayılarak raporlanır.
 - **D-C Sıkıştırılmış:** D-A/D-B'nin PS Remote Play / chiaki benzeri video kodlamasından geçirilmiş hâli (H.264/H.265,
   düşük bit hızı dahil).
 - **D-D Daktilo dizileri:** Zaman damgalı kare dizileri.
@@ -372,10 +405,11 @@ Fable/Sezer ile kesinleşir. Yüzdelikler en az 200 olaydan (V) hesaplanır.
 
 ## 8. İlk üç yapım işi
 
-1. **ORT tanıyıcı sarmalayıcı (K1 + K5 + K8):** ORT C API ile det/rec oturumu, bellekteki banttan girdi (BMP kalkar),
-   cls yüklenmez, `intra_op` 1–2, spin kapalı, `BELOW_NORMAL`, ısınma çıkarımı; rec modeli ayardan değişebilir
-   (`ch` v3 / `en` v4 / `en` v5). Geçme: B0 ile aynı modelde çıktı birebir aynı, S4 ≤ taban, G-IO = 0. Bu iş B1 ve B3'ü
-   mümkün kılar.
+1. **Kendi ORT hattı, RapidOcrOnnx'siz (G1 + K1 + K4a + K5 + K8):** ORT C API ile det/rec oturumu, kendi DB son işlemi
+   (kutu koordinatları) + satır gruplama/birleştirme/sıralama + CTC, bellekteki banttan girdi (BMP kalkar), cls
+   yüklenmez, `intra_op` 1–2, spin kapalı, `BELOW_NORMAL`, ısınma çıkarımı; rec modeli ayardan değişebilir
+   (`ch` v3 / `en` v4 / `en` v5); RapidOcrOnnx paketten çıkar. Geçme: **D-R'de G-ORDER = 0 ve G-SPLIT = 0**, aynı satır
+   kırpıntısında rec metni RapidOcrOnnx ile birebir, S4 ≤ taban, G-IO = 0. Bu iş B1 ve B3'ü mümkün kılar.
 2. **Metin maskesi + dedektörsüz yol (K3 + K2 + K4 + K11):** Yakalama iş parçacığında bant kopyası, maske, izdüşüm
    hash'i, satır bölme, öğrenilmiş bant; OCR yalnız maske değişince; kararlılık maskeden. Dedektör yedek. Geçme: G-RATE,
    G-MISS = 0, B2 CER farkı, `subtitle_timing` vektörleri aynen geçer.
