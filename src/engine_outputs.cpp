@@ -306,32 +306,49 @@ struct ReasonText {
 };
 
 const ReasonText kReasons[] = {
-    {"maintenance", "Makine Live şu an bakımda; bakım bitince kendiliğinden devam eder.", "none"},
-    {"update_required", "Makine Live'ın bu sürümü artık desteklenmiyor. Makine'yi güncelle.", "update_launcher"},
-    {"signed_out", "Makine hesabınla giriş yap.", "login"},
-    {"consent_required", "Okunan her satır Makine Çeviri'nin GTA VI çeviri havuzuna gider. Onaylarsan okuma başlar.", "consent"},
-    {"game_unidentified", "Oyun tanınamadı (adı ya da süreci bilinmiyor); bu oyun okunmuyor.", "none"},
-    {"offline", "Sunucuya ulaşılamıyor; bağlantı gelince devam eder.", "retry"},
-    {"source_missing", "Konsol görüntüsü görünmüyor. PS Remote Play, Xbox uygulaması ya da yakalama programını aç.", "open_source"},
-    {"source_minimized", "Konsol penceresi küçültülmüş. Pencereyi ekranda aç; başka pencerelerin altında kalabilir.", "restore_source"},
-    {"source_small", "Konsol penceresi çok küçük. En az 960×540 yap.", "enlarge_source"},
-    {"black_frame", "Görüntü siyah geliyor. Yakalama kartıyla PS5'te HDCP'yi kapat; Remote Play'i tam ekrandan çıkar.", "check_hdcp"},
-    {"capture_failed", "Ekran okunamadı; yeniden deneniyor.", "retry"},
-    {"region_missing", "Okunacak altyazı bölgesini seç.", "pick_region"},
-    {"game_missing", "Oyun algılanmadı. Oyunu Makine'den başlat.", "none"},
-    {"game_not_front", "Oyun önde değil; oyuna dönünce okuma sürer.", "none"},
-    {"tv_offline", "TV'ye ulaşılamıyor. Makine TV açık mı, bilgisayarla aynı ağda mı?", "tv_search"},
-    {"tv_bad_code", "TV kodu eşleşmedi. TV ekranındaki kodu yeniden gir.", "tv_pair"},
-    {"quota", "Yeni çeviri sınırı doldu; havuzdaki çeviriler gelmeye devam ediyor.", "none"},
-    {"no_key", "Sunucu şu an yeni çeviri yapamıyor; havuzdaki çeviriler gelmeye devam ediyor.", "none"},
-    {"upstream", "Çeviri servisi yanıt vermedi; yeniden deneniyor.", "none"},
+    {"maintenance", "Makine Live şu an bakımda; bakım bitince kendiliğinden devam eder.", ""},
+    {"update_required", "Makine Live'ın bu sürümü artık desteklenmiyor. Makine'yi güncelle.", "launcher.update"},
+    {"signed_out", "Makine hesabınla giriş yap.", "login.start"},
+    {"consent_required", "Okunan her satır Makine Çeviri'nin GTA VI çeviri havuzuna gider. Onaylarsan okuma başlar.", ""},   // the screen asks (consoleConsent)
+    {"game_unidentified", "Oyun tanınamadı (adı ya da süreci bilinmiyor); bu oyun okunmuyor.", ""},
+    {"offline", "Sunucuya ulaşılamıyor; bağlantı gelince devam eder.", "status.refresh"},
+    {"source_missing", "Konsol görüntüsü görünmüyor. PS Remote Play, Xbox uygulaması ya da yakalama programını aç.", "console.sources"},
+    {"source_minimized", "Konsol penceresi küçültülmüş. Pencereyi ekranda aç; başka pencerelerin altında kalabilir.", "console.sources"},
+    {"source_small", "Konsol penceresi çok küçük. En az 960×540 yap.", ""},
+    {"black_frame", "Görüntü siyah geliyor. Yakalama kartıyla PS5'te HDCP'yi kapat; Remote Play'i tam ekrandan çıkar.", ""},
+    {"capture_failed", "Ekran okunamadı; yeniden deneniyor.", "status.refresh"},
+    {"region_missing", "Okunacak altyazı bölgesini seç.", "region.pick"},
+    {"game_missing", "Oyun algılanmadı. Oyunu Makine'den başlat.", ""},
+    {"game_not_front", "Oyun önde değil; oyuna dönünce okuma sürer.", ""},
+    {"tv_offline", "TV'ye ulaşılamıyor. Makine TV açık mı, bilgisayarla aynı ağda mı?", "tv.discover"},
+    {"tv_bad_code", "TV kodu eşleşmedi. TV ekranındaki kodu yeniden gir.", "tv.pairForm"},
+    {"quota", "Yeni çeviri sınırı doldu; havuzdaki çeviriler gelmeye devam ediyor.", ""},
+    {"no_key", "Sunucu şu an yeni çeviri yapamıyor; havuzdaki çeviriler gelmeye devam ediyor.", ""},
+    {"upstream", "Çeviri servisi yanıt vermedi; yeniden deneniyor.", ""},
     {"stopped", "Okuma durdu.", "start"},
 };
+
+// The server's announcement ids are integers; the screen may hand one back as a number or a string
+int64_t announcementId(const json& v)
+{
+    if (v.is_number_integer()) return v.get<int64_t>();
+    if (v.is_number()) return static_cast<int64_t>(v.get<double>());
+    if (!v.is_string()) return 0;
+    const std::string s = v.get<std::string>();
+    if (s.empty() || s.size() > 18 || s.find_first_not_of("0123456789") != std::string::npos) return 0;
+    return std::stoll(s);
+}
 
 json reasonJson(const std::string& code)
 {
     for (const ReasonText& r : kReasons)
-        if (code == r.code) return {{"code", r.code}, {"text", r.text}, {"action", r.action}};
+        if (code == r.code) {
+            // action: an invoke method the screen calls as is, or launcher.update / tv.pairForm (the screen's own);
+            // none when the text is the whole answer
+            json j = {{"code", r.code}, {"text", r.text}};
+            if (*r.action) j["action"] = r.action;
+            return j;
+        }
     return nullptr;
 }
 
@@ -432,8 +449,8 @@ void Engine::onStatus(const json& data)
     if (!data.is_object() || !data.contains("announcements") || !data["announcements"].is_array()) return;
     std::lock_guard lock(m_mutex);
     for (const json& a : data["announcements"]) {
-        if (!a.is_object() || !a.contains("id") || !a["id"].is_number_integer()) continue;
-        const int64_t id = a["id"].get<int64_t>();
+        const int64_t id = a.is_object() && a.contains("id") ? announcementId(a["id"]) : 0;
+        if (id <= 0) continue;
         if (m_annSeen.count(id)) continue;
         m_annSeen.insert(id);
         m_announcements.push_back({{"id", id},
@@ -620,7 +637,8 @@ std::optional<Result> Engine::invokeOutputs(std::string_view method, const json&
         return Result::ok(dump({{"message", "Kaydedildi: " + win::wideToUtf8(path)}, {"path", win::wideToUtf8(path)}}));
     }
     if (method == "announcement.read") {
-        const auto id = static_cast<int64_t>(num(params, "id", 0));
+        const int64_t id = params.is_object() && params.contains("id") ? announcementId(params["id"]) : 0;
+        if (id <= 0) return Result::error(MAKINE_E_INVALID_ARGUMENT, "id gerekli.");
         {
             std::lock_guard lock(m_mutex);
             json kept = json::array();
