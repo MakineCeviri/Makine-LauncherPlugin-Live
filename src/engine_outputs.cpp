@@ -135,8 +135,20 @@ void Engine::onLogRequest(const std::string& requestId)
             std::lock_guard lock(m_mutex);
             attrs["mode"] = m_mode == "console" ? "konsol" : "pc";
         }
-        const Result viaSentry = m_host.call("telemetry.logs", dump({{"lines", lines}, {"attributes", attrs}}));
-        const bool sentry = viaSentry.status == MAKINE_OK && viaSentry.json == "true";
+        // A log Sentry already took is not sent again: only the answer to the request is retried.
+        bool sentry = false;
+        {
+            std::lock_guard lock(m_mutex);
+            sentry = m_logInSentry == requestId;
+        }
+        if (!sentry) {
+            const Result viaSentry = m_host.call("telemetry.logs", dump({{"lines", lines}, {"attributes", attrs}}));
+            sentry = viaSentry.status == MAKINE_OK && json::parse(viaSentry.json, nullptr, false) == json(true);
+            if (sentry) {
+                std::lock_guard lock(m_mutex);
+                m_logInSentry = requestId;
+            }
+        }
         const std::string gz = sentry ? std::string() : gzipStored(text);
         const ApiResult r = sentry ? m_server.logSent(requestId) : m_server.uploadLog(requestId, gz);
         {

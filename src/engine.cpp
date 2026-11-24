@@ -522,7 +522,7 @@ void Engine::beatLoop(int gen)
         std::lock_guard lock(m_mutex);
         if (gen != m_beatGen) return;
         if (r.ok()) m_beatS = std::clamp(num(r.data, "beat_s", 300), 60.0, 1800.0);
-        if (r.ok()) m_traceBudget = static_cast<int>(std::clamp(num(r.data, "trace_n", 0), 0.0, 50.0));
+        if (r.ok()) m_traceBudget = static_cast<int>(std::clamp(num(r.data, "trace_n", 0), 0.0, 20.0));
         next = m_beatS;
     }
     if (r.ok()) onLogRequest(str(r.data, "log_request"));   // the team asked for this session's log

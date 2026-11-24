@@ -206,6 +206,7 @@ private:
     // Sampled lines as Sentry spans (host API telemetry.transaction): the server sets the session's budget
     // (beat reply trace_n; 0 = off, nothing before the first reply); the first two lines, then one in 20.
     int m_traceBudget = 0, m_traceSent = 0, m_traceSeen = 0;
+    std::string m_logInSentry;   // the log request Sentry Logs already took (only log_sent is retried)
     std::pair<uint64_t, uint64_t> m_lastOcrUs{};   // capture thread only
     int64_t m_startedAt = 0;
     double m_runAcc = 0;
