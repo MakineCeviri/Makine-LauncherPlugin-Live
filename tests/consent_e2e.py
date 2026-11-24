@@ -240,6 +240,39 @@ s.quit()
 stored = open(os.path.join(DATA, "settings.cfg"), "rb").read()
 check(PASSWORD.encode() not in stored and "ekip".encode() in stored, "the password is not stored, the session is")
 
+# autoRegion while not reading, and readOnce without a region of the player's (auto mode)
+FOO = '!game.started {"gameId":"exe:foo bar.exe","name":"Foo Bar","pid":77,"exe":"Foo Bar.exe","catalog":false}'
+s = Session()
+s.wait_for(lambda st: st["login"]["state"] == "signedIn", 20)
+i = s.cmd(FOO)
+check(s.state(i)["autoRegion"]["state"] == "manual", "a hand-drawn region shows as manual while not reading")
+i = s.cmd("autoRegion.reset {}")
+check(s.state(i)["autoRegion"]["state"] == "off", "after a reset with nothing stored: off")
+
+
+def read_once():
+    i = s.cmd("readOnce {}", 6)
+    r = json.loads(s.reply(i) or "null") or {}
+    return r.get("region") if isinstance(r, dict) else None
+
+
+default_region = read_once()
+check(bool(default_region) and default_region["width"] > 0, "readOnce in auto mode reads the default low middle "
+      + json.dumps(default_region))
+s.quit()
+with open(os.path.join(DATA, "settings.cfg"), "ab") as f:   # a band the finder locked for this game earlier
+    f.write(b"autoRegion:foo-bar=0.1,0.5,0.9,0.7,0.9\n")
+s = Session()
+s.wait_for(lambda st: st["login"]["state"] == "signedIn", 20)
+i = s.cmd(FOO)
+ar = s.state(i)["autoRegion"]
+check(ar["state"] == "locked" and abs(ar["rect"]["x"] - 0.1) < 1e-6 and abs(ar["rect"]["height"] - 0.2) < 1e-6,
+      "the stored band shows while not reading " + json.dumps(ar))
+band_region = read_once()
+check(bool(band_region) and bool(default_region) and band_region["y"] < default_region["y"]
+      and band_region["width"] > default_region["width"], "readOnce reads the stored band " + json.dumps(band_region))
+s.quit()
+
 server.shutdown()
 shutil.rmtree(DATA, ignore_errors=True)
 print("consent e2e:", "passed" if not fails else f"{fails} FAILED")

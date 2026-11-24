@@ -143,6 +143,8 @@ private:
     void storeBandLocked();       // a locked band, per game
     void runFinder();             // one detector run over the whole window, when due
     nlohmann::json autoRegionLocked() const;
+    // The band locked earlier for this game (settings autoRegion:<slug>) and its confidence
+    std::optional<std::pair<finder::Rect, double>> storedBandLocked(const std::string& slug) const;
 
     // any thread
     nlohmann::json stateLocked() const;

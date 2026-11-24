@@ -1923,6 +1923,8 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         std::lock_guard lock(m_mutex);
         consoleManual = m_consoleManual;
         band = m_finder.band();
+        if (!band)   // not reading yet (readOnce): the band stored for this game
+            if (const auto stored = storedBandLocked(currentSlug())) band = stored->first;
         mode = m_mode;
         key = m_sourceKey;
         pid = m_sourcePid;
@@ -1964,9 +1966,43 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         m_videoFrame = console::Box{video.l, video.t, video.r - video.l, video.b - video.t};
         return {};
     }
-    if (!pc && !needGame) {   // no region of the player's: the finder needs the game's window
-        if (code) *code = "region_missing";
-        return "Önce okunacak bölgeyi seç.";
+    if (!pc && !needGame) {   // readOnce with no region of the player's: the band (or low in the middle)
+        unsigned long gamePid = 0;
+        {
+            std::lock_guard lock(m_mutex);
+            gamePid = m_gamePid;
+        }
+        // the game's biggest visible window, else the main screen (the launcher is in front while it asks)
+        struct Find {
+            DWORD pid;
+            HWND best = nullptr;
+            long area = 0;
+        } find{static_cast<DWORD>(gamePid)};
+        if (gamePid)
+            EnumWindows(
+                [](HWND w, LPARAM p) -> BOOL {
+                    auto* f = reinterpret_cast<Find*>(p);
+                    DWORD wp = 0;
+                    GetWindowThreadProcessId(w, &wp);
+                    RECT r{};
+                    if (wp == f->pid && IsWindowVisible(w) && !IsIconic(w) && GetWindowRect(w, &r)) {
+                        const long a = (r.right - r.left) * (r.bottom - r.top);
+                        if (a > f->area) {
+                            f->area = a;
+                            f->best = w;
+                        }
+                    }
+                    return TRUE;
+                },
+                reinterpret_cast<LPARAM>(&find));
+        console::Rect c = find.best ? console::clientRect(find.best)
+                                    : console::Rect{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        if (c.r - c.l < 64 || c.b - c.t < 64) c = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        const console::Frac f = band ? console::Frac{band->x0, band->y0, band->w(), band->h()} : console::kDefaultRegion;
+        const console::Box b = console::regionToScreen(c, f);
+        region = {b.x, b.y, b.w, b.h};
+        overlay = b;
+        return {};
     }
     HWND gameWnd = nullptr;
     if (needGame && gameUnknown) {
@@ -2158,12 +2194,7 @@ bool Engine::syncFinderLocked()
     const bool manual = m_mode == "pc" ? m_pcRegion.has_value() : m_consoleManual;
     const finder::State was = m_finder.state();
     const auto restore = [&] {   // a band locked earlier for this game
-        const auto v = splitOn(m_settings.get("autoRegion:" + slug), ',');
-        if (slug.empty() || v.size() < 5) return;
-        const finder::Rect r{std::strtod(v[0].c_str(), nullptr), std::strtod(v[1].c_str(), nullptr),
-                             std::strtod(v[2].c_str(), nullptr), std::strtod(v[3].c_str(), nullptr)};
-        if (r.w() > 0.05 && r.h() > 0.02 && r.x0 >= 0 && r.y0 >= 0 && r.x1 <= 1 && r.y1 <= 1)
-            m_finder.restore(r, std::strtod(v[4].c_str(), nullptr));
+        if (const auto stored = storedBandLocked(slug)) m_finder.restore(stored->first, stored->second);
     };
     bool changed = false;
     if (slug != m_finderSlug) {
@@ -2191,8 +2222,38 @@ void Engine::storeBandLocked()
     logLine(MAKINE_LOG_INFO, "Altyazı bölgesi bu oyun için kaydedildi: " + m_finderSlug);
 }
 
+std::optional<std::pair<finder::Rect, double>> Engine::storedBandLocked(const std::string& slug) const
+{
+    const auto v = splitOn(m_settings.get("autoRegion:" + slug), ',');
+    if (slug.empty() || v.size() < 5) return std::nullopt;
+    const finder::Rect r{std::strtod(v[0].c_str(), nullptr), std::strtod(v[1].c_str(), nullptr),
+                         std::strtod(v[2].c_str(), nullptr), std::strtod(v[3].c_str(), nullptr)};
+    if (!(r.w() > 0.05 && r.h() > 0.02 && r.x0 >= 0 && r.y0 >= 0 && r.x1 <= 1 && r.y1 <= 1)) return std::nullopt;
+    return std::make_pair(r, std::strtod(v[4].c_str(), nullptr));
+}
+
 json Engine::autoRegionLocked() const
 {
+    const auto rectJson = [](double x, double y, double w, double h) {
+        return json{{"x", x}, {"y", y}, {"width", w}, {"height", h}};
+    };
+    // Not reading (the finder syncs only while reading): what reading would start from — the player's own
+    // region, else the band stored for this game, else nothing yet
+    const std::string slug = currentSlug();
+    if (!m_running || m_finderSlug != slug) {
+        const bool manual = m_mode == "pc" ? m_pcRegion.has_value() : m_consoleManual;
+        if (manual) {
+            const json rect = m_mode == "console" ? rectJson(m_consoleRegion.x, m_consoleRegion.y, m_consoleRegion.w, m_consoleRegion.h)
+                                                  : json(nullptr);   // PC: the screen region is region.pc
+            return {{"state", "manual"}, {"rect", rect}, {"confidence", 1.0}};
+        }
+        if (const auto stored = storedBandLocked(slug)) {
+            const finder::Rect& b = stored->first;
+            return {{"state", "locked"}, {"rect", rectJson(b.x0, b.y0, b.w(), b.h())},
+                    {"confidence", std::round(stored->second * 100) / 100}};
+        }
+        if (m_finderSlug != slug) return {{"state", "off"}, {"rect", nullptr}, {"confidence", 0.0}};
+    }
     const finder::State s = m_finder.state();
     const auto b = m_finder.band();
     // searching only while reading: nothing is captured before the player's start
