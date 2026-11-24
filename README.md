@@ -244,7 +244,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "reason": {"code", "text", "action"} | null,   // en engelleyici tek neden (aşağıda)
   "output": "pc|tv|phone", "obs": false,
   "web": {"running", "lan", "port", "clients", "obsUrl", "phoneUrl", "error", "firewallNote", "firewallHeadsUp"},
-  "tv": {"state": "idle|connecting|connected|bad_code|offline", "detail", "paired": {...} | null, "found": [{"id", "name", "host", "port"}], "searching"},
+  "tv": {"state": "idle|connecting|connected|bad_code|offline", "detail", "paired": {...} | null, "found": [{"id", "name", "host", "port"}], "searching", "hopP50", "hopP95"},
   "tvInstall": {"platform", "state", "step", "message", "hosts": [...], "scanning", "apkAvailable", "ipkAvailable",
                 "guide": {"android": [...], "firetv": [...], "lg": [...]}},
   "discord": {"connected"},
@@ -274,6 +274,12 @@ kaybı, siyah görüntü, kota, bakım ve okumanın durması TV'ye `{"t":"note",
 notu kaldırır). TV stili isteğe bağlı `relSize` (ekran yüksekliğine oran, 0.046), `safeArea` (0.05), `maxLines` (2),
 `text`, `band` alanlarını da taşır; varsayılan koyu şerit, beyaz yazı, opaklık 86. **TV uygulaması:** `note` Android
 (`LinkServer.kt`) ve webOS servisinde satır olarak gösterilir; yeni stil alanlarını TV uygulamaları henüz uygulamıyor.
+
+**Konsol okuma hızı (F2).** K3: konsol modunda OCR yalnız altyazı maskesi (koyu konturlu açık dolgu, eşikler karenin
+kendi aralığına göre, 8×8 piksel hücre) son OCR'dakinden farklıysa ve en geç 2,5 sn'de bir çalışır; kapı D-C'de G-MISS = 0
+(`tools/make_dc_frames.py`, `ctest -R mask_gate`). K12: yerel havuzda tam anahtarı olan satır ilk okumada gösterilir (iki
+okuma kuralı aynen sürer). K13: yeni satır belirince 15 sn'dir boşta duran bağlantı `ping` ile açılır. TV, çizdiği satıra
+`{"t":"drawn","id"}` yanıtı verirse (TV ölçüm derlemesi) `tv.hopP50/hopP95` gidiş-dönüşün yarısıdır.
 
 **Çıktılar.** Çeviri, PC modunda ve konsol modunda `output: "pc"` iken Makine'nin kaplamasıyla gösterilir; `tv` iken
 Makine TV'ye (UDP 47710 keşif, TCP satır-JSON, TV'deki 4 haneli kod; `src/tv_link.cpp`), `phone` iken telefon / tablet
