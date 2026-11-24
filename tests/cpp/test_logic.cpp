@@ -8,6 +8,7 @@
 
 #include "console_mode.h"
 #include "garbage.h"
+#include "scene.h"
 #include "local_pool.h"
 #include "subtitle_timing.h"
 #include "unitext.h"
@@ -161,6 +162,41 @@ void testFuzzyMatch()
     const std::string oneOff = "I'll take one too, then! NOT Resusitate Sure, man. Why not?";
     check(p.lookup(oneOff).has_value(), "one letter off: the same line still hits");
     check(!p.lookup(oneOff, false), "a reading with a hard issue: exact key only");
+}
+
+void testScene()
+{
+    const json v = loadJson(L"\\spec\\scene_vectors.json");
+    for (const json& x : v["context_dependent"])
+        check(scene::isContextDependent(x["line"].get<std::string>()) == x["expected"].get<bool>(), x["line"].dump());
+    for (const json& x : v["address"])
+        check(scene::addressForm(x["text"].get<std::string>()) == x["expected"].get<std::string>(), x["text"].dump());
+    for (const json& x : v["scene"]) {
+        const scene::Scene s = scene::readScene(x["inp"], x["speaker"].get<std::string>(), garbage());
+        const json& e = x["expected"];
+        const json prev = s.prev ? json{{"line", s.prev->line}, {"speaker", s.prev->speaker}} : json(nullptr);
+        const bool ok = prev == e["prev"] && (s.prev ? scene::contextText(*s.prev) : "") == e["context_text"].get<std::string>()
+                        && scene::listenerOf(s) == e["listener"].get<std::string>() && s.lastForm == e["last_form"].get<std::string>()
+                        && json(scene::variantSignals(s, "siz")) == e["signals"];
+        check(ok, x["note"].get<std::string>() + " -> prev " + prev.dump() + " listener " + scene::listenerOf(s) + " form "
+                      + s.lastForm + " signals " + json(scene::variantSignals(s, "siz")).dump());
+    }
+    // the server's own readScene checks
+    const scene::Scene s = scene::readScene(
+        json{{"speaker", "ignored when the line has a label"},
+             {"context", json::array({"lIlIlI", {{"text", "Jason: Will you help me?"}, {"translated", "Bana yardım eder misiniz?"}, {"age_ms", 4000}},
+                                      {{"text", "Is that your brother?"}, {"speaker", "Lucia"}, {"age_ms", 800}}})}},
+        "Jason", garbage());
+    check(s.prev && s.prev->line == "Is that your brother?" && s.prev->speaker == "Lucia" && s.lastForm == "siz",
+          "Jason said siz a line ago");
+    check(!scene::readScene(json::object(), "", garbage()).prev, "an old app sends no scene");
+    check(scene::listenerOf(scene::readScene(json{{"context", json::array({{{"text", "Jason: You came back."}, {"age_ms", 100}}})}},
+                                             "Jason", garbage())).empty(),
+          "talking on: no listener");
+    check(scene::plain("a" "\xE2\x80\xAE" "b <b>c</b>\n d") == "a b c d", "plain text (a right-to-left override goes)");
+    check(scene::ruleForm({{"jason", "lucia", "sen"}, {"jason", "*", "siz"}}, "Jason", "Lucia") == "sen"
+              && scene::ruleForm({{"jason", "lucia", "sen"}, {"jason", "*", "siz"}}, "Jason", "Cal") == "siz",
+          "address rule: listener first, then anyone");
 }
 
 void testClippedEdge()
@@ -718,7 +754,7 @@ int main(int argc, char** argv)
         {"normalization", testNormalization}, {"garbage", testGarbage},   {"ocr_filter", testOcrFilter},
         {"subtitle", testSubtitle},           {"console", testConsole},   {"local_pool", testLocalPool},
         {"speaker", testSpeaker},             {"line_issues", testLineIssues}, {"clipped_edge", testClippedEdge},
-        {"fuzzy_match", testFuzzyMatch},
+        {"fuzzy_match", testFuzzyMatch},     {"scene", testScene},
     };
     const auto it = cases.find(name);
     if (it == cases.end()) {

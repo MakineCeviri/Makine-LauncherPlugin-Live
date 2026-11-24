@@ -49,6 +49,7 @@ add_library(live-logic STATIC
     src/text_fix.cpp
     src/discord.cpp
     src/hotkeys.cpp
+    src/scene.cpp
     src/subtitle_web.cpp
     src/tv_link.cpp
     src/adb.cpp
@@ -150,7 +151,7 @@ if(MINGW)
     target_link_options(live_logic_test PRIVATE -static)
 endif()
 add_test(NAME text_fix COMMAND text_fix_test ${CMAKE_SOURCE_DIR}/resources/en_words.txt)
-foreach(case normalization garbage ocr_filter subtitle console local_pool speaker line_issues clipped_edge fuzzy_match)
+foreach(case normalization garbage ocr_filter subtitle console local_pool speaker line_issues clipped_edge fuzzy_match scene)
     add_test(NAME ${case} COMMAND live_logic_test ${case} ${CMAKE_SOURCE_DIR})
 endforeach()
 add_executable(live_outputs_test tests/cpp/test_outputs.cpp)
