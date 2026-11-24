@@ -83,12 +83,24 @@ static const char kPhoneHtml[] = R"PAGE(<!doctype html>
     cur.textContent = '';
     cur.appendChild(para(line.text, line.kind === 'verified' ? 'verified' : (line.kind === 'pending' ? 'pending' : '')));
   }
+  var es = null, lastSeen = 0;
+  function seen() { lastSeen = Date.now(); }
   function connect() {
-    var es = new EventSource('/events');
-    es.onopen = function () { state.className = 'state ok'; stateText.textContent = 'Bağlı'; };
+    if (es) es.close();
+    seen();
+    es = new EventSource('/events');
+    es.onopen = function () { seen(); state.className = 'state ok'; stateText.textContent = 'Bağlı'; };
     es.onerror = function () { state.className = 'state'; stateText.textContent = 'Bilgisayar bekleniyor'; };
-    es.onmessage = function (e) { try { render(JSON.parse(e.data)); } catch (x) {} };
+    es.onmessage = function (e) { seen(); try { render(JSON.parse(e.data)); } catch (x) {} };
+    es.addEventListener('ping', seen);
   }
+  // A connection that died without a word (the tablet's Wi-Fi slept, the network changed) never errors and
+  // the page would stay on old lines: the computer pings every 15 s, so 40 s of silence opens a new one
+  setInterval(function () {
+    if (Date.now() - lastSeen > 40000) { state.className = 'state'; stateText.textContent = 'Yeniden bağlanıyor…'; connect(); }
+  }, 5000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && Date.now() - lastSeen > 20000) connect(); });
+  window.addEventListener('online', connect);
   connect();
 })();
 </script>
@@ -159,9 +171,20 @@ static const char kObsHtml[] = R"PAGE(<!doctype html>
     band.textContent = line.text;
     band.className = 'band on' + (line.kind === 'verified' ? ' verified' : (line.kind === 'pending' ? ' pending' : ''));
   }
-  var es = new EventSource('/events');
-  es.onmessage = function (e) { try { render(JSON.parse(e.data)); } catch (x) {} };
-  es.onerror = function () { band.classList.remove('on'); shown = null; };
+  var es = null, lastSeen = 0;
+  function seen() { lastSeen = Date.now(); }
+  function connect() {
+    if (es) es.close();
+    seen();
+    es = new EventSource('/events');
+    es.onopen = seen;
+    es.onmessage = function (e) { seen(); try { render(JSON.parse(e.data)); } catch (x) {} };
+    es.onerror = function () { band.classList.remove('on'); shown = null; };
+    es.addEventListener('ping', seen);
+  }
+  // A silently dead connection (no error, no lines): 40 s without even a ping opens a new one
+  setInterval(function () { if (Date.now() - lastSeen > 40000) connect(); }, 5000);
+  connect();
 })();
 </script>
 </body>
