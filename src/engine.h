@@ -143,6 +143,7 @@ private:
     void storeBandLocked();       // a locked band, per game
     void runFinder();             // one detector run over the whole window, when due
     nlohmann::json autoRegionLocked() const;
+    nlohmann::json autoRegionBaseLocked() const;
     // The band locked earlier for this game (settings autoRegion:<slug>) and its confidence
     std::optional<std::pair<finder::Rect, double>> storedBandLocked(const std::string& slug) const;
 
@@ -221,6 +222,9 @@ private:
         double at = 0;
     };
     std::deque<Said> m_convo;
+    // Where the band's fractions sit on the screen (physical px): the game's client area or the console
+    // video rect, as the last read resolved it
+    std::optional<console::Rect> m_bandArea;
     int m_addressFlips = 0;   // the server saw a speaker switch sen/siz with no rule deciding it     // this session's lines, newest first (ui.state history)
     std::map<std::string, std::string> m_hotkeyKeys{{"start", "F9"}, {"region", "F10"}, {"move", "F8"}};
     bool m_hotkeysArmed = false;

@@ -173,6 +173,36 @@ unsigned long parentPid()   // the launcher that started this plugin host
 }
 
 constexpr size_t kHistoryLines = 50;
+
+// The client area (screen px) of a process's biggest visible window; nothing when it has none worth reading
+std::optional<console::Rect> gameWindowArea(unsigned long pid)
+{
+    struct Find {
+        DWORD pid;
+        HWND best = nullptr;
+        long area = 0;
+    } find{static_cast<DWORD>(pid)};
+    EnumWindows(
+        [](HWND w, LPARAM p) -> BOOL {
+            auto* f = reinterpret_cast<Find*>(p);
+            DWORD wp = 0;
+            GetWindowThreadProcessId(w, &wp);
+            RECT r{};
+            if (wp == f->pid && IsWindowVisible(w) && !IsIconic(w) && GetWindowRect(w, &r)) {
+                const long a = (r.right - r.left) * (r.bottom - r.top);
+                if (a > f->area) {
+                    f->area = a;
+                    f->best = w;
+                }
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&find));
+    if (!find.best) return std::nullopt;
+    const console::Rect c = console::clientRect(find.best);
+    if (c.r - c.l < 64 || c.b - c.t < 64) return std::nullopt;
+    return c;
+}
 constexpr double kGrowStep = 0.10, kMaxGrow = 0.30;   // a cut line grows the region 10 % at a time, at most 30 %
 
 bool consentGiven(const json& params)   // the screen sends {granted} or {enabled}
@@ -682,6 +712,7 @@ Result Engine::invoke(std::string_view method, const json& params)
             std::lock_guard lock(m_mutex);
             m_mode = mode;
             m_convo.clear();
+            m_bandArea.reset();
             saveSettings();
         }
         m_captureCv.notify_all();
@@ -804,6 +835,7 @@ void Engine::onEvent(std::string_view event, const json& payload)
             std::lock_guard lock(m_mutex);
             m_gameUnknown = slug.empty();   // no usable name: no pool to send to, so nothing is read
             m_convo.clear();
+            m_bandArea.reset();
             m_gameName = stream ? std::string(console::kGameName) : m_gameUnknown ? std::string() : name;
             m_gameSlug = slug;
             m_gamePid = static_cast<unsigned long>(num(payload, "pid", 0));   // optional (contract addition)
@@ -863,6 +895,7 @@ void Engine::onEvent(std::string_view event, const json& payload)
             m_gameName.clear();
             m_gameSlug.clear();
             m_convo.clear();
+            m_bandArea.reset();
             m_gameUnknown = false;
             m_gamePid = 0;
             m_gameExe.clear();
@@ -1962,6 +1995,10 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         const console::Box b = console::clientRegion(hwnd, frac);
         region = {b.x, b.y, b.w, b.h};
         const console::Rect video = console::videoRect(console::clientRect(hwnd));
+        {
+            std::lock_guard lock(m_mutex);
+            m_bandArea = video;
+        }
         overlay = console::regionToScreen(video, frac);
         m_videoFrame = console::Box{video.l, video.t, video.r - video.l, video.b - video.t};
         return {};
@@ -1973,31 +2010,12 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
             gamePid = m_gamePid;
         }
         // the game's biggest visible window, else the main screen (the launcher is in front while it asks)
-        struct Find {
-            DWORD pid;
-            HWND best = nullptr;
-            long area = 0;
-        } find{static_cast<DWORD>(gamePid)};
-        if (gamePid)
-            EnumWindows(
-                [](HWND w, LPARAM p) -> BOOL {
-                    auto* f = reinterpret_cast<Find*>(p);
-                    DWORD wp = 0;
-                    GetWindowThreadProcessId(w, &wp);
-                    RECT r{};
-                    if (wp == f->pid && IsWindowVisible(w) && !IsIconic(w) && GetWindowRect(w, &r)) {
-                        const long a = (r.right - r.left) * (r.bottom - r.top);
-                        if (a > f->area) {
-                            f->area = a;
-                            f->best = w;
-                        }
-                    }
-                    return TRUE;
-                },
-                reinterpret_cast<LPARAM>(&find));
-        console::Rect c = find.best ? console::clientRect(find.best)
-                                    : console::Rect{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
-        if (c.r - c.l < 64 || c.b - c.t < 64) c = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        const console::Rect screen{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        const console::Rect c = gamePid ? gameWindowArea(gamePid).value_or(screen) : screen;
+        {
+            std::lock_guard lock(m_mutex);
+            m_bandArea = c;
+        }
         const console::Frac f = band ? console::Frac{band->x0, band->y0, band->w(), band->h()} : console::kDefaultRegion;
         const console::Box b = console::regionToScreen(c, f);
         region = {b.x, b.y, b.w, b.h};
@@ -2074,6 +2092,10 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         }
         m_finderHwnd = nullptr;
         m_finderArea = CaptureRegion{c.l, c.t, c.r - c.l, c.b - c.t};
+        {
+            std::lock_guard lock(m_mutex);
+            m_bandArea = c;
+        }
         const console::Frac f = band ? console::Frac{band->x0, band->y0, band->w(), band->h()} : console::kDefaultRegion;
         base = console::regionToScreen(c, f);
     }
@@ -2232,7 +2254,29 @@ std::optional<std::pair<finder::Rect, double>> Engine::storedBandLocked(const st
     return std::make_pair(r, std::strtod(v[4].c_str(), nullptr));
 }
 
+// autoRegion plus screenRect: the band (or the player's own region) in physical screen pixels, for the
+// launcher's region selector; null while it is not known where the game's window / video area is
 json Engine::autoRegionLocked() const
+{
+    json out = autoRegionBaseLocked();
+    json screen = nullptr;
+    if (m_mode == "pc" && m_pcRegion) {
+        screen = {{"x", m_pcRegion->x}, {"y", m_pcRegion->y}, {"width", m_pcRegion->w}, {"height", m_pcRegion->h}};
+    } else if (out["rect"].is_object()) {
+        std::optional<console::Rect> area = m_bandArea;
+        if (!area && m_mode == "pc" && m_gamePid) area = gameWindowArea(m_gamePid);
+        if (area) {
+            const json& r = out["rect"];
+            const console::Box b = console::regionToScreen(*area, console::Frac{r["x"].get<double>(), r["y"].get<double>(),
+                                                                               r["width"].get<double>(), r["height"].get<double>()});
+            screen = {{"x", b.x}, {"y", b.y}, {"width", b.w}, {"height", b.h}};
+        }
+    }
+    out["screenRect"] = screen;
+    return out;
+}
+
+json Engine::autoRegionBaseLocked() const
 {
     const auto rectJson = [](double x, double y, double w, double h) {
         return json{{"x", x}, {"y", y}, {"width", w}, {"height", h}};

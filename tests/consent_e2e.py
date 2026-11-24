@@ -152,7 +152,7 @@ check(any("emit overlay.hide" in l for l in s.since(i)), "and hides it after 4 s
 
 # the subtitle finder: in the state, nothing to accept yet, reset searches again, PC start needs no region
 st = s.state()
-check(set(st["autoRegion"]) == {"state", "rect", "confidence"} and st["autoRegion"]["rect"] is None,
+check(set(st["autoRegion"]) == {"state", "rect", "confidence", "screenRect"} and st["autoRegion"]["rect"] is None,
       "autoRegion in the state " + json.dumps(st["autoRegion"]))
 i = s.cmd("autoRegion.accept {}")
 check("bölgesi yok" in s.reply(i), "autoRegion.accept with nothing found is refused")
@@ -245,7 +245,9 @@ FOO = '!game.started {"gameId":"exe:foo bar.exe","name":"Foo Bar","pid":77,"exe"
 s = Session()
 s.wait_for(lambda st: st["login"]["state"] == "signedIn", 20)
 i = s.cmd(FOO)
-check(s.state(i)["autoRegion"]["state"] == "manual", "a hand-drawn region shows as manual while not reading")
+st5 = s.state(i)
+check(st5["autoRegion"]["state"] == "manual", "a hand-drawn region shows as manual while not reading")
+check(st5["autoRegion"]["screenRect"] == st5["region"]["pc"], "manual: screenRect is the player's region")
 i = s.cmd("autoRegion.reset {}")
 check(s.state(i)["autoRegion"]["state"] == "off", "after a reset with nothing stored: off")
 
@@ -271,6 +273,9 @@ check(ar["state"] == "locked" and abs(ar["rect"]["x"] - 0.1) < 1e-6 and abs(ar["
 band_region = read_once()
 check(bool(band_region) and bool(default_region) and band_region["y"] < default_region["y"]
       and band_region["width"] > default_region["width"], "readOnce reads the stored band " + json.dumps(band_region))
+check(ar.get("screenRect") is None, "no game window known yet: screenRect null")
+sr = json.loads(s.reply(s.cmd("state {}")) or "{}").get("autoRegion", {}).get("screenRect")
+check(sr == band_region, "screenRect: the band in screen pixels, where readOnce read it " + json.dumps(sr))
 s.quit()
 
 server.shutdown()

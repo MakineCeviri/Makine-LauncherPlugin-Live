@@ -253,7 +253,10 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "style": { ... }, "game": {"name", "slug"}
   "autoStart": false, "usageReport": true, "consoleConsent": false, "everStarted": false,
   "reason": {"code", "text", "action"} | null,   // en engelleyici tek neden (aşağıda)
-  "autoRegion": {"state": "off|searching|found|locked|manual", "rect": {"x", "y", "width", "height"} | null, "confidence"},   // rect: oyun penceresine / konsol video alanına oran
+  "autoRegion": {"state": "off|searching|found|locked|manual", "rect": {"x", "y", "width", "height"} | null, "confidence",
+                 "screenRect": {"x", "y", "width", "height"} | null},   // rect: oyun penceresine / konsol video alanına oran;
+                 // screenRect: aynı bölge fiziksel ekran pikselinde (bölge seçici için; PC'de elle bölge = region.pc),
+                 // oyunun penceresi / video alanı bilinmezken null. Okuma yokken de: elle bölge manual, saklı bant locked
   "output": "pc|tv|phone", "obs": false,
   "web": {"running", "lan", "port", "clients", "obsUrl", "phoneUrl", "error", "firewallNote", "firewallHeadsUp"},
   "tv": {"state": "idle|connecting|connected|bad_code|offline", "detail", "paired": {...} | null, "found": [{"id", "name", "host", "port"}], "searching", "hopP50", "hopP95"},
