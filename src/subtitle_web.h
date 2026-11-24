@@ -12,6 +12,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -23,6 +24,7 @@
 namespace live {
 
 std::string lanIp();   // this PC's address on the home network (the default route's interface)
+bool isPrivateLan(const std::string& ip);   // 10/8, 172.16/12, 192.168/16
 
 class SubtitleWeb : public std::enable_shared_from_this<SubtitleWeb> {
 public:
@@ -52,6 +54,7 @@ public:
 private:
     void acceptLoop(uintptr_t listener, uint64_t generation);
     void serve(uintptr_t sock, uint64_t generation);
+    void serveBody(uintptr_t sock, uint64_t generation);
     void stream(uintptr_t sock, uint64_t generation);
     nlohmann::json snapshotLocked() const;
     void bump();
@@ -68,6 +71,7 @@ private:
     int m_port = 0, m_clients = 0;
     std::string m_error, m_lanIp;
     std::function<void()> m_onChange;
+    std::atomic<int> m_connections{0};
 };
 
 } // namespace live

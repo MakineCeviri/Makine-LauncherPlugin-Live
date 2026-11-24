@@ -3,7 +3,7 @@
 
 // Discord activity, the stored gzip, the ADB key (signature checked the way adbd checks it),
 // the phone / OBS web server over real sockets and the Makine TV link against a fake TV.
-//   live_outputs_test <case>     cases: discord discord_pipe gzip adb_key web tv_link
+//   live_outputs_test <case>     cases: discord discord_pipe gzip adb_key web web_limits tv_link
 
 #include "adb.h"
 #include "discord.h"
@@ -285,6 +285,34 @@ void testWeb()
     check(dial(port) == INVALID_SOCKET, "port closed after stop");
 }
 
+void testWebLimits()
+{
+    auto web = std::make_shared<SubtitleWeb>("LOGO");
+    web->configure(true, false);
+    const int port = web->port();
+    // 16 clients that never finish their request head hold every slot
+    std::vector<SOCKET> idle;
+    for (int i = 0; i < 16; ++i) idle.push_back(dial(port));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const SOCKET extra = dial(port);
+    char b[64];
+    check(extra == INVALID_SOCKET || recv(extra, b, sizeof b, 0) <= 0, "the 17th connection is refused");
+    if (extra != INVALID_SOCKET) closesocket(extra);
+    // the server drops a client that has not finished its request head within 5 s
+    const auto t0 = std::chrono::steady_clock::now();
+    const int n = recv(idle[0], b, sizeof b, 0);
+    const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    check(n <= 0 && waited < 8, "a slow request head is closed within the deadline (" + std::to_string(waited) + " s)");
+    for (const SOCKET s : idle) closesocket(s);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));   // the slots come back
+    const SOCKET s = dial(port);
+    const std::string req = "GET /obs HTTP/1.1\r\n\r\n";
+    send(s, req.data(), static_cast<int>(req.size()), 0);
+    check(readUntil(s, "</html>").rfind("HTTP/1.1 200", 0) == 0, "serves again once the slots are free");
+    closesocket(s);
+    web->stop();
+}
+
 void testTvLink()
 {
     // A fake Makine TV: UDP discovery and the TCP line stream with code 4321
@@ -309,6 +337,10 @@ void testTvLink()
         int flen = sizeof from;
         const int n = recvfrom(udp, buf, sizeof buf, 0, reinterpret_cast<sockaddr*>(&from), &flen);
         if (n > 0 && std::string(buf, static_cast<size_t>(n)).find("discover") != std::string::npos) {
+            // Anything on the home network can answer: wrong types and junk must be skipped, not thrown
+            for (const char* junk : {R"({"t":1})", R"({"t":"here","id":{"x":1},"name":5,"port":"x"})", "[1,2]", "not json",
+                                     R"({"t":"here","id":"evil","name":7,"port":99999})", R"({"t":"here","id":"e2","port":-5})"})
+                sendto(udp, junk, static_cast<int>(std::strlen(junk)), 0, reinterpret_cast<sockaddr*>(&from), flen);
             const std::string here = json({{"t", "here"}, {"v", 1}, {"id", "tv-1"}, {"name", "Salon TV"}, {"port", tcpPort}}).dump();
             sendto(udp, here.data(), static_cast<int>(here.size()), 0, reinterpret_cast<sockaddr*>(&from), flen);
         }
@@ -319,6 +351,8 @@ void testTvLink()
         const std::string reply = hello.find("\"code\":\"4321\"") != std::string::npos ? "{\"t\":\"ok\",\"tv\":\"Salon TV\"}\n"
                                                                                        : "{\"t\":\"bad_code\"}\n";
         send(c, reply.data(), static_cast<int>(reply.size()), 0);
+        const std::string junk = "{\"t\":5}\n{\"t\":\"drawn\",\"id\":{}}\n[]\n{\"t\":\"drawn\",\"id\":\"x\"}\nnot json\n";
+        send(c, junk.data(), static_cast<int>(junk.size()), 0);
         received = readUntil(c, "Kota doldu");
         // G-TV-HOP: answer every line with drawn{id} at once, like the TV app's measurement build
         std::string pending = received;
@@ -344,12 +378,14 @@ void testTvLink()
     });
     const auto found = discoverTvs(1500, udpPort, {"127.0.0.1"});
     check(found.size() == 1 && found[0].name == "Salon TV" && found[0].port == tcpPort && found[0].host == "127.0.0.1",
-          "discovery finds the TV");
+          "discovery skips junk replies and finds the TV");
     auto link = std::make_shared<TvLink>("TEST-PC", udpPort);
     link->start();
     if (!found.empty()) link->pair(found[0], "4321");
     for (int i = 0; i < 50 && link->state().first != "connected"; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     check(link->state().first == "connected" && link->state().second == "Salon TV", "paired with the code");
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));   // the junk lines arrive
+    check(link->state().first == "connected", "junk lines from the TV do not drop the link");
     link->setStyle(30, "alt", 80);
     link->sendLine(1, "Merhaba", "api");
     link->sendNote("quota", "Kota doldu");
@@ -377,7 +413,7 @@ int main(int argc, char** argv)
     WSADATA d;
     WSAStartup(MAKEWORD(2, 2), &d);
     const std::map<std::string, std::function<void()>> cases{
-        {"discord", testDiscord}, {"discord_pipe", testDiscordPipe}, {"gzip", testGzip}, {"adb_key", testAdbKey}, {"web", testWeb}, {"tv_link", testTvLink}};
+        {"discord", testDiscord}, {"discord_pipe", testDiscordPipe}, {"gzip", testGzip}, {"adb_key", testAdbKey}, {"web", testWeb}, {"web_limits", testWebLimits}, {"tv_link", testTvLink}};
     const auto it = argc > 1 ? cases.find(argv[1]) : cases.end();
     if (it == cases.end()) {
         std::printf("usage: live_outputs_test discord|gzip|adb_key|web|tv_link\n");

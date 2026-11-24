@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -20,7 +21,8 @@ namespace {
 
 #include "web_pages.inc"
 
-constexpr size_t kHistory = 4;              // earlier lines shown above the last one on the phone
+constexpr size_t kHistory = 4;
+constexpr int kMaxConnections = 16;              // earlier lines shown above the last one on the phone
 constexpr auto kHeartbeat = std::chrono::seconds(15);
 constexpr const char* kCsp =
     "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self'";
@@ -59,6 +61,13 @@ std::string response(int status, const std::string& body, const std::string& typ
 std::string sse(const json& j) { return "data: " + j.dump(-1, ' ', false, json::error_handler_t::replace) + "\n\n"; }
 
 } // namespace
+
+bool isPrivateLan(const std::string& ip)
+{
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    if (std::sscanf(ip.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return false;
+    return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168);
+}
 
 std::string lanIp()
 {
@@ -110,10 +119,14 @@ void SubtitleWeb::configure(bool enabled, bool lan)
         sockaddr_in a{};
         a.sin_family = AF_INET;
         a.sin_port = htons(static_cast<u_short>(port));
-        // The home network interface only (not 0.0.0.0); without one, every interface
+        // The home-network interface only, never every interface
         const std::string ip = lan ? lanIp() : std::string();
         a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (lan && (ip == "127.0.0.1" || inet_pton(AF_INET, ip.c_str(), &a.sin_addr) != 1)) a.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (lan && (!isPrivateLan(ip) || inet_pton(AF_INET, ip.c_str(), &a.sin_addr) != 1)) {
+            m_error = "Ev ağı (özel) adresi bulunamadı: telefon sayfası açılamaz. Bilgisayar modem / Wi-Fi ağına bağlı mı?";
+            closesocket(s);
+            return;
+        }
         if (bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 || listen(s, 8) != 0) {
             m_error = "kapı " + std::to_string(port) + " kullanılamıyor (" + std::to_string(WSAGetLastError()) + ")";
             closesocket(s);
@@ -140,22 +153,41 @@ void SubtitleWeb::acceptLoop(uintptr_t listener, uint64_t generation)
                 return;
             }
         }
+        if (m_connections >= kMaxConnections) {   // a phone and OBS need a few; anything beyond is refused
+            closesocket(c);
+            continue;
+        }
+        ++m_connections;
         std::thread([self = shared_from_this(), c, generation] { self->serve(c, generation); }).detach();
     }
 }
 
 void SubtitleWeb::serve(uintptr_t sock, uint64_t generation)
 {
-    DWORD timeout = 5000;
+    try {
+        serveBody(sock, generation);
+    } catch (...) {   // a thread that throws would end the plugin host
+        closesocket(sock);
+    }
+    --m_connections;
+}
+
+void SubtitleWeb::serveBody(uintptr_t sock, uint64_t generation)
+{
+    DWORD timeout = 1000;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof timeout);
+    DWORD sendTimeout = 5000;   // a client that stops reading cannot hold a thread forever
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sendTimeout), sizeof sendTimeout);
     BOOL nodelay = TRUE;   // a subtitle line goes out at once
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof nodelay);
     std::string req;
     char buf[2048];
-    while (req.find("\r\n\r\n") == std::string::npos && req.size() < 8192) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);   // the whole request head
+    while (req.find("\r\n\r\n") == std::string::npos && req.size() < 8192
+           && std::chrono::steady_clock::now() < deadline) {
         const int n = recv(sock, buf, sizeof buf, 0);
-        if (n <= 0) break;
-        req.append(buf, static_cast<size_t>(n));
+        if (n == 0 || (n < 0 && WSAGetLastError() != WSAETIMEDOUT)) break;
+        if (n > 0) req.append(buf, static_cast<size_t>(n));
     }
     const size_t sp1 = req.find(' '), sp2 = sp1 == std::string::npos ? sp1 : req.find(' ', sp1 + 1);
     if (sp2 == std::string::npos) {

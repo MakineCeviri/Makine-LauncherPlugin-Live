@@ -8,6 +8,8 @@
 // profile, translate, local pool sync/hits, server status. WinHTTP, one session kept
 // alive (keep-alive connections). Thread-safe: each call opens its own request.
 
+#include "jsonutil.h"
+
 #include <nlohmann/json.hpp>
 
 #include <atomic>
@@ -23,7 +25,7 @@ struct ApiResult {
 
     bool ok() const { return status >= 200 && status < 300; }
     bool network() const { return status == 0; }
-    std::string code() const { return data.is_object() ? data.value("code", std::string()) : std::string(); }
+    std::string code() const { return jstr(data, "code"); }
 };
 
 class ServerClient {

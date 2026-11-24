@@ -3,6 +3,8 @@
 
 #include "tv_link.h"
 
+#include "jsonutil.h"
+
 #include "subtitle_web.h"   // lanIp()
 
 #include <winsock2.h>
@@ -142,11 +144,12 @@ std::optional<TvInfo> TvInfo::fromJson(const json& j)
     if (!j.is_object() || !j.contains("id") || !j.contains("host") || !j.contains("port")) return std::nullopt;
     TvInfo t;
     t.id = j["id"].is_string() ? j["id"].get<std::string>() : j["id"].dump();
-    t.name = j.value("name", std::string("TV"));
+    t.name = jstr(j, "name", "TV");
     if (t.name.empty()) t.name = "TV";
     if (!j["host"].is_string() || !j["port"].is_number_integer()) return std::nullopt;
     t.host = j["host"].get<std::string>();
     t.port = j["port"].get<int>();
+    if (t.port < 1 || t.port > 65535) return std::nullopt;
     return t;
 }
 
@@ -160,9 +163,13 @@ std::vector<TvInfo> discoverTvs(int timeoutMs, int port, const std::vector<std::
     setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&on), sizeof on);
     sockaddr_in any{};
     any.sin_family = AF_INET;
-    if (targets.empty()) {   // the replies come in on the home-network interface only
+    if (targets.empty()) {   // the replies come in on the private home-network interface only
         const std::string ip = lanIp();
-        if (ip != "127.0.0.1") inet_pton(AF_INET, ip.c_str(), &any.sin_addr);
+        if (!isPrivateLan(ip)) {
+            closesocket(s);
+            return {};
+        }
+        inet_pton(AF_INET, ip.c_str(), &any.sin_addr);
     }
     bind(s, reinterpret_cast<sockaddr*>(&any), sizeof any);
     const std::string probe = encode({{"t", "discover"}, {"v", kProtocol}});
@@ -188,7 +195,8 @@ std::vector<TvInfo> discoverTvs(int timeoutMs, int port, const std::vector<std::
         const int n = recvfrom(s, buf, sizeof buf, 0, reinterpret_cast<sockaddr*>(&from), &len);
         if (n <= 0) continue;
         json msg = json::parse(std::string(buf, static_cast<size_t>(n)), nullptr, false);
-        if (!msg.is_object() || msg.value("t", std::string()) != "here" || !msg.contains("id")) continue;
+        if (jstr(msg, "t") != "here" || !msg.contains("id") || !(msg["id"].is_string() || msg["id"].is_number_integer()))
+            continue;
         char ip[INET_ADDRSTRLEN] = {};
         inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
         msg["host"] = ip;
@@ -320,6 +328,21 @@ void TvLink::setState(const std::string& state, const std::string& detail)
 void TvLink::run()
 {
     for (;;) {
+        try {
+            runBody();   // returns once the link is closed
+            return;
+        } catch (...) {   // a thread that throws would end the plugin host: start over
+            setState("offline", "");
+            std::unique_lock lock(m_mutex);
+            if (m_closed) return;
+            m_cv.wait_for(lock, kRetry, [&] { return m_closed; });
+        }
+    }
+}
+
+void TvLink::runBody()
+{
+    for (;;) {
         int gen = 0;
         TvInfo tv;
         std::string code;
@@ -368,7 +391,7 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
     if (!sendAll(s, encode({{"t", "hello"}, {"v", kProtocol}, {"code", code}, {"pc", m_pcName}}))) return finish();
     const auto reply = readLine(s, kConnectTimeoutMs);
     if (!reply) return finish();
-    const std::string t = reply->value("t", std::string());
+    const std::string t = jstr(*reply, "t");
     if (t == "bad_code") {
         result = "bad_code";
         return finish();
@@ -397,7 +420,7 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
             it = Clock::now() - it->second > std::chrono::seconds(1) ? sentAt.erase(it) : std::next(it);
         for (size_t nl; (nl = in.find('\n')) != std::string::npos; in.erase(0, nl + 1)) {
             const json msg = json::parse(in.substr(0, nl), nullptr, false);
-            if (!msg.is_object() || msg.value("t", std::string()) != "drawn" || !msg.contains("id")) continue;
+            if (jstr(msg, "t") != "drawn" || !msg.contains("id")) continue;
             const auto it = sentAt.find(msg["id"].is_number_integer() ? msg["id"].get<int>() : -1);
             if (it == sentAt.end()) continue;
             const double ms = std::chrono::duration<double, std::milli>(Clock::now() - it->second).count() / 2;

@@ -154,7 +154,7 @@ live_warnings(live_outputs_test)
 if(MINGW)
     target_link_options(live_outputs_test PRIVATE -static)
 endif()
-foreach(case discord discord_pipe gzip adb_key web tv_link)
+foreach(case discord discord_pipe gzip adb_key web web_limits tv_link)
     add_test(NAME ${case} COMMAND live_outputs_test ${case})
 endforeach()
 

@@ -68,6 +68,7 @@ public:
 
 private:
     void run();
+    void runBody();
     std::string session(int gen, const TvInfo& tv, const std::string& code);
     void setState(const std::string& state, const std::string& detail);
     void put(nlohmann::json msg);

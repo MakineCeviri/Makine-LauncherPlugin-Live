@@ -3,6 +3,8 @@
 
 #include "discord.h"
 
+#include "jsonutil.h"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -103,7 +105,7 @@ void DiscordPresence::stop()
     bool done = false;
     {
         std::unique_lock lock(m_mutex);
-        done = m_cv.wait_for(lock, std::chrono::milliseconds(500), [this] { return m_done; });
+        done = m_cv.wait_for(lock, std::chrono::milliseconds(200), [this] { return m_done; });
     }
     done ? m_thread.join() : m_thread.detach();
 }
@@ -153,7 +155,7 @@ bool DiscordPresence::connect()
         uint32_t op = 0;
         json reply;
         if (send(kHandshake, {{"v", 1}, {"client_id", kDiscordAppId}}) && recv(op, reply) && op == kFrame
-            && reply.is_object() && reply.value("evt", std::string()) == "READY") {
+            && jstr(reply, "evt") == "READY") {
             m_connected = true;
             if (m_onChange) m_onChange();
             return true;
@@ -172,6 +174,18 @@ void DiscordPresence::disconnect()
 }
 
 void DiscordPresence::run()
+{
+    try {
+        runBody();
+    } catch (...) {   // a thread that throws would end the plugin host
+        disconnect();
+        std::lock_guard lock(m_mutex);
+        m_done = true;
+        m_cv.notify_all();
+    }
+}
+
+void DiscordPresence::runBody()
 {
     auto sentAt = Clock::now() - std::chrono::hours(1);
     auto nextTry = Clock::now();

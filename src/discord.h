@@ -42,6 +42,7 @@ public:
 
 private:
     void run();
+    void runBody();
     bool connect();
     void disconnect();
     bool send(uint32_t op, const nlohmann::json& payload);
