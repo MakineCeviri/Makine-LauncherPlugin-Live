@@ -27,6 +27,31 @@ FetchContent_Declare(json
     SYSTEM)
 FetchContent_MakeAvailable(json)
 
+# libssh2 (BSD-3-Clause), static, on Windows CNG (no OpenSSL): "TV'ye kur" for LG webOS, which
+# speaks SSH to the TV's developer mode (src/webos_install.cpp). Pinned by hash; the release
+# tarball is signed by Daniel Stenberg (27EDEAF22F3ABCEB50DB9A125CC908FDB71E12C2).
+# libssh2 is C: the C compiler sits next to the C++ one (GCC 15 MinGW), not whichever gcc is on PATH.
+if(NOT CMAKE_C_COMPILER AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    get_filename_component(_live_cxx_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    if(EXISTS "${_live_cxx_dir}/gcc${CMAKE_EXECUTABLE_SUFFIX}")
+        set(CMAKE_C_COMPILER "${_live_cxx_dir}/gcc${CMAKE_EXECUTABLE_SUFFIX}")
+    endif()
+endif()
+enable_language(C)
+set(CRYPTO_BACKEND WinCNG CACHE STRING "" FORCE)
+set(ENABLE_ECDSA_WINCNG ON CACHE BOOL "" FORCE)          # ecdh-sha2 kex and ECDSA host keys (Windows 10+)
+set(ENABLE_ZLIB_COMPRESSION OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(LIBSSH2_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(libssh2
+    URL https://github.com/libssh2/libssh2/releases/download/libssh2-1.11.1/libssh2-1.11.1.tar.gz
+    URL_HASH SHA256=d9ec76cbe34db98eec3539fe2c899d26b0c837cb3eb466a56b0f109cabf658f7
+    SYSTEM EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(libssh2)
+
 set(LIVE_DEFINES UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00
     MAKINE_LIVE_VERSION="${MANIFEST_VERSION}")
 
@@ -46,6 +71,7 @@ add_library(live-logic STATIC
     src/subtitle_timing.cpp
     src/console_mode.cpp
     src/local_pool.cpp
+    src/pool_list.cpp
     src/text_fix.cpp
     src/discord.cpp
     src/hotkeys.cpp
@@ -53,6 +79,7 @@ add_library(live-logic STATIC
     src/subtitle_web.cpp
     src/tv_link.cpp
     src/adb.cpp
+    src/webos_install.cpp
     src/gzip_store.cpp
     src/text_mask.cpp
     src/subtitle_finder.cpp
@@ -60,7 +87,7 @@ add_library(live-logic STATIC
 )
 target_include_directories(live-logic PUBLIC src)
 target_compile_definitions(live-logic PUBLIC ${LIVE_DEFINES})
-target_link_libraries(live-logic PUBLIC nlohmann_json::nlohmann_json user32 gdi32 dwmapi ws2_32 bcrypt crypt32)
+target_link_libraries(live-logic PUBLIC nlohmann_json::nlohmann_json libssh2::libssh2_static user32 gdi32 dwmapi ws2_32 bcrypt crypt32)
 live_warnings(live-logic)
 
 # The OCR runtime, models and the onnxruntime C API header: python tools/fetch_ocr.py puts them here.
@@ -104,6 +131,7 @@ configure_file(assets/logo_white-96.webp "${PACKAGE_DIR}/resources/logo.webp" CO
 configure_file(LICENSE "${PACKAGE_DIR}/licenses/Makine-Live-LICENSE.txt" COPYONLY)
 configure_file(licenses/NOTICE.txt "${PACKAGE_DIR}/licenses/NOTICE.txt" COPYONLY)
 configure_file("${json_SOURCE_DIR}/LICENSE.MIT" "${PACKAGE_DIR}/licenses/nlohmann-json-LICENSE.txt" COPYONLY)
+configure_file("${libssh2_SOURCE_DIR}/COPYING" "${PACKAGE_DIR}/licenses/libssh2-LICENSE.txt" COPYONLY)
 add_custom_command(TARGET makine-live POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:makine-live>" "${PACKAGE_DIR}/${PLUGIN_ENTRY}"
     VERBATIM)
@@ -151,7 +179,7 @@ if(MINGW)
     target_link_options(live_logic_test PRIVATE -static)
 endif()
 add_test(NAME text_fix COMMAND text_fix_test ${CMAKE_SOURCE_DIR}/resources/en_words.txt)
-foreach(case normalization garbage ocr_filter subtitle console local_pool speaker line_issues clipped_edge fuzzy_match scene)
+foreach(case normalization garbage ocr_filter subtitle console local_pool pool_list speaker line_issues clipped_edge fuzzy_match scene)
     add_test(NAME ${case} COMMAND live_logic_test ${case} ${CMAKE_SOURCE_DIR})
 endforeach()
 add_executable(live_outputs_test tests/cpp/test_outputs.cpp)
@@ -172,6 +200,22 @@ endif()
 foreach(case fit finder temp_grow)
     add_test(NAME ${case} COMMAND live_fit_test ${case})
 endforeach()
+
+# LG webOS install: the .ipk's version, and the whole install against a fake developer-mode TV
+# (key server, SSH with ssh-rsa-only and modern servers, luna-send replies; paramiko).
+add_executable(live_webos_test tests/cpp/test_webos.cpp)
+target_link_libraries(live_webos_test PRIVATE live-logic)
+live_warnings(live_webos_test)
+if(MINGW)
+    target_link_options(live_webos_test PRIVATE -static)
+endif()
+if(Python3_FOUND)
+    add_test(NAME webos_ipk_version COMMAND live_webos_test ipk_version "${PACKAGE_DIR}/resources/makine-tv.ipk"
+             "${MANIFEST_VERSION}")
+    add_test(NAME webos_install COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_webos_install_cpp.py")
+    set_tests_properties(webos_install PROPERTIES ENVIRONMENT "LIVE_WEBOS_TEST=$<TARGET_FILE:live_webos_test>"
+                         SKIP_RETURN_CODE 77 TIMEOUT 300)
+endif()
 
 # F1 gate: the plugin's OCR reads every benchmark frame exactly as the benchmark's ORT path did
 # (OCR_KARAR; the frames and results live in the ocrbench repo's build/ocr_bench).
@@ -220,4 +264,8 @@ live_warnings(live_mask_gate)
 if(MINGW)
     target_link_options(live_mask_gate PRIVATE -static)
 endif()
-add_test(NAME mask_gate COMMAND live_mask_gate "${LIVE_OCR_DC_DIR}")
+if(EXISTS "${LIVE_OCR_DC_DIR}/truth.tsv")
+    add_test(NAME mask_gate COMMAND live_mask_gate "${LIVE_OCR_DC_DIR}")
+else()
+    message(STATUS "Mask gate skipped: no D-C frames in ${LIVE_OCR_DC_DIR}")
+endif()

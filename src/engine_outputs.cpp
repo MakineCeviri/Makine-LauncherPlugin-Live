@@ -11,6 +11,7 @@
 #include "gzip_store.h"
 #include "jsonutil.h"
 #include "unitext.h"
+#include "webos_install.h"
 #include "winutil.h"
 
 #include <windows.h>
@@ -71,9 +72,9 @@ const json& installGuide()
         {"firetv", json::array({"Fire TV'de Ayarlar › My Fire TV › Hakkında › cihaz adına 7 kez basın.",
                                 "Ayarlar › My Fire TV › Geliştirici Seçenekleri › ADB hata ayıklama: Açık.",
                                 "TV'nin adresini seçin ve Kur'a basın; TV'deki soruya İzin ver deyin."})},
-        {"lg", json::array({"TV'de LG Content Store'dan Developer Mode uygulamasını kurun, LG geliştirici hesabınızla girin ve Dev Mode Status'u açın.",
-                            "\"LG paketini kaydet\" ile makine-tv.ipk dosyasını bilgisayara kaydedin.",
-                            "Paketi webOS Dev Manager (webosbrew.org) ya da LG'nin ares-install aracıyla kurun: TV'nin adresi ve Developer Mode ekranındaki Passphrase gerekir."})},
+        {"lg", json::array({"TV'de LG Content Store'dan Developer Mode uygulamasını kurun ve LG geliştirici hesabınızla girin.",
+                            "Developer Mode'da Dev Mode Status'u açın (TV yeniden başlar); uygulamayı yeniden açıp Key Server'ı da açın.",
+                            "TV'nin adresini seçin (Tara) ya da yazın, Developer Mode ekranındaki 6 karakterlik Passphrase'i girin ve Kur'a basın."})},
     };
     return g;
 }
@@ -149,8 +150,15 @@ void Engine::onLogRequest(const std::string& requestId)
                 m_logInSentry = requestId;
             }
         }
-        const std::string gz = sentry ? std::string() : gzipStored(text);
-        const ApiResult r = sentry ? m_server.logSent(requestId) : m_server.uploadLog(requestId, gz);
+        std::string gz = sentry ? std::string() : gzipStored(text);
+        ApiResult r = sentry ? m_server.logSent(requestId) : m_server.uploadLog(requestId, gz);
+        // A server without log_sent (Makine-WEB answers 400 "Geçersiz işlem.") never closes the request, and its
+        // portal reads the log only from its own store: then the log goes there as well
+        if (sentry && !r.ok() && !r.network() && r.status != 401) {
+            gz = gzipStored(text);
+            r = m_server.uploadLog(requestId, gz);
+            if (r.ok()) sentry = false;   // sizeKb: what was uploaded
+        }
         {
             std::lock_guard lock(m_mutex);
             if (!r.ok()) {
@@ -552,6 +560,7 @@ std::optional<Result> Engine::invokeOutputs(std::string_view method, const json&
             {
                 std::lock_guard lock(m_mutex);
                 m_tvInstall["hosts"] = hosts;
+                m_tvInstall["hostsPlatform"] = platform == "lg" ? "lg" : "android";   // whose port they have open
                 m_tvInstall["scanning"] = false;
             }
             publish();
@@ -564,12 +573,19 @@ std::optional<Result> Engine::invokeOutputs(std::string_view method, const json&
         return ok("Ev ağında TV aranıyor.");
     }
     if (method == "tv.install") {
+        // Android TV / Fire TV {platform, host, port?} over ADB; LG {platform: "lg", host, passphrase} over
+        // the TV's developer mode (keyPort / sshPort only for tests against a fake TV)
         const std::string platform = str(params, "platform");
         const std::string host = str(params, "host");
-        if (platform == "lg")
-            return Result::error(MAKINE_E_UNSUPPORTED, "LG'ye kurulum şimdilik elle: tvInstall.guide.lg adımlarını izleyin.");
         if (host.empty()) return Result::error(MAKINE_E_INVALID_ARGUMENT, "TV'nin adresini seçin.");
+        const bool lg = platform == "lg";
+        const std::string passphrase = str(params, "passphrase");
+        if (lg && passphrase.find_first_not_of(" \t") == std::string::npos)
+            return Result::error(MAKINE_E_INVALID_ARGUMENT, "Developer Mode ekranındaki 6 karakterlik Passphrase'i girin.");
         const int port = static_cast<int>(num(params, "port", adb::kPort));
+        webos::Options lgOptions;
+        lgOptions.keyPort = static_cast<int>(num(params, "keyPort", webos::kKeyPort));
+        lgOptions.sshPort = static_cast<int>(num(params, "sshPort", webos::kSshPort));
         {
             std::lock_guard lock(m_mutex);
             if (m_tvInstall.value("state", std::string()) == "running") return Result::error(MAKINE_E_BUSY, "Kurulum sürüyor.");
@@ -579,8 +595,8 @@ std::optional<Result> Engine::invokeOutputs(std::string_view method, const json&
             m_tvInstall["message"] = "";
         }
         publish();
-        // Minutes with a user prompt on the TV: its own thread, not a net thread
-        std::thread([self = shared_from_this(), host, port] {
+        // Minutes (a user prompt on the TV, LG's install stream): its own thread, not a net thread
+        std::thread([self = shared_from_this(), host, port, lg, passphrase, lgOptions] {
           try {
             const auto setStep = [&](const std::string& s) {
                 {
@@ -590,8 +606,12 @@ std::optional<Result> Engine::invokeOutputs(std::string_view method, const json&
                 self->publish();
             };
             std::string error, note;
-            const auto apk = win::readFile(self->m_init.pluginDir + L"\\resources\\makine-tv.apk");
-            if (!apk) {
+            if (lg) {
+                const auto ipk = win::readFile(self->m_init.pluginDir + L"\\resources\\makine-tv.ipk");
+                error = !ipk ? "Makine TV'nin LG paketi bu kurulumda yok (resources\\makine-tv.ipk)."
+                             : webos::installIpk(host, passphrase, std::vector<uint8_t>(ipk->begin(), ipk->end()), setStep,
+                                                 lgOptions);
+            } else if (const auto apk = win::readFile(self->m_init.pluginDir + L"\\resources\\makine-tv.apk"); !apk) {
                 error = "Makine TV paketi bu kurulumda yok (resources\\makine-tv.apk).";
             } else if (!self->m_adbKey.loadOrCreate(self->m_init.dataDir, error)) {
             } else {

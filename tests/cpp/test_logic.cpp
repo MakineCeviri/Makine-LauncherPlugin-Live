@@ -10,6 +10,7 @@
 #include "garbage.h"
 #include "scene.h"
 #include "local_pool.h"
+#include "pool_list.h"
 #include "subtitle_timing.h"
 #include "unitext.h"
 #include "winutil.h"
@@ -752,9 +753,91 @@ void testLocalPool()
     check(hits == std::map<int64_t, int>{{2, 2}} && lp2.takeHits("heavy-rain").empty(), "hit counters taken");
     lp2.returnHits("heavy-rain", hits);
     check(lp2.takeHits("heavy-rain") == std::map<int64_t, int>{{2, 2}}, "unsent counters put back");
+    {
+        const auto sums = lp2.summaries();
+        check(sums.size() == 1 && sums[0].slug == "heavy-rain" && sums[0].name == "Heavy Rain" && sums[0].local == 2
+                  && sums[0].rev == "r2" && sums[0].serverCount == -1,
+              "summary of a loaded pool; no count from the server yet");
+        lp2.applySync("heavy-rain", {{"rev", "r3"}, {"count", 3}, {"variants", json::array()},
+                                     {"items", json::array({row(2, "Press X to call Jason", "Jason'ı çağır"),
+                                                            row(5, "Shaun? Where are you?", "Shaun? Neredesin?"),
+                                                            row(6, "", "a row without a key is never kept")})}});
+        check(lp2.applySync("heavy-rain", {{"unchanged", true}, {"rev", "r3"}, {"count", 3}}).unchanged, "r3 unchanged");
+        LocalPool lp3(dir);   // nothing loaded: the summary comes from games.json
+        const auto s3 = lp3.summaries();
+        check(s3.size() == 1 && s3[0].local == 2 && s3[0].rev == "r3" && s3[0].serverCount == 3,
+              "summary from games.json: lines kept, revision, the server's count");
+        check(lp3.get("heavy-rain") && lp3.get("heavy-rain")->serverCount == 3, "the server's count reopened");
+    }
     lp2.forget("heavy-rain");
     check(!lp2.isConfirmed("heavy-rain") && !LocalPool(dir).get("heavy-rain"), "not this game: local pool removed");
     std::filesystem::remove_all(dir, ec);
+}
+
+void testPoolList()
+{
+    using pools::Entry;
+    const auto entry = [](std::string slug, int local, std::string localRev, std::optional<int> remote,
+                          std::string remoteRev, int synced = -1) {
+        Entry e;
+        e.slug = slug;
+        e.name = slug;
+        e.local = local;
+        e.localRev = std::move(localRev);
+        e.remote = remote;
+        e.remoteRev = std::move(remoteRev);
+        e.syncedCount = synced;
+        return e;
+    };
+    check(pools::state(entry("a", 0, "", 40, "r4")) == "missing", "server has lines, this PC none: missing");
+    check(pools::state(entry("a", 10, "r3", 50, "r4", 10)) == "outdated", "another revision: outdated");
+    check(pools::state(entry("a", 10, "", 10, "r4", 10)) == "outdated", "no sync revision (before variants=1): outdated");
+    check(pools::state(entry("a", 10, "r4", 12, "r4", 10)) == "outdated", "same revision, another count: outdated");
+    check(pools::state(entry("a", 9, "r4", 10, "r4", 10)) == "current",
+          "same revision and count; a row without a key kept out locally is still current");
+    check(pools::state(entry("a", 10, "r4", 10, "r4")) == "current", "count unknown: the lines kept are compared");
+    check(pools::state(entry("a", 0, "", 0, "")) == "empty", "nothing approved on the server: empty");
+    check(pools::state(entry("a", 5, "r2", 0, "", 5)) == "outdated", "the server has none any more: outdated");
+    check(pools::state(entry("a", 5, "r2", std::nullopt, "")) == "current" &&
+              pools::state(entry("a", 0, "", std::nullopt, "")) == "missing",
+          "not asked yet: what this PC has");
+    Entry busy = entry("a", 0, "", 40, "r4");
+    busy.downloading = true;
+    busy.error = "old";
+    check(pools::state(busy) == "downloading", "a download running wins");
+    Entry bad = entry("a", 3, "r1", std::nullopt, "");
+    bad.error = "Sunucuya ulaşılamadı.";
+    const json badJson = pools::itemJson(bad);
+    check(badJson["state"] == "error" && badJson["error"] == "Sunucuya ulaşılamadı." && badJson["remote"].is_null(),
+          "error state carries its text; remote unknown is null");
+    check(!pools::itemJson(entry("a", 0, "", 0, "")).contains("error"), "error only for the error state");
+    check(pools::wanted(entry("a", 0, "", 40, "r4")) && pools::wanted(entry("a", 1, "r1", 2, "r2"))
+              && !pools::wanted(entry("a", 0, "", std::nullopt, "")) && !pools::wanted(entry("a", 0, "", 0, ""))
+              && !pools::wanted(entry("a", 2, "r2", 2, "r2", 2)),
+          "worth a download: missing (server count known) and outdated");
+    check(pools::hasLetters("Ölüm Yolu") && pools::hasLetters("GTA 5") && !pools::hasLetters("1234 _-") && !pools::hasLetters(""),
+          "a pool needs a name with a letter");
+
+    std::vector<Entry> list = {entry("zelda", 5, "r1", 5, "r1", 5),           // current
+                               entry("alan-wake", 0, "", 0, ""),              // empty
+                               entry("small-missing", 0, "", 12, "r2"),       // missing 12
+                               entry("big-outdated", 3, "r1", 900, "r9", 3),  // outdated 900
+                               entry("mid-missing", 0, "", 300, "r5"),        // missing 300
+                               entry("playing-game", 1, "r1", 1, "r1", 1)};   // current, playing
+    list[5].playing = true;
+    list[0].name = "Zelda";
+    list[1].name = "alan wake";
+    const json sorted = pools::listJson(list);
+    std::vector<std::string> order;
+    for (const json& j : sorted) order.push_back(j["slug"]);
+    check(order == std::vector<std::string>{"playing-game", "big-outdated", "mid-missing", "small-missing", "alan-wake", "zelda"},
+          "order: playing, outdated/missing by server count, the rest by name (case-insensitive)");
+    check(sorted[0]["playing"] == true && sorted[0]["state"] == "current" && sorted[0]["local"] == 1 && sorted[0]["remote"] == 1
+              && sorted[0].size() == 6,
+          "item fields: slug name local remote state playing");
+    std::vector<Entry> many;
+    for (int i = 0; i < 250; ++i) many.push_back(entry("g" + std::to_string(i), 0, "", 0, ""));
+    check(pools::listJson(many).size() == pools::kMaxItems, "capped at 200");
 }
 
 } // namespace
@@ -771,7 +854,7 @@ int main(int argc, char** argv)
         {"normalization", testNormalization}, {"garbage", testGarbage},   {"ocr_filter", testOcrFilter},
         {"subtitle", testSubtitle},           {"console", testConsole},   {"local_pool", testLocalPool},
         {"speaker", testSpeaker},             {"line_issues", testLineIssues}, {"clipped_edge", testClippedEdge},
-        {"fuzzy_match", testFuzzyMatch},     {"scene", testScene},
+        {"fuzzy_match", testFuzzyMatch},     {"scene", testScene},     {"pool_list", testPoolList},
     };
     const auto it = cases.find(name);
     if (it == cases.end()) {

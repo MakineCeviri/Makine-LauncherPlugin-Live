@@ -25,6 +25,7 @@ ships next to Makine-Launcher.exe.
 """
 
 import argparse
+import builtins
 import json
 import os
 import struct
@@ -34,6 +35,13 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from plugin_registry import check_manifest  # noqa: E402
+
+_print_lock = threading.Lock()
+
+
+def print(*args, **kwargs):  # noqa: A001 — the reader threads and the main thread print whole lines, one at a time
+    with _print_lock:
+        builtins.print(*args, **kwargs)
 
 
 class Host:
@@ -126,8 +134,10 @@ class Host:
             return ok(True)
         if method == "games.running":
             return ok(None)
-        if method == "games.list":
-            return ok([]) if needs("game-files-read") else None
+        if method == "games.list":   # MAKINE_DEV_GAMES='[{"name": "Heavy Rain"}]': a library to list
+            return ok(json.loads(os.environ.get("MAKINE_DEV_GAMES") or "[]")) if needs("game-files-read") else None
+        if method == "telemetry.logs" and os.environ.get("MAKINE_DEV_SENTRY_LOGS") == "1":
+            return ok(True)            # as the launcher with Sentry on: the log went to Sentry Logs
         if method == "games.requestAttach":
             if needs("process-inject"):
                 ok({"allowed": True, "gameId": params.get("gameId"), "name": "Dev Game", "installPath": ""})

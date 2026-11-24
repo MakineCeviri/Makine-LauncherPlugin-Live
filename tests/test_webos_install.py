@@ -30,12 +30,15 @@ PASS = "A1B2C3"
 class FakeLgTv:
     """old_ssh: gerçek LG'deki OpenSSH 6.1 gibi yalnızca ssh-rsa (SHA-1) imzası kabul eder, server-sig-algs bildirmez."""
 
-    def __init__(self, install_result="installed", old_ssh=True, silent=False):
+    def __init__(self, install_result="installed", old_ssh=True, silent=False, key_port=None, ssh_port=None,
+                 sftp=False):
         # Gerçek TV'de ölçülen (LG webOS 3.4.3): pty isteği kanalı kapatır; luna-send-pub çıktısı pty'siz anında gelir;
         # applicationManager/getAppInfo yok; kurulan uygulama /media/developer/apps/… altında.
         # silent: kurulum akışı hiç yanıt vermez ama kurulum yapılır (yalnızca appinfo.json ile anlaşılır).
+        # key_port / ssh_port: None = gerçek TV'deki kapılar (9991 / 9922); 0 = boş bir kapı (C++ testi, key_port / ssh_port'ta).
         self.old_ssh = old_ssh
         self.silent = silent
+        self.sftp = sftp                                 # SFTP alt sistemi (yoksa istemci cat > dosya yoluna düşer)
         self.installed_version = ""
         self.pty_channels = set()
         self.key = paramiko.RSAKey.generate(2048)
@@ -61,11 +64,14 @@ class FakeLgTv:
             def log_message(self, *_):
                 pass
 
-        self.http = http.server.ThreadingHTTPServer(("127.0.0.1", tv_install.WEBOS_KEY_PORT), KeyHandler)
+        self.http = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", tv_install.WEBOS_KEY_PORT if key_port is None else key_port), KeyHandler)
+        self.key_port = self.http.server_address[1]
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
         self.ssh = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.ssh.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.ssh.bind(("127.0.0.1", tv_install.WEBOS_SSH_PORT))
+        self.ssh.bind(("127.0.0.1", tv_install.WEBOS_SSH_PORT if ssh_port is None else ssh_port))
+        self.ssh_port = self.ssh.getsockname()[1]
         self.ssh.listen(4)
         threading.Thread(target=self._accept, daemon=True).start()
 
@@ -84,6 +90,8 @@ class FakeLgTv:
             disabled = {"pubkeys": ["rsa-sha2-512", "rsa-sha2-256"]} if self.old_ssh else None
             t = paramiko.Transport(conn, disabled_algorithms=disabled, server_sig_algs=not self.old_ssh)
             t.add_server_key(self.host_key)
+            if self.sftp:
+                t.set_subsystem_handler("sftp", paramiko.SFTPServer, _Sftp)
             t.start_server(server=_Server(self))
 
 
@@ -146,6 +154,27 @@ class _Server(paramiko.ServerInterface):
             ch.sendall(json.dumps({"id": tv_install.WEBOS_APP, "version": tv.installed_version}, indent=2).encode())
         ch.send_exit_status(0)
         ch.close()
+
+
+class _Sftp(paramiko.SFTPServerInterface):
+    """Yalnızca dosya yazma: yüklenen paket tv.files'a düşer."""
+
+    def __init__(self, server, *args, **kwargs):
+        super().__init__(server, *args, **kwargs)
+        self.tv = server.tv
+
+    def open(self, path, flags, attr):
+        tv, buf = self.tv, bytearray()
+
+        class Handle(paramiko.SFTPHandle):
+            def write(self, offset, data):
+                buf[offset:offset + len(data)] = data
+                return paramiko.SFTP_OK
+
+            def close(self):
+                tv.files[path] = bytes(buf)
+
+        return Handle(flags)
 
 
 def ports_free():

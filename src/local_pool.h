@@ -60,6 +60,7 @@ public:
 
     std::string slug, name, rev;
     double syncedAt = 0;
+    int serverCount = -1;   // the server's count at the last sync (-1: a file from before it was kept)
 
 private:
     friend class LocalPool;
@@ -84,6 +85,13 @@ struct SyncStats {
     bool unchanged = false;
 };
 
+/// A confirmed game's pool on this PC, for the pool list (its lines are not loaded for it).
+struct PoolSummary {
+    std::string slug, name, rev;   // rev as rev() gives it: "" when a full sync is due
+    int local = 0;                 // approved lines kept
+    int serverCount = -1;          // the server's count at the last sync (-1 unknown)
+};
+
 class LocalPool {
 public:
     explicit LocalPool(std::wstring dataDir);
@@ -93,6 +101,8 @@ public:
     void forget(const std::string& slug);
 
     std::shared_ptr<GamePool> get(const std::string& slug);
+    /// Every confirmed game, from games.json; a pool saved before the summary was kept is read once for it.
+    std::vector<PoolSummary> summaries();
     std::string rev(const std::string& slug);
     SyncStats applySync(const std::string& slug, const nlohmann::json& resp);
     std::optional<PoolHit> lookup(const std::string& slug, const std::string& text, bool fuzzy = true,
@@ -105,10 +115,11 @@ public:
 
 private:
     std::wstring file(const std::string& slug) const;
-    void writeGames(const nlohmann::json& games) const;
+    void writeGames() const;   // games.json as m_games is now; writers one at a time, so the newest state lands last
+    bool noteSummaryLocked(const std::string& slug, const GamePool& pool);   // true: games.json changed
 
     std::wstring m_dir;
-    mutable std::mutex m_mutex;
+    mutable std::mutex m_mutex, m_writeMutex;
     nlohmann::json m_games;   // {"confirmed": {slug: {name, t}}}
     std::map<std::string, std::shared_ptr<GamePool>> m_pools;
     std::map<std::string, std::map<int64_t, int>> m_hits;
