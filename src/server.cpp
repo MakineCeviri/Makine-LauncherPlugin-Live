@@ -213,6 +213,12 @@ ApiResult ServerClient::devicePoll(const std::string& deviceSecret)
     return call(L"GET", "/api/live/auth?action=device_poll&device=" + urlEncode(deviceSecret), nullptr, 6000);
 }
 
+ApiResult ServerClient::appLogin(const std::string& username, const std::string& password)
+{
+    const json body = {{"username", username}, {"password", password}, {"device", m_deviceName}};
+    return call(L"POST", "/api/live/auth?action=app_login", &body, 8000);
+}
+
 ApiResult ServerClient::me()
 {
     return call(L"GET", "/api/live/auth?action=app_me", nullptr, 5000);

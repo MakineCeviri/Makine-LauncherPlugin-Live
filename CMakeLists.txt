@@ -48,6 +48,7 @@ add_library(live-logic STATIC
     src/local_pool.cpp
     src/text_fix.cpp
     src/discord.cpp
+    src/hotkeys.cpp
     src/subtitle_web.cpp
     src/tv_link.cpp
     src/adb.cpp
@@ -154,7 +155,7 @@ live_warnings(live_outputs_test)
 if(MINGW)
     target_link_options(live_outputs_test PRIVATE -static)
 endif()
-foreach(case discord discord_pipe gzip adb_key web web_limits tv_link)
+foreach(case discord discord_pipe gzip adb_key web web_limits hotkeys tv_link)
     add_test(NAME ${case} COMMAND live_outputs_test ${case})
 endforeach()
 

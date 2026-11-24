@@ -165,6 +165,13 @@ unsigned long parentPid()   // the launcher that started this plugin host
     return parent;
 }
 
+constexpr size_t kHistoryLines = 50;
+
+const char* hotkeySetting(const std::string& action)
+{
+    return action == "start" ? "hotkeyStart" : action == "region" ? "hotkeyRegion" : "hotkeyMove";
+}
+
 std::string serverUrl()
 {
     // Development only (tools/offline.py): a local test server, as the harness allows
@@ -190,6 +197,7 @@ Engine::Engine(makine::plugin::Host host, EngineInit init)
     m_launcherPid = parentPid();
     m_startedAt = static_cast<int64_t>(std::time(nullptr));
     m_autoStart = flag(m_init.settings, "autoStart");
+    for (auto& [action, key] : m_hotkeyKeys) key = str(m_init.settings, hotkeySetting(action), key);
     if (m_init.settings.is_object() && m_init.settings.contains("usageReport") && m_init.settings["usageReport"].is_boolean())
         m_usageReport = m_init.settings["usageReport"].get<bool>();
     const std::string token = m_settings.get("authToken");
@@ -231,6 +239,10 @@ void Engine::launch()
     m_captureThread = std::thread([self = shared_from_this()] { self->runCapture(); });
     for (int i = 0; i < 2; ++i) m_netThreads.emplace_back([self = shared_from_this()] { self->runNet(); });
     startOutputs();
+    std::weak_ptr<Engine> weak = shared_from_this();
+    m_hotkeys = std::make_unique<Hotkeys>([weak](const std::string& action) {
+        if (const auto self = weak.lock()) self->onHotkey(action);
+    });
     if (m_loginState == "checking") post([this] { validateSession(); });
     post([this] { statusLoop(); });
     post([this] {   // the game the launcher already sees running
@@ -243,6 +255,7 @@ void Engine::launch()
 
 void Engine::shutdown()
 {
+    if (m_hotkeys) m_hotkeys->configure({});
     {
         std::lock_guard lock(m_mutex);
         m_quit = true;
@@ -292,7 +305,9 @@ json Engine::stateLocked() const
     const bool console = m_mode == "console";
     json state = {
         {"login", {{"state", m_loginState}, {"code", m_loginCode}, {"url", m_loginUrl}, {"user", m_user},
-                   {"message", m_loginMessage}}},
+                   {"role", m_role}, {"message", m_loginMessage}}},
+        {"history", json(m_history)},
+        {"boxMove", {{"on", m_boxMovable}, {"supported", m_boxMoveSupported}}},
         {"mode", m_mode},
         {"sources", m_sources},
         {"selectedSource", selected},
@@ -315,6 +330,17 @@ json Engine::stateLocked() const
                   {"slug", console ? console::kGameSlug : m_gameSlug}}},
     };
     state["reason"] = reasonLocked();
+    {
+        const json registered = m_hotkeys ? m_hotkeys->state() : json::object();
+        json keys = json::object();
+        for (const auto& [action, key] : m_hotkeyKeys) {
+            keys[action] = registered.contains(action) ? registered[action]
+                                                       : json{{"key", key}, {"active", false}, {"error", ""}};
+            keys[action]["key"] = key;
+        }
+        // armed: signed in with a game (or console mode) — only then are the keys taken from other programs
+        state["hotkeys"] = {{"armed", m_hotkeysArmed}, {"keys", keys}};
+    }
     const json outputs = outputsStateLocked();   // a named value: items() of a temporary would dangle
     for (const auto& [k, v] : outputs.items()) state[k] = v;
     return state;
@@ -540,6 +566,15 @@ Result Engine::invoke(std::string_view method, const json& params)
         return Result::ok(dump(stateLocked()));
     }
     if (method == "login.start") return loginStart();
+    if (method == "login.team") return loginTeam(params);
+    if (method == "box.move") {
+        bool on = false;
+        {
+            std::lock_guard lock(m_mutex);
+            on = params.is_object() && params.contains("on") ? flag(params, "on") : !m_boxMovable;
+        }
+        return setBoxMovable(on);
+    }
     if (method == "login.cancel") {
         {
             std::lock_guard lock(m_mutex);
@@ -577,6 +612,7 @@ Result Engine::invoke(std::string_view method, const json& params)
         }
         m_captureCv.notify_all();
         stopIfConsentMissing();
+        syncHotkeys();
         applyOutputs();
         post([this] { syncPool(true); });
         return okMessage(mode == "console" ? "Konsol modu" : "PC modu");
@@ -665,11 +701,21 @@ void Engine::onEvent(std::string_view event, const json& payload)
         }
         logLine(MAKINE_LOG_INFO, "Oyun: " + name);
         stopIfConsentMissing();
+        syncHotkeys();
         publish();
         post([this] { syncPool(true); });
         maybeAutoStart();
     } else if (event == "settings.changed") {
         const std::string key = str(payload, "key");
+        for (const char* action : {"start", "region", "move"}) {
+            if (key != hotkeySetting(action)) continue;
+            {
+                std::lock_guard lock(m_mutex);
+                m_hotkeyKeys[action] = str(payload, "value", "off");
+            }
+            syncHotkeys();
+            return publish();
+        }
         if (key != "autoStart" && key != "usageReport") return;
         const bool on = flag(payload, "value");
         int gen = 0;
@@ -689,8 +735,145 @@ void Engine::onEvent(std::string_view event, const json& payload)
             m_gameExe.clear();
         }
         m_captureCv.notify_all();
+        syncHotkeys();
         publish();
     }
+}
+
+void Engine::addHistoryLocked(const std::string& source, const std::string& text, const std::string& kind,
+                              const std::string& origin)
+{
+    const auto cut = [](const std::string& s) {   // whole characters, at most 300
+        const std::u32string u = text::fromUtf8(s);
+        return u.size() <= 300 ? s : text::toUtf8(u.substr(0, 300));
+    };
+    m_history.push_front({{"source", cut(source)}, {"text", cut(text)}, {"kind", kind}, {"origin", origin},
+                          {"at", static_cast<int64_t>(std::time(nullptr))}});
+    while (m_history.size() > kHistoryLines) m_history.pop_back();
+}
+
+void Engine::syncHotkeys()
+{
+    std::vector<Hotkeys::Binding> bindings;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_hotkeys) return;
+        // RegisterHotKey takes the key from every other program, the game too: only while there is
+        // something to read (signed in, and a game running or console mode)
+        m_hotkeysArmed = m_loginState == "signedIn" && (m_mode == "console" || !m_gameName.empty()) && !m_quit;
+        if (m_hotkeysArmed)
+            for (const auto& [action, key] : m_hotkeyKeys) bindings.push_back({action, key});
+    }
+    m_hotkeys->configure(bindings);
+}
+
+void Engine::onHotkey(const std::string& action)
+{
+    post([this, action] {   // never on the key thread: a start or a pick may wait on the launcher
+        Result r = Result::ok();
+        if (action == "start") {
+            bool running = false;
+            {
+                std::lock_guard lock(m_mutex);
+                running = m_running;
+            }
+            r = invoke(running ? "stop" : "start", json::object());
+        } else if (action == "region") {
+            r = pickRegion();
+        } else if (action == "move") {
+            bool on = false;
+            {
+                std::lock_guard lock(m_mutex);
+                on = !m_boxMovable;
+            }
+            r = setBoxMovable(on);
+        }
+        if (!r.succeeded()) {   // the player is in the game: say it where the launcher shows notices
+            const json m = json::parse(r.json, nullptr, false);
+            m_host.emitEvent("ui.notify", dump({{"title", "Makine Live"}, {"message", str(m, "message")}, {"kind", "info"}}));
+        }
+    });
+}
+
+Result Engine::setBoxMovable(bool on)
+{
+    // overlay.setMovable (optional host method, launcher 0.3+): the subtitle box takes the mouse and can be
+    // dragged; turning it off answers where it was left ({x, y}: the box centre as screen fractions)
+    const Result r = m_host.call("overlay.setMovable", dump({{"on", on}}));
+    if (r.status == MAKINE_E_NOT_FOUND || r.status == MAKINE_E_UNSUPPORTED) {
+        {
+            std::lock_guard lock(m_mutex);
+            m_boxMovable = false;
+            m_boxMoveSupported = false;
+        }
+        publish();
+        return Result::error(MAKINE_E_UNSUPPORTED, "Bu Makine sürümü altyazı kutusunu taşımayı henüz desteklemiyor.");
+    }
+    if (!r.succeeded()) return r;
+    const json where = json::parse(r.json, nullptr, false);
+    bool moved = false;
+    {
+        std::lock_guard lock(m_mutex);
+        m_boxMovable = on;
+        m_boxMoveSupported = true;
+        const double x = num(where, "x", -1), y = num(where, "y", -1);
+        if (!on && x >= 0 && x <= 1 && y >= 0 && y <= 1) {
+            m_style["boxX"] = x;
+            m_style["boxY"] = y;
+            ++m_styleVersion;
+            saveSettings();
+            moved = true;
+        }
+    }
+    if (moved) {
+        m_captureCv.notify_all();
+        applyStyleOutputs();
+    }
+    publish();
+    return okMessage(on ? "Kutuyu oyunda sürükle; bitince yeniden bas." : "Kutu kilitlendi.");
+}
+
+Result Engine::loginTeam(const json& params)
+{
+    // Team accounts (admin, translator, tester): username and password. The password lives only in this
+    // call: never stored, never logged; the token it brings is kept like the device login's (DPAPI).
+    std::string username = str(params, "username"), password = str(params, "password");
+    while (!username.empty() && username.back() == ' ') username.pop_back();
+    while (!username.empty() && username.front() == ' ') username.erase(0, 1);
+    if (username.empty() || password.empty())
+        return Result::error(MAKINE_E_INVALID_ARGUMENT, "Kullanıcı adı ve şifre gerekli.");
+    int gen = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_loginState == "signedIn") return okMessage("Zaten giriş yapıldı.");
+        gen = ++m_loginGen;
+        m_loginState = "starting";
+        m_loginCode.clear();
+        m_loginUrl.clear();
+        m_loginMessage = "Giriş yapılıyor…";
+    }
+    publish();
+    post([this, gen, username, password]() mutable {
+        const ApiResult r = m_server.appLogin(username, password);
+        SecureZeroMemory(password.data(), password.size());
+        const bool ok = r.ok() && validToken(str(r.data, "token"));
+        {
+            std::lock_guard lock(m_mutex);
+            if (gen != m_loginGen) return;
+            if (ok) {
+                ++m_loginGen;
+                m_server.setToken(str(r.data, "token"));
+            } else {
+                m_loginState = "signedOut";
+                m_loginMessage = r.network() ? "Sunucuya ulaşılamıyor. İnternet bağlantınızı kontrol edin."
+                                 : r.ok()    ? "Giriş yapılamadı. Biraz sonra tekrar deneyin."
+                                 : r.error;
+            }
+        }
+        if (ok) return signedIn(r.data);
+        publish();
+    });
+    return okMessage("Giriş yapılıyor…");
 }
 
 Result Engine::loginStart()
@@ -781,6 +964,7 @@ void Engine::signedIn(const json& profile)
         std::lock_guard lock(m_mutex);
         m_loginState = "signedIn";
         m_user = str(profile, "user", m_user);
+        m_role = str(profile, "role", m_role);
         m_loginCode.clear();
         m_loginUrl.clear();
         m_loginMessage.clear();
@@ -789,6 +973,7 @@ void Engine::signedIn(const json& profile)
         saveSettings();
     }
     logLine(MAKINE_LOG_INFO, "Giriş: " + m_user);
+    syncHotkeys();
     publish();
     post([this] { syncPool(true); });
     bool start = false;
@@ -814,11 +999,13 @@ void Engine::signedOut(const std::string& message)
         m_loginUrl.clear();
         m_loginMessage = message;
         m_user.clear();
+        m_role.clear();
         ++m_beatGen;
         m_running = false;
         saveSettings();
     }
     m_captureCv.notify_all();
+    syncHotkeys();
     publish();
 }
 
@@ -1167,6 +1354,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
                 ++m_linesTotal;
                 ++m_sessionLines;
                 m_lastLine = {{"source", textUtf8}, {"text", hit->translation}, {"kind", "verified"}, {"origin", "local"}};
+                addHistoryLocked(textUtf8, hit->translation, "verified", "local");
             }
             finish(hit->translation, "verified");
             return publish();
@@ -1284,6 +1472,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
             ++(kind == "api" ? m_apiCount : m_poolCount);
             m_lastLine = {{"source", textUtf8}, {"text", translated}, {"kind", kind},
                           {"origin", str(res.data, "origin", "deepl")}};
+            addHistoryLocked(textUtf8, translated, kind, str(res.data, "origin", "deepl"));
         }
         m_results.push_back({line, translated, kind});
     }

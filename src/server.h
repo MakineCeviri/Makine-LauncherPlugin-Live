@@ -40,6 +40,7 @@ public:
     ApiResult deviceStart();                                   // {device, code, url, expires_in, interval}
     ApiResult devicePoll(const std::string& deviceSecret);     // status "approved" → token, once
     ApiResult me();
+    ApiResult appLogin(const std::string& username, const std::string& password);   // team accounts
     ApiResult logout();
     ApiResult translate(const std::string& game, const std::string& gameName, const std::string& text,
                         const std::string& sourceLang, const std::string& targetLang);

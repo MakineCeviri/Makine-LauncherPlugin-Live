@@ -3,11 +3,12 @@
 
 // Discord activity, the stored gzip, the ADB key (signature checked the way adbd checks it),
 // the phone / OBS web server over real sockets and the Makine TV link against a fake TV.
-//   live_outputs_test <case>     cases: discord discord_pipe gzip adb_key web web_limits tv_link
+//   live_outputs_test <case>     cases: discord discord_pipe gzip adb_key web web_limits hotkeys tv_link
 
 #include "adb.h"
 #include "discord.h"
 #include "gzip_store.h"
+#include "hotkeys.h"
 #include "subtitle_web.h"
 #include "tv_link.h"
 
@@ -24,6 +25,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <thread>
@@ -285,6 +287,49 @@ void testWeb()
     check(dial(port) == INVALID_SOCKET, "port closed after stop");
 }
 
+void testHotkeys()
+{
+    check(Hotkeys::virtualKey("F9") == VK_F9 && Hotkeys::virtualKey("F12") == VK_F12 && !Hotkeys::virtualKey("F13")
+              && !Hotkeys::virtualKey("off") && !Hotkeys::virtualKey("F"),
+          "key names");
+    std::mutex m;
+    std::vector<std::string> fired;
+    Hotkeys keys([&](const std::string& action) {
+        std::lock_guard lock(m);
+        fired.push_back(action);
+    });
+    keys.configure({{"start", "F7"}, {"region", "off"}});
+    json s = keys.state();
+    check(s["start"]["active"] == true && s["region"]["active"] == false && s["region"]["error"] == "",
+          "F7 taken, the key set to off is not");
+    // A second owner of the same key: the failure is reported, not swallowed
+    Hotkeys other([](const std::string&) {});
+    other.configure({{"start", "F7"}});
+    s = other.state();
+    check(s["start"]["active"] == false && s["start"]["error"].get<std::string>().find("başka bir programda") != std::string::npos,
+          "a key another program holds is reported");
+    // WM_HOTKEY as Windows sends it for binding 1 (no real key press: the test must not type into the desktop)
+    // (both instances have a window; the other one's action does nothing)
+    int windows = 0;
+    for (HWND w = nullptr; (w = FindWindowExW(HWND_MESSAGE, w, L"MakineLiveHotkeys", nullptr)) != nullptr; ++windows)
+        PostMessageW(w, WM_HOTKEY, 1, 0);
+    check(windows == 2, "message-only windows");
+    for (int i = 0; i < 50; ++i) {
+        {
+            std::lock_guard lock(m);
+            if (!fired.empty()) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    {
+        std::lock_guard lock(m);
+        check(fired.size() == 1 && fired[0] == "start", "the key fires its action");
+    }
+    keys.configure({});
+    other.configure({{"start", "F7"}});
+    check(other.state()["start"]["active"] == true, "released keys are free again");
+}
+
 void testWebLimits()
 {
     auto web = std::make_shared<SubtitleWeb>("LOGO");
@@ -413,7 +458,7 @@ int main(int argc, char** argv)
     WSADATA d;
     WSAStartup(MAKEWORD(2, 2), &d);
     const std::map<std::string, std::function<void()>> cases{
-        {"discord", testDiscord}, {"discord_pipe", testDiscordPipe}, {"gzip", testGzip}, {"adb_key", testAdbKey}, {"web", testWeb}, {"web_limits", testWebLimits}, {"tv_link", testTvLink}};
+        {"discord", testDiscord}, {"discord_pipe", testDiscordPipe}, {"gzip", testGzip}, {"adb_key", testAdbKey}, {"web", testWeb}, {"web_limits", testWebLimits}, {"hotkeys", testHotkeys}, {"tv_link", testTvLink}};
     const auto it = argc > 1 ? cases.find(argv[1]) : cases.end();
     if (it == cases.end()) {
         std::printf("usage: live_outputs_test discord|gzip|adb_key|web|tv_link\n");

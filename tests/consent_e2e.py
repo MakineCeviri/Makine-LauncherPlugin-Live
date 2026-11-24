@@ -161,7 +161,31 @@ check(st2["login"]["state"] == "signedIn", "the login is kept")
 check(st2.get("consoleConsent") is True, "consent is kept")
 check(st2.get("style", {}).get("size") == 37, "the last style tick is kept (saved at shutdown)")
 check(st2.get("running") is False, "nothing reads before the player starts it")
+check(st2.get("history") == [], "an empty session history")
+
+# hotkeys: taken only with a game (or console mode) while signed in; F9 by default
+check(st2["hotkeys"]["armed"] is False and st2["hotkeys"]["keys"]["start"]["key"] == "F9", "no game: keys left alone")
+i = s.cmd('!game.started {"gameId":"g","name":"Test Game","pid":1234,"exe":"C:\\\\Games\\\\game.exe"}', 1)
+hk = s.state(i)["hotkeys"]
+check(hk["armed"] is True and all(k["active"] or k["error"] for k in hk["keys"].values()),
+      "a game: keys taken, or the reason they are not " + json.dumps(hk["keys"], ensure_ascii=False))
+i = s.cmd("box.move {}")
+check("desteklemiyor" in s.reply(i) and s.state()["boxMove"]["supported"] is False,
+      "box move without overlay.setMovable: unsupported, said plainly")
+i = s.cmd('!game.stopped {"gameId":"g"}')
+check(s.state(i)["hotkeys"]["armed"] is False, "game closed: keys given back")
+
+# team account: username + password, the password never written
+s.cmd("logout {}", 1.5)
+check(s.wait_for(lambda st: st["login"]["state"] == "signedOut", 10)["login"]["state"] == "signedOut", "signed out")
+PASSWORD = "parola-e2e-7319"
+s.cmd('login.team {"username":"ekip","password":"%s"}' % PASSWORD, 1)
+st3 = s.wait_for(lambda st: st["login"]["state"] == "signedIn", 10)
+check(st3["login"]["state"] == "signedIn" and st3["login"]["user"] == "ekip" and st3["login"]["role"] == "admin",
+      "team login with username and password")
 s.quit()
+stored = open(os.path.join(DATA, "settings.cfg"), "rb").read()
+check(PASSWORD.encode() not in stored and "ekip".encode() in stored, "the password is not stored, the session is")
 
 server.shutdown()
 shutil.rmtree(DATA, ignore_errors=True)

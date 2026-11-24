@@ -18,6 +18,7 @@
 #include "discord.h"
 #include "console_mode.h"
 #include "garbage.h"
+#include "hotkeys.h"
 #include "local_pool.h"
 #include "ocr_ort.h"
 #include "server.h"
@@ -82,6 +83,8 @@ private:
 
     // host thread
     makine::plugin::Result loginStart();
+    makine::plugin::Result loginTeam(const nlohmann::json& params);
+    makine::plugin::Result setBoxMovable(bool on);
     makine::plugin::Result pickRegion();
     makine::plugin::Result readOnce();
     makine::plugin::Result startReading();
@@ -96,6 +99,10 @@ private:
     void refreshStatus();
     void statusLoop();
     void syncPool(bool force);
+    void syncHotkeys();                       // never under m_mutex
+    void onHotkey(const std::string& action);
+    void addHistoryLocked(const std::string& source, const std::string& text, const std::string& kind,
+                          const std::string& origin);
     // ocrUs: wall-clock start/end (µs) of the OCR run that read the line, for a sampled span; {0, 0} when unknown.
     void translateJob(int line, std::string text, int seq, std::string slug, std::string gameName,
                       std::pair<uint64_t, uint64_t> ocrUs = {});
@@ -167,7 +174,7 @@ private:
     std::deque<std::function<void()>> m_captureJobs;
     std::vector<Job> m_jobs;
     // screen state
-    std::string m_loginState = "signedOut", m_loginCode, m_loginUrl, m_loginMessage, m_user;
+    std::string m_loginState = "signedOut", m_loginCode, m_loginUrl, m_loginMessage, m_user, m_role;
     int m_loginGen = 0;
     std::string m_mode = "pc";
     std::optional<console::Box> m_pcRegion;
@@ -180,6 +187,10 @@ private:
     bool m_running = false, m_picking = false;
     std::string m_status = "Hazır";
     nlohmann::json m_lastLine = nullptr;
+    std::deque<nlohmann::json> m_history;     // this session's lines, newest first (ui.state history)
+    std::map<std::string, std::string> m_hotkeyKeys{{"start", "F9"}, {"region", "F10"}, {"move", "F8"}};
+    bool m_hotkeysArmed = false;
+    bool m_boxMovable = false, m_boxMoveSupported = true;
     int m_lines = 0, m_poolHits = 0;
     bool m_maintenance = false, m_blocked = false;
     std::string m_serverMessage, m_notice;
@@ -254,6 +265,7 @@ private:
     std::shared_ptr<DiscordPresence> m_discord;
     std::shared_ptr<SubtitleWeb> m_web;
     std::shared_ptr<TvLink> m_tv;
+    std::unique_ptr<Hotkeys> m_hotkeys;
     adb::Key m_adbKey;
     int m_lineSeq = 0;      // capture thread
     bool m_boxShown = false;

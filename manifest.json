@@ -22,7 +22,15 @@
         "description": "Giriş yaptıysan ve bölge seçtiysen, oyun açılınca okumaya başlar.", "default": false },
       { "key": "usageReport", "type": "toggle", "label": "Kullanım bildirimini gönder",
         "description": "Beş dakikada bir oyun, mod, çevrilen satır sayısı ve sistem bilgisi Makine Live ekibine gider. Ekran görüntüsü ve okunan metin gitmez.",
-        "default": true }
+        "default": true },
+      { "key": "hotkeyStart", "type": "select", "label": "Başlat / durdur kısayolu",
+        "description": "Oyundan çıkmadan okumayı başlatır ya da durdurur. Seçtiğin tuş oyun açıkken başka programlara gitmez.",
+        "options": [ "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", { "value": "off", "label": "Kapalı" } ], "default": "F9" },
+      { "key": "hotkeyRegion", "type": "select", "label": "Bölge seçme kısayolu",
+        "options": [ "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", { "value": "off", "label": "Kapalı" } ], "default": "F10" },
+      { "key": "hotkeyMove", "type": "select", "label": "Altyazı kutusunu taşıma kısayolu",
+        "description": "Bir basışta kutu sürüklenebilir olur, ikinci basışta yerine kilitlenir.",
+        "options": [ "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", { "value": "off", "label": "Kapalı" } ], "default": "F8" }
     ],
     "events": [ "game.started", "game.stopped", "settings.changed" ]
   }
