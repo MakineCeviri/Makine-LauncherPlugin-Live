@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -109,6 +110,47 @@ bool keysSimilar(const std::u32string& a, const std::u32string& b)
     return boundedLevenshtein(a, b, limit) <= limit;
 }
 
+bool keysSameLine(const std::u32string& a, const std::u32string& b)
+{
+    if (!keysSimilar(a, b)) return false;
+    const size_t n = 6;
+    const auto head = [&](const std::u32string& s) { return s.substr(0, n); };
+    const auto tail = [&](const std::u32string& s) { return s.size() <= n ? s : s.substr(s.size() - n); };
+    return boundedLevenshtein(head(a), head(b), 1) <= 1 && boundedLevenshtein(tail(a), tail(b), 1) <= 1;
+}
+
+// /(?<![\p{L}\p{N}])(?:not|no|never|nothing|nobody|none|nor|cannot|nope|(?:do|does|…|need)n['’]?t)(?![\p{L}\p{N}])/
+// over the normalized text, in token steps
+int negationCount(std::string_view textUtf8)
+{
+    static const std::set<std::u32string> words{U"not", U"no", U"never", U"nothing", U"nobody", U"none", U"nor", U"cannot", U"nope"};
+    static const std::set<std::u32string> aux{U"do", U"does", U"did", U"is", U"are", U"was", U"were", U"ca", U"can", U"could",
+                                              U"wo", U"would", U"should", U"have", U"has", U"had", U"ai", U"must", U"need"};
+    const std::u32string t = text::normalizeDialogue(text::fromUtf8(textUtf8));
+    const auto alnum = [&](size_t i) { return i < t.size() && (text::isAlpha(t[i]) || text::isNumber(t[i])); };
+    int count = 0;
+    for (size_t i = 0; i < t.size();) {
+        if (!alnum(i)) {
+            ++i;
+            continue;
+        }
+        size_t e = i;
+        while (alnum(e)) ++e;
+        const std::u32string run = t.substr(i, e - i);
+        if (words.count(run)) {
+            ++count;
+        } else if (run.size() > 2 && run.compare(run.size() - 2, 2, U"nt") == 0 && aux.count(run.substr(0, run.size() - 2))) {
+            ++count;   // "dont", "cant"
+        } else if (run.size() > 1 && run.back() == U'n' && aux.count(run.substr(0, run.size() - 1)) && e + 1 < t.size()
+                   && (t[e] == U'\'' || t[e] == U'’') && t[e + 1] == U't' && !alnum(e + 2)) {
+            ++count;   // "don't", "can't"
+            e += 2;
+        }
+        i = e;
+    }
+    return count;
+}
+
 // ── GamePool ────────────────────────────────────────────────────────────────
 
 GamePool::GamePool(std::string slug_, std::string name_, std::string rev_, const json& items, double syncedAt_)
@@ -137,14 +179,15 @@ GamePool::GamePool(std::string slug_, std::string name_, std::string rev_, const
     }
 }
 
-std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8) const
+std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8, bool fuzzy) const
 {
     const std::u32string key = text::compactPoolKey(text::fromUtf8(textUtf8));
     if (key.empty()) return std::nullopt;
     if (const auto it = m_byKey.find(key); it != m_byKey.end())
         return PoolHit{it->second, m_items.at(it->second).translation, true};
     const size_t n = key.size();
-    if (n < kFuzzyMinKeyLen) return std::nullopt;
+    if (!fuzzy || n < kFuzzyMinKeyLen) return std::nullopt;
+    const int negations = negationCount(textUtf8);
     {
         std::lock_guard lock(m_fuzzyMutex);
         if (const auto it = m_fuzzy.find(key); it != m_fuzzy.end()) {
@@ -161,7 +204,8 @@ std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8) const
         if (bucket == m_byLen.end()) continue;
         for (const int64_t cand : bucket->second) {
             const std::u32string& k = m_items.at(cand).key;
-            if (!keysSimilar(key, k)) continue;
+            // the server's sameLine: held to both ends, and as many negations ("NOT Resuscitate" ≠ "Resuscitate")
+            if (!keysSameLine(key, k) || negationCount(m_items.at(cand).source) != negations) continue;
             const int dist = boundedLevenshtein(key, k, static_cast<int>(std::max(key.size(), k.size())));
             if (!best || dist < bestDist) {
                 best = cand;
@@ -299,11 +343,11 @@ SyncStats LocalPool::applySync(const std::string& slug, const json& resp)
     return st;
 }
 
-std::optional<PoolHit> LocalPool::lookup(const std::string& slug, const std::string& text)
+std::optional<PoolHit> LocalPool::lookup(const std::string& slug, const std::string& text, bool fuzzy)
 {
     const auto p = get(slug);
     if (!p) return std::nullopt;
-    auto hit = p->lookup(text);
+    auto hit = p->lookup(text, fuzzy);
     if (hit) {
         std::lock_guard lock(m_mutex);
         ++m_hits[slug][hit->id];

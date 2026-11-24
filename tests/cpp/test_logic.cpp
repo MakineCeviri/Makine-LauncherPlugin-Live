@@ -134,6 +134,35 @@ void testLineIssues()
     check(garbage().isEnglishWord("fuckin'") && !garbage().isEnglishWord("ook"), "isEnglishWord");
 }
 
+// The server's sameLine (src/live/text.ts) as the local pool applies it: bare keys held to both ends,
+// as many negations
+bool sameLine(const std::string& a, const std::string& b)
+{
+    return keysSameLine(text::compactPoolKey(text::fromUtf8(garbage().readLine(a).line)),
+                        text::compactPoolKey(text::fromUtf8(garbage().readLine(b).line)))
+           && negationCount(a) == negationCount(b);
+}
+
+void testFuzzyMatch()
+{
+    const json doc = loadJson(L"\\spec\\fuzzy_match_vectors.json");
+    for (const json& c : doc["cases"]) {
+        const std::string a = c["a"], b = c["b"];
+        check(sameLine(a, b) == c["same"].get<bool>(), json(a).dump() + " <> " + json(b).dump() + " ("
+                                                           + c.value("why", std::string()) + ")");
+    }
+    check(negationCount("I can't, I won't. No. Not ever, nothing.") == 5, "negations counted");
+    check(negationCount("I want a front seat at the point") == 0, "no negation inside words");
+    // the pool's near match follows it: a negation more is another line
+    const std::string src = "I'll take one too, then! NOT Resuscitate Sure, man. Why not?";
+    GamePool p("grand-theft-auto-vi", "Grand Theft Auto VI", "r1",
+               json::array({json::array({1, text::compactPoolKey(src), src, "Ben de alayım!"})}), 0);
+    check(!p.lookup("I'll take one too, then! Resuscirate Sure, man. Why not?"), "NOT Resuscitate never serves Resuscitate");
+    const std::string oneOff = "I'll take one too, then! NOT Resusitate Sure, man. Why not?";
+    check(p.lookup(oneOff).has_value(), "one letter off: the same line still hits");
+    check(!p.lookup(oneOff, false), "a reading with a hard issue: exact key only");
+}
+
 void testClippedEdge()
 {
     const json doc = loadJson(L"\\spec\\clipped_edge_vectors.json");
@@ -689,6 +718,7 @@ int main(int argc, char** argv)
         {"normalization", testNormalization}, {"garbage", testGarbage},   {"ocr_filter", testOcrFilter},
         {"subtitle", testSubtitle},           {"console", testConsole},   {"local_pool", testLocalPool},
         {"speaker", testSpeaker},             {"line_issues", testLineIssues}, {"clipped_edge", testClippedEdge},
+        {"fuzzy_match", testFuzzyMatch},
     };
     const auto it = cases.find(name);
     if (it == cases.end()) {

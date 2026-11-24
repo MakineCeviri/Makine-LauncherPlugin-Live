@@ -17,6 +17,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -24,6 +25,11 @@ namespace live {
 
 int boundedLevenshtein(const std::u32string& a, const std::u32string& b, int limit);
 bool keysSimilar(const std::u32string& a, const std::u32string& b);
+/// keysSimilar held to the line's ends: the first and last six letters each within one edit (the server's
+/// keysSameLine). A word more at either end is another subtitle read with it.
+bool keysSameLine(const std::u32string& a, const std::u32string& b);
+/// Negations in a reading (not, never, can't, don't…): "I can do it" is never "I can't do it".
+int negationCount(std::string_view text);
 
 struct PoolHit {
     int64_t id = 0;
@@ -35,7 +41,8 @@ class GamePool {
 public:
     GamePool(std::string slug, std::string name, std::string rev, const nlohmann::json& items, double syncedAt);
 
-    std::optional<PoolHit> lookup(const std::string& text) const;
+    /// fuzzy: also a near match by the server's sameLine rule; only for a clean reading (no hard issue).
+    std::optional<PoolHit> lookup(const std::string& text, bool fuzzy = true) const;
     /// Exact pool key only (K12): safe on a line's very first reading, no similar-line guess.
     std::optional<PoolHit> lookupExact(const std::string& text) const;
     nlohmann::json toJson() const;
@@ -74,7 +81,7 @@ public:
     std::shared_ptr<GamePool> get(const std::string& slug);
     std::string rev(const std::string& slug);
     SyncStats applySync(const std::string& slug, const nlohmann::json& resp);
-    std::optional<PoolHit> lookup(const std::string& slug, const std::string& text);
+    std::optional<PoolHit> lookup(const std::string& slug, const std::string& text, bool fuzzy = true);
     std::optional<PoolHit> lookupExact(const std::string& slug, const std::string& text);   // no hit counted
     std::map<int64_t, int> takeHits(const std::string& slug);
     void returnHits(const std::string& slug, const std::map<int64_t, int>& hits);

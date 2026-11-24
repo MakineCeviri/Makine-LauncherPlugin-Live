@@ -1522,7 +1522,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
     bool fresh = false;   // a part came from the pool or the server, not the cache: counters changed
     for (const std::string& part : parts) {
         const text::ReadLine rl = m_garbage.readLine(part, kSourceLang);
-        const auto [translated, partKind] = translatePart(line, part, rl.line, slug, gameName, ocrUs, rl.prefix, fresh);
+        const auto [translated, partKind] = translatePart(line, part, rl.line, slug, gameName, ocrUs, rl.prefix, !rl.hard, fresh);
         if (translated.empty()) continue;
         shown += (shown.empty() ? "" : "\n") + rl.prefix + translated;
         if (kind.empty() || rankOf(partKind) < rankOf(kind)) kind = partKind;
@@ -1538,7 +1538,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
 std::pair<std::string, std::string> Engine::translatePart(int line, const std::string& textUtf8, const std::string& bare,
                                                           const std::string& slug, const std::string& gameName,
                                                           std::pair<uint64_t, uint64_t> ocrUs, const std::string& prefix,
-                                                          bool& fresh)
+                                                          bool clean, bool& fresh)
 {
     const std::u32string key = text::compactPoolKey(text::fromUtf8(bare));
     std::string poolSlug;
@@ -1547,7 +1547,7 @@ std::pair<std::string, std::string> Engine::translatePart(int line, const std::s
         poolSlug = m_poolSlug;
     }
     if (!slug.empty() && slug == poolSlug) {
-        if (const auto hit = m_pool.lookup(slug, bare)) {
+        if (const auto hit = m_pool.lookup(slug, bare, clean)) {   // a cut or merged reading: exact key only
             {
                 std::lock_guard lock(m_mutex);
                 ++m_poolHits;
@@ -1640,9 +1640,11 @@ std::pair<std::string, std::string> Engine::translatePart(int line, const std::s
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
     const std::string translated = res.ok() ? str(res.data, "translated") : std::string();
+    // verified only for an approved pool line; a provisional pool answer is pending, a shared or own one
+    // (DeepL's text another player already got) is machine — never shown as approved
     std::string kind = "api";
     if (!translated.empty() && str(res.data, "origin", "deepl") == "pool")
-        kind = str(res.data, "status", "pending") == "verified" ? "verified" : "pending";
+        kind = str(res.data, "status", "pending") == "verified" && !flag(res.data, "provisional") ? "verified" : "pending";
     {
         std::lock_guard lock(m_mutex);
         if (!notice.empty()) {

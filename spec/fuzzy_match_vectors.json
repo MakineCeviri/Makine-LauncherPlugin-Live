@@ -1,0 +1,183 @@
+{
+ "note": "sameLine (src/live/text.ts): a labelled sample of GTA VI pool pairs, 2026-11-24. same=false pairs must never match: serving one's translation for the other would be wrong (G-WRONG). The app's local-pool fuzzy match follows the same rule.",
+ "cases": [
+  {
+   "a": "You wanted to talk?",
+   "b": "You wanted to ta ik?",
+   "same": true
+  },
+  {
+   "a": "Hang out with your friends",
+   "b": "Hana out with vour friends",
+   "same": true
+  },
+  {
+   "a": "Vicki: The gems only find you if you're wiling to dig for 'em.",
+   "b": "The gems only find you if you're willing to dig for 'em.",
+   "same": true
+  },
+  {
+   "a": "Yo, nothing weird, but it's not delivering pizzas, either.",
+   "b": "Billy: Yo, nothing weird, but it's not del live ring pizzas, either.",
+   "same": true
+  },
+  {
+   "a": "Jason: It wasn't sweet. I quit because I didn't give a shit.",
+   "b": "It wasn't sweet. I quit i because I didn't give a shit.",
+   "same": true
+  },
+  {
+   "a": "Son of a goddamn ball sack! Yhy the hell wouldn't they park on their side?",
+   "b": "Son of a goddamn ball sack! Why the hell wouldn't they park on their side?",
+   "same": true
+  },
+  {
+   "a": "Take vour shot",
+   "b": "Take your shot",
+   "same": true
+  },
+  {
+   "a": "Eollow the manager",
+   "b": "Follow the manager",
+   "same": true
+  },
+  {
+   "a": "Cal: I mean he's a pilot, man, he could be IAA!",
+   "b": "I mean he's a pilot, man, he could be lAA!",
+   "same": true
+  },
+  {
+   "a": "Dkay... let's get this done as fast as possible...",
+   "b": "Okay... let's get this done as fast as possible...",
+   "same": true
+  },
+  {
+   "a": "What are you talking about, bro?",
+   "b": "What are you talking about oro?",
+   "same": true
+  },
+  {
+   "a": "Now, you're looking at our finest .9mm aluminum gold alloy chain..",
+   "b": "Clerk: Now, you're looking at our finest .9mm aluminum gold allo) chain...",
+   "same": true
+  },
+  {
+   "a": "Unless... you want me to?",
+   "b": "Unles... you want me to?",
+   "same": true
+  },
+  {
+   "a": "Whatever you say.",
+   "b": "Wnatever you say.",
+   "same": true
+  },
+  {
+   "a": "Jeremy. are you hear in a this?",
+   "b": "Jeremy, are you hearing this?",
+   "same": true
+  },
+  {
+   "a": "Don't worry... 'm not gonna jump you.",
+   "b": "Don't worry... I'm not gonna jump you.",
+   "same": true
+  },
+  {
+   "a": "Kyle: Th-the guy said they're scared of us, right?",
+   "b": "Th-the guy said they're sa red ot us, right?",
+   "same": true
+  },
+  {
+   "a": "Jason: Nah, don't worry about it. It'l be fine.",
+   "b": "Nah, don't worry about it. It'll be fine.",
+   "same": true
+  },
+  {
+   "a": "Get in vour vehicle",
+   "b": "Get in your vehicle",
+   "same": true
+  },
+  {
+   "a": "Mm. I guess you heard, I've kfeen getting Jason's ass paid",
+   "b": "Mm. I guess you heard, I've been getting Jason's ass paid.",
+   "same": true
+  },
+  {
+   "a": "Aviator: Well, hmm... my boy Alpha's got next game.",
+   "b": "Jay! Well, hmm... my boy Alpha's got next game.",
+   "same": false,
+   "why": "a word more at the start: the previous subtitle"
+  },
+  {
+   "a": "Ooh, right! Ooh, yeah, one thousand times percent right.",
+   "b": "Ah, si. Ooh, right! Ooh, yeah, one thousand times percent right.",
+   "same": false,
+   "why": "a sentence more at the start"
+  },
+  {
+   "a": "Locals: Please don't fuckin' kill me! My client waiting for me at the shop.",
+   "b": "Cops: Shoot them! Locals: Please don't fuckin' kill me! My client waiting for me at the shop.",
+   "same": false,
+   "why": "another speaker's line in front"
+  },
+  {
+   "a": "when it's time to check in for the excursion",
+   "b": "when it's time to check in for the excursion. Man...",
+   "same": false,
+   "why": "a word more at the end"
+  },
+  {
+   "a": "I'll take one too, then! Resuscirate Sure, man. Why not?",
+   "b": "I'll take one too, then! NOT Resuscitate Sure, man. Why not?",
+   "same": false,
+   "why": "a negation more: the opposite meaning"
+  },
+  {
+   "a": "Reminders 3 Notifications What Up",
+   "b": "Reminders 7 Notifications What Up",
+   "same": false,
+   "why": "other numbers"
+  },
+  {
+   "a": "Hamlet Cor 00:18",
+   "b": "Hamlet Cor 00:08",
+   "same": false,
+   "why": "other numbers"
+  },
+  {
+   "a": "STRENGTH E STAGE1 RATING +16 34",
+   "b": "STRENGTH E STAGE 2 RATING +16 34",
+   "same": false,
+   "why": "other numbers"
+  },
+  {
+   "a": "Yeah, I think so.",
+   "b": "Uh, yeah. I think so.",
+   "same": false,
+   "why": "short and a word more"
+  },
+  {
+   "a": "Jason: Stick to the plan?",
+   "b": "Jason: We stick to the plan.",
+   "same": false,
+   "why": "a word more at the start"
+  },
+  {
+   "a": "I can do it.",
+   "b": "I can't do it.",
+   "same": false,
+   "why": "a negation more"
+  },
+  {
+   "a": "You know this place?",
+   "b": "You know this place, Jason?",
+   "same": false,
+   "why": "short line: 12 letters minimum, then 90%"
+  },
+  {
+   "a": "Hamlet, Lucia's incarcerated over there. Hamlet with Cal",
+   "b": "Hamlet, Lucia's incarcerated over there. Drive to Hamlet with Cal",
+   "same": false,
+   "why": "words more inside"
+  }
+ ]
+}
