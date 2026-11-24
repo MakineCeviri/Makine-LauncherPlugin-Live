@@ -224,8 +224,10 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `tv.install.scan` | `{platform: "android" \| "lg"}`: ev ağında ADB (5555) / LG geliştirici modu (9922) açık cihazlar → `tvInstall.hosts` |
 | `tv.install` | `{platform: "android", host, port?}`: Android TV / Google TV / Fire TV'ye ADB ile kurar; ilerleme `tvInstall.step`, sonuç `tvInstall.state` (`running` · `done` · `error`) ve `message`. `lg` → `E_UNSUPPORTED` (elle kurulum: `tvInstall.guide.lg`) |
 | `tv.install.saveFile` | `{platform: "android" \| "lg"}` → `{path}`: `makine-tv.apk` / `.ipk` İndirilenler klasörüne (USB bellek ya da elle kurulum) |
-| `consoleConsent.set` | `{granted}`: konsol modunda her satırın GTA VI havuzuna gittiğine oyuncunun onayı; onaysız `start` konsolda `E_DENIED` "consent_required: …" döner |
-| `announcement.read` | `{id}`: duyuruyu kapatır (sunucuya `ann_read`) |
+| `consoleConsent.set` | `{granted}` ya da `{enabled}`: konsol modunda her satırın GTA VI havuzuna gittiğine oyuncunun onayı; onaysız `start` konsolda `E_DENIED` "consent_required: …" döner |
+| `announcement.read` | `{id}` (sayı ya da rakamlardan oluşan metin): duyuruyu kapatır (sunucuya `ann_read`) |
+| `status.refresh` | bakım / sürüm / duyuruları hemen yeniden sorar (bakım sürerken kendiliğinden 30 sn'de bir, yoksa 300 sn) |
+| `sample` | örnek bir replik (`resources/sample_quotes.json`) açık her çıktıya (kutu, TV, telefon / OBS) 4 sn gider |
 | `support.dismiss` | "kayıt gönderildi" kartını kapatır |
 | `donate` / `donate.dismiss` | bağış sayfasını (`makineceviri.org/destek`) `ui.openUrl` ile açar / ilk açılış kartını kapatır |
 
@@ -242,7 +244,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "region": {"pc": {"x", "y", "width", "height"} | null, "console": {"x", "y", "width", "height"} (video alanına oran)},
   "picking": false, "running": false, "status": "…",
   "lastLine": {"source", "text", "kind", "origin"} | null,
-  "counters": {"lines", "poolHits"},
+  "counters": {"lines", "poolHits", "hitPct" | null, "avgMs" | null (son 30 çeviri isteği), "startedAt" | null (unix sn, okuma sürerken)},
   "server": {"maintenance", "message"}, "notice": "…",
   "style": { ... }, "game": {"name", "slug"}
   "autoStart": false, "usageReport": true, "consoleConsent": false, "everStarted": false,
@@ -260,7 +262,8 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 ```
 
 Çeviri `overlay.show` ile gider: `text` (eski Makine'ler için), `lines: [{text, sourceText?}]`, bölge (`x, y, width,
-height`; konsolda video alanındaki bölgenin ekran karşılığı) ve kayıtlı `style`. PC oyununda oyun Makine'nin
+height`; konsolda video alanındaki bölgenin ekran karşılığı) ve kayıtlı `style`; konsolda "Bu ekranda" çıktısında `frame: {x, y, width, height}` (fiziksel px), yayın penceresindeki
+16:9 video alanıdır (Alt / Üst onun içinde hesaplanır). PC oyununda oyun Makine'nin
 `game.started` / `game.stopped` olaylarından ve `games.running`'den gelir; konsol modu her zaman GTA VI havuzudur.
 PC modunda okuma yalnızca oyun öndeyken yapılır (test koşucusunun hedef kilidi): Makine `game.started` /
 `games.running` içinde isteğe bağlı `pid` gönderirse öndeki pencerenin süreci o olmalı; göndermezse öndeki pencere
@@ -276,11 +279,13 @@ yüzden tuşlar yalnız giriş yapılmışken ve bir oyun açıkken (ya da konso
 programın tuttuğu tuş `keys.<eylem>.error`'da yazar; sonraki eşitlemede yeniden denenir. Kısayolun hatası oyuncu
 oyundayken `ui.notify` ile söylenir.
 
-**Neden kodları** (`ui.state.reason`, OCR_KARAR §6; serbest metin `status` yalnız ayrıntıdır), öncelik sırasıyla:
-`maintenance` · `update_required` (eylem `update_launcher`) · `signed_out` (`login`) · `offline` (`retry`) · `consent_required` (`consent`) ·
-`source_missing` (`open_source`) · `source_minimized` (`restore_source`) · `source_small` (`enlarge_source`) ·
-`black_frame` (`check_hdcp`) · `capture_failed` (`retry`) · `region_missing` (`pick_region`) · `game_missing` · `game_unidentified` ·
-`game_not_front` · `tv_offline` (`tv_search`) · `tv_bad_code` (`tv_pair`) · `quota` · `no_key` · `upstream`.
+**Neden kodları** (`ui.state.reason`, OCR_KARAR §6; serbest metin `status` yalnız ayrıntıdır), öncelik sırasıyla.
+`action` ekranın olduğu gibi çağırdığı bir invoke yöntemidir ya da ekranın kendi işi (`launcher.update`, `tv.pairForm`);
+yoksa düğme yoktur, metin yeter: `maintenance` · `update_required` (`launcher.update`) · `signed_out` (`login.start`) ·
+`offline` (`status.refresh`) · `consent_required` (ekran onayı kendisi sorar) · `game_unidentified` ·
+`source_missing` / `source_minimized` (`console.sources`) · `source_small` · `black_frame` · `capture_failed`
+(`status.refresh`) · `region_missing` (`region.pick`) · `game_missing` · `game_not_front` · `tv_offline` (`tv.discover`) ·
+`tv_bad_code` (`tv.pairForm`) · `quota` · `no_key` · `upstream` · `stopped` (`start`).
 `stream_stalled`, `stream_poor`, `hdr_washed` OCR hattının güven / kontrast ölçüleriyle gelecek. Çıktı TV iken kaynak
 kaybı, siyah görüntü, kota, bakım ve okumanın durması TV'ye `{"t":"note","code","text"}` olarak da gider (boş `text`
 notu kaldırır). TV stili isteğe bağlı `relSize` (ekran yüksekliğine oran, 0.046), `safeArea` (0.05), `maxLines` (2),
@@ -323,8 +328,8 @@ Studio, AVerMedia RECentral, AVerMedia Streaming Center, OBS projektörü, Windo
 doğrulanırken gelen `game.started` bekletilir) ve `usageReport` (varsayılan açık). Kullanım bildirimi 0.3.2'deki
 `net/telemetry.py` ile aynıdır: girişten 2 sn sonra ve sunucunun söylediği `beat_s` aralığında `POST /api/live/app?action=beat`
 (oyun, mod, okuma süresi, çevrilen satır, sistem ve hız bilgisi; ekran görüntüsü ya da okunan metin gitmez), çıkışta ve
-kapanışta `bye`. `usageReport` kapalıysa hiç gönderilmez. Yanıttaki `log_request` yanıtlanmaz: eklentinin kendi günlük
-dosyası yoktur, satırları Makine'nin eklenti günlüğündedir. Konsol görüntüsünü getiren uygulamalar (PS Remote Play, Asobi,
+kapanışta `bye`. `usageReport` kapalıysa hiç gönderilmez. Yanıttaki `log_request` yanıtlanır: eklentinin bellekteki son kayıt
+satırları gönderilir (yukarıda, `support` kartı). Konsol görüntüsünü getiren uygulamalar (PS Remote Play, Asobi,
 chiaki, Xbox uygulaması, Greenlight) PC modunda da GTA VI sayılır.
 
 ## Proje yapısı
