@@ -687,6 +687,23 @@ void testLocalPool()
         check(hit && hit->exact && rl.prefix + hit->translation == "Lucia: Ne? İyi misin?",
               "another speaker's line hits the bare key and shows its own label once");
     }
+    {   // sync&variants=1: (key, variant) before the plain key, by stable signals only; address rules
+        const std::string src = "Do you know why I pulled you over?";
+        GamePool v("grand-theft-auto-vi", "Grand Theft Auto VI", "r2",
+                   json::array({json::array({5, text::compactPoolKey(src), src, "Seni neden durdurdum biliyor musun?"})}), 0,
+                   json::array({json::array({5, "f:siz", "Sizi neden durdurdum biliyor musunuz?"}),
+                                json::array({5, "ctx:ab12", "Bağlamlı çeviri"})}),
+                   json::array({json::array({"officerdiaz", "*", "siz"})}));
+        const auto plainHit = v.lookup(src);
+        const auto formal = v.lookup(src, true, {"scene:s1", "f:siz"});
+        const auto ctx = v.lookup(src, true, {"ctx:ab12"});
+        check(plainHit && plainHit->variant.empty() && formal && formal->variant == "f:siz"
+                  && formal->translation == "Sizi neden durdurdum biliyor musunuz?" && ctx && ctx->variant.empty(),
+              "a variant answers for its signal; ctx: never");
+        check(v.ruleForm("Officer Diaz", "Jason") == "siz" && v.ruleForm("Jason", "Officer Diaz").empty(), "address rules");
+        check(v.hasVariants() && v.toJson().contains("variants") && v.toJson()["variants"].size() == 1,
+              "variants kept in the file, ctx: left out");
+    }
     auto h = p.lookup("Is anybody there?Please help me");
     check(h && h->id == 1 && h->exact, "punctuation/space difference: exact key");
     h = p.lookup("Is anybody there? Plaese help me.");

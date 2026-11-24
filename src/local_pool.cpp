@@ -153,9 +153,27 @@ int negationCount(std::string_view textUtf8)
 
 // ── GamePool ────────────────────────────────────────────────────────────────
 
-GamePool::GamePool(std::string slug_, std::string name_, std::string rev_, const json& items, double syncedAt_)
+GamePool::GamePool(std::string slug_, std::string name_, std::string rev_, const json& items, double syncedAt_,
+                   const json& variants, const json& relations)
     : slug(std::move(slug_)), name(std::move(name_)), rev(std::move(rev_)), syncedAt(syncedAt_)
 {
+    m_withVariants = variants.is_array();
+    if (variants.is_array())
+        for (const json& v : variants) {   // [id, signal, translation]; a ctx: variant is never picked for anyone
+            if (!v.is_array() || v.size() < 3) continue;
+            const std::string signal = str(v[1]), translation = str(v[2]);
+            int64_t id = 0;
+            if (v[0].is_number_integer()) id = v[0].get<int64_t>();
+            else continue;
+            if (signal.empty() || translation.empty() || signal.rfind("ctx:", 0) == 0) continue;
+            m_variants[id][signal] = translation;
+        }
+    if (relations.is_array())
+        for (const json& r : relations) {
+            if (!r.is_array() || r.size() < 3) continue;
+            const std::string form = str(r[2]);
+            if (form == "sen" || form == "siz") m_relations.push_back({str(r[0]), str(r[1]), form});
+        }
     if (!items.is_array()) return;
     for (const json& it : items) {
         if (!it.is_array() || it.size() < 4) continue;
@@ -179,12 +197,12 @@ GamePool::GamePool(std::string slug_, std::string name_, std::string rev_, const
     }
 }
 
-std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8, bool fuzzy) const
+std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8, bool fuzzy, const std::vector<std::string>& signals) const
 {
     const std::u32string key = text::compactPoolKey(text::fromUtf8(textUtf8));
     if (key.empty()) return std::nullopt;
     if (const auto it = m_byKey.find(key); it != m_byKey.end())
-        return PoolHit{it->second, m_items.at(it->second).translation, true};
+        return withVariant(PoolHit{it->second, m_items.at(it->second).translation, true, {}}, signals);
     const size_t n = key.size();
     if (!fuzzy || n < kFuzzyMinKeyLen) return std::nullopt;
     const int negations = negationCount(textUtf8);
@@ -192,7 +210,7 @@ std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8, bool fuzzy)
         std::lock_guard lock(m_fuzzyMutex);
         if (const auto it = m_fuzzy.find(key); it != m_fuzzy.end()) {
             if (!it->second) return std::nullopt;
-            return PoolHit{*it->second, m_items.at(*it->second).translation, false};
+            return withVariant(PoolHit{*it->second, m_items.at(*it->second).translation, false, {}}, signals);
         }
     }
     const int d = static_cast<int>(static_cast<double>(n) * (1 - kFuzzyMinSimilarity));
@@ -219,23 +237,53 @@ std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8, bool fuzzy)
         m_fuzzy[key] = best;
     }
     if (!best) return std::nullopt;
-    return PoolHit{*best, m_items.at(*best).translation, false};
+    return withVariant(PoolHit{*best, m_items.at(*best).translation, false, {}}, signals);
 }
 
-std::optional<PoolHit> GamePool::lookupExact(const std::string& textUtf8) const
+PoolHit GamePool::withVariant(PoolHit hit, const std::vector<std::string>& signals) const
+{
+    // (key, variant) before the plain key; only stable signals (line: / scene: / f:), never ctx:
+    const auto v = m_variants.find(hit.id);
+    if (v == m_variants.end()) return hit;
+    for (const std::string& signal : signals) {
+        if (signal.rfind("ctx:", 0) == 0) continue;
+        if (const auto t = v->second.find(signal); t != v->second.end()) {
+            hit.translation = t->second;
+            hit.variant = signal;
+            break;
+        }
+    }
+    return hit;
+}
+
+std::string GamePool::ruleForm(const std::string& speaker, const std::string& listener) const
+{
+    return scene::ruleForm(m_relations, speaker, listener);
+}
+
+std::optional<PoolHit> GamePool::lookupExact(const std::string& textUtf8, const std::vector<std::string>& signals) const
 {
     const std::u32string key = text::compactPoolKey(text::fromUtf8(textUtf8));
     if (key.empty()) return std::nullopt;
     const auto it = m_byKey.find(key);
     if (it == m_byKey.end()) return std::nullopt;
-    return PoolHit{it->second, m_items.at(it->second).translation, true};
+    return withVariant(PoolHit{it->second, m_items.at(it->second).translation, true, {}}, signals);
 }
 
 json GamePool::toJson() const
 {
     json items = json::array();
     for (const auto& [id, it] : m_items) items.push_back({id, text::toUtf8(it.key), it.source, it.translation});
-    return {{"game", slug}, {"name", name}, {"rev", rev}, {"synced_at", syncedAt}, {"items", items}};
+    json out = {{"game", slug}, {"name", name}, {"rev", rev}, {"synced_at", syncedAt}, {"items", items}};
+    if (m_withVariants) {
+        json variants = json::array(), relations = json::array();
+        for (const auto& [id, bySignal] : m_variants)
+            for (const auto& [signal, translation] : bySignal) variants.push_back({id, signal, translation});
+        for (const scene::Relation& r : m_relations) relations.push_back({r.speakerKey, r.listenerKey, r.form});
+        out["variants"] = variants;
+        out["relations"] = relations;
+    }
+    return out;
 }
 
 // ── LocalPool ───────────────────────────────────────────────────────────────
@@ -300,7 +348,8 @@ std::shared_ptr<GamePool> LocalPool::get(const std::string& slug)
     json d = readJson(file(slug));
     if (!d.is_object()) d = json::object();   // not downloaded yet: an empty pool, filled by the sync
     auto p = std::make_shared<GamePool>(slug, str(d.value("name", json())), str(d.value("rev", json())),
-                                        d.value("items", json()), num(d.value("synced_at", json())));
+                                        d.value("items", json()), num(d.value("synced_at", json())),
+                                        d.value("variants", json()), d.value("relations", json()));
     std::lock_guard lock(m_mutex);
     return m_pools.emplace(slug, std::move(p)).first->second;
 }
@@ -308,7 +357,8 @@ std::shared_ptr<GamePool> LocalPool::get(const std::string& slug)
 std::string LocalPool::rev(const std::string& slug)
 {
     const auto p = get(slug);
-    return p ? p->rev : std::string();
+    // a pool saved before variants=1 has none: no revision, so the next sync brings everything
+    return p && p->hasVariants() ? p->rev : std::string();
 }
 
 SyncStats LocalPool::applySync(const std::string& slug, const json& resp)
@@ -325,7 +375,8 @@ SyncStats LocalPool::applySync(const std::string& slug, const json& resp)
     std::string name = str(resp.value("name", json()));
     if (name.empty() && old) name = old->name;
     auto fresh = std::make_shared<GamePool>(slug, name, str(resp.value("rev", json())), resp.value("items", json()),
-                                            nowSeconds());
+                                            nowSeconds(), resp.value("variants", json::array()),
+                                            resp.value("relations", json::array()));
     for (const auto& [id, item] : fresh->m_items) {
         if (!old || !old->m_items.count(id)) ++st.added;
         else if (old->m_items.at(id).translation != item.translation) ++st.changed;
@@ -343,11 +394,12 @@ SyncStats LocalPool::applySync(const std::string& slug, const json& resp)
     return st;
 }
 
-std::optional<PoolHit> LocalPool::lookup(const std::string& slug, const std::string& text, bool fuzzy)
+std::optional<PoolHit> LocalPool::lookup(const std::string& slug, const std::string& text, bool fuzzy,
+                                         const std::vector<std::string>& signals)
 {
     const auto p = get(slug);
     if (!p) return std::nullopt;
-    auto hit = p->lookup(text, fuzzy);
+    auto hit = p->lookup(text, fuzzy, signals);
     if (hit) {
         std::lock_guard lock(m_mutex);
         ++m_hits[slug][hit->id];
@@ -355,10 +407,17 @@ std::optional<PoolHit> LocalPool::lookup(const std::string& slug, const std::str
     return hit;
 }
 
-std::optional<PoolHit> LocalPool::lookupExact(const std::string& slug, const std::string& text)
+std::optional<PoolHit> LocalPool::lookupExact(const std::string& slug, const std::string& text,
+                                              const std::vector<std::string>& signals)
 {
     const auto p = get(slug);
-    return p ? p->lookupExact(text) : std::nullopt;
+    return p ? p->lookupExact(text, signals) : std::nullopt;
+}
+
+std::string LocalPool::ruleForm(const std::string& slug, const std::string& speaker, const std::string& listener)
+{
+    const auto p = get(slug);
+    return p ? p->ruleForm(speaker, listener) : std::string();
 }
 
 std::map<int64_t, int> LocalPool::takeHits(const std::string& slug)

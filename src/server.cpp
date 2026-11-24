@@ -243,7 +243,8 @@ ApiResult ServerClient::translate(const std::string& game, const std::string& ga
 
 ApiResult ServerClient::poolSync(const std::string& game, const std::string& rev, bool head)
 {
-    std::string q = "/api/live/pool?action=sync&game=" + urlEncode(game);
+    // variants=1: the line's variants (address forms, scenes) and the game's address rules come along
+    std::string q = "/api/live/pool?action=sync&variants=1&game=" + urlEncode(game);
     // A game with no approved line yet: send a revision so "unchanged" can come back
     if (!rev.empty() || !head) q += "&rev=" + urlEncode(rev.empty() ? "r0" : rev);
     if (head) q += "&head=1";
