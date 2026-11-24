@@ -16,6 +16,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <memory>
@@ -40,6 +42,7 @@ constexpr double kMaskMaxSkipS = 2.5;      // K3: at most this long on the mask'
 constexpr double kStaleJobS = 2.0;        // a line whose source left this long ago is not translated any more
 constexpr double kCacheTtlS = 900;        // unapproved translations are reused this long in a session
 constexpr double kPoolSyncS = 180;        // local pool vs server while reading
+constexpr double kMaintenancePollS = 30;   // while maintenance is on: back as soon as it ends
 constexpr double kStatusPollS = 300;      // maintenance / version check
 constexpr double kOfflineRetryS = 30;
 constexpr auto kShutdownBudget = std::chrono::milliseconds(700);   // + bye 400 + Discord 200 < 1.5 s
@@ -167,6 +170,11 @@ unsigned long parentPid()   // the launcher that started this plugin host
 }
 
 constexpr size_t kHistoryLines = 50;
+
+bool consentGiven(const json& params)   // the screen sends {granted} or {enabled}
+{
+    return params.is_object() && params.contains("granted") ? flag(params, "granted") : flag(params, "enabled");
+}
 
 // The name a game is shown and pooled under. The launcher names games outside its catalogue itself; whatever it
 // sends, a path or an exe name never becomes a pool: only the file's stem, and only if letters remain.
@@ -334,7 +342,7 @@ json Engine::stateLocked() const
         {"running", m_running},
         {"status", m_status},
         {"lastLine", m_lastLine},
-        {"counters", {{"lines", m_lines}, {"poolHits", m_poolHits}}},
+        {"counters", countersLocked()},
         {"server", {{"maintenance", m_maintenance}, {"message", m_serverMessage}}},
         {"notice", m_notice},
         {"style", m_style},
@@ -567,9 +575,7 @@ void Engine::beatLoop(int gen)
         if (r.ok()) m_traceBudget = static_cast<int>(std::clamp(num(r.data, "trace_n", 0), 0.0, 20.0));
         next = m_beatS;
     }
-    if (r.ok()) onLogRequest(str(r.data, "log_request"));   // the team asked for this session's log
-    // r.data.log_request (the team asks for the app log) is not answered: the plugin keeps no log file of its
-    // own; its log lines are in the launcher's plugin log.
+    if (r.ok()) onLogRequest(str(r.data, "log_request"));   // the team asked for this session's log: sent (onLogRequest)
     post([this, gen] { beatLoop(gen); }, next);
 }
 
@@ -583,6 +589,11 @@ Result Engine::invoke(std::string_view method, const json& params)
     }
     if (method == "login.start") return loginStart();
     if (method == "login.team") return loginTeam(params);
+    if (method == "status.refresh") {   // "Yeniden dene": maintenance, version and announcements now
+        post([this] { refreshStatus(); });
+        return okMessage("Yenileniyor…");
+    }
+    if (method == "sample") return showSample();
     if (method == "box.move") {
         bool on = false;
         {
@@ -650,12 +661,12 @@ Result Engine::invoke(std::string_view method, const json& params)
     if (method == "consoleConsent.set") {
         {
             std::lock_guard lock(m_mutex);
-            m_consoleConsent = flag(params, "granted");
+            m_consoleConsent = consentGiven(params);
             saveSettings();
         }
         stopIfConsentMissing();   // consent taken back: reading stops at once
         publish();
-        return okMessage(flag(params, "granted") ? "Onaylandı." : "Onay geri alındı.");
+        return okMessage(consentGiven(params) ? "Onaylandı." : "Onay geri alındı.");
     }
     if (method == "autoStart.set" || method == "usageReport.set") {
         const bool on = flag(params, "enabled");
@@ -784,6 +795,64 @@ void Engine::onEvent(std::string_view event, const json& payload)
         syncHotkeys();
         publish();
     }
+}
+
+json Engine::countersLocked() const
+{
+    const int looked = m_poolCount + m_apiCount;
+    double sum = 0;
+    for (const double ms : m_latMs) sum += ms;
+    return {{"lines", m_lines},
+            {"poolHits", m_poolHits},
+            {"hitPct", looked ? json(static_cast<int64_t>(std::nearbyint(100.0 * m_poolCount / looked))) : json(nullptr)},
+            {"avgMs", m_latMs.empty() ? json(nullptr) : json(static_cast<int64_t>(std::nearbyint(sum / m_latMs.size())))},
+            {"startedAt", m_running ? json(m_readingSince) : json(nullptr)}};
+}
+
+// "Örnek göster": one real line from a game (spec/sample_quotes.json) on every output that is on, for 4 s
+Result Engine::showSample()
+{
+    std::string line = "Savaş. Savaş asla değişmez.";
+    int gen = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_samples.empty()) {
+            std::ifstream in(std::filesystem::path(m_init.pluginDir) / L"resources" / L"sample_quotes.json",
+                             std::ios::binary);
+            const json doc = json::parse(in, nullptr, false);
+            if (doc.is_object() && doc.contains("quotes") && doc["quotes"].is_array())
+                for (const json& q : doc["quotes"])
+                    if (!str(q, "tr").empty()) m_samples.push_back(str(q, "tr"));
+        }
+        gen = ++m_sampleGen;
+        if (!m_samples.empty()) line = m_samples[static_cast<size_t>(gen) % m_samples.size()];
+        m_captureJobs.push_back([this, line, gen] {
+            void* hwnd = nullptr;
+            CaptureRegion region;
+            console::Box box;
+            if (!resolveTarget(hwnd, region, box, false).empty()) {   // no region yet: low in the middle of the screen
+                const int w = GetSystemMetrics(SM_CXSCREEN), h = GetSystemMetrics(SM_CYSCREEN);
+                box = {w / 5, h * 3 / 4, w * 3 / 5, h / 8};
+            }
+            showOverlay({-1, text::fromUtf8(line), "verified"}, box);
+            m_sampleOnScreen = true;
+            post([this, gen] {
+                std::lock_guard lock(m_mutex);
+                m_captureJobs.push_back([this, gen] {
+                    {
+                        std::lock_guard lock(m_mutex);
+                        if (gen != m_sampleGen) return;   // a newer sample owns the screen
+                    }
+                    if (!m_sampleOnScreen) return;        // a real line replaced it
+                    m_sampleOnScreen = false;
+                    hideOverlay();
+                });
+                m_captureCv.notify_all();
+            }, 4);
+        });
+    }
+    m_captureCv.notify_all();
+    return okMessage("Örnek gösteriliyor.");
 }
 
 void Engine::addHistoryLocked(const std::string& source, const std::string& text, const std::string& kind,
@@ -1107,7 +1176,12 @@ void Engine::statusLoop()
     } catch (const std::exception& e) {
         logLine(MAKINE_LOG_WARN, std::string("Durum: ") + e.what());
     }
-    post([this] { statusLoop(); }, kStatusPollS);
+    bool maintenance = false;
+    {
+        std::lock_guard lock(m_mutex);
+        maintenance = m_maintenance;
+    }
+    post([this] { statusLoop(); }, maintenance ? kMaintenancePollS : kStatusPollS);
 }
 
 void Engine::syncPool(bool force)
@@ -1512,6 +1586,8 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
             if (kind != "api") ++m_poolHits;
             ++m_linesTotal;
             ++m_sessionLines;
+            m_latMs.push_back(requestMs);
+            if (m_latMs.size() > 30) m_latMs.pop_front();
             auto& samples = kind == "api" ? m_apiMs : m_poolMs;
             samples.push_back(requestMs);
             if (samples.size() > 50) samples.pop_front();
@@ -1673,6 +1749,7 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         gameUnknown = m_gameUnknown;
     }
     hwnd = nullptr;
+    m_videoFrame.reset();
     if (mode == "console") {
         // The console window's own content (PrintWindow): read even when covered, never minimised
         if ((!m_source || !console::alive(*m_source) || (pid && m_source->pid != pid)) && now() >= m_nextPick) {
@@ -1685,7 +1762,9 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         hwnd = m_source->hwnd;
         const console::Box b = console::clientRegion(hwnd, frac);
         region = {b.x, b.y, b.w, b.h};
-        overlay = console::regionToScreen(console::videoRect(console::clientRect(hwnd)), frac);
+        const console::Rect video = console::videoRect(console::clientRect(hwnd));
+        overlay = console::regionToScreen(video, frac);
+        m_videoFrame = console::Box{video.l, video.t, video.r - video.l, video.b - video.t};
         return {};
     }
     if (!pc) {
@@ -1805,6 +1884,10 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
     json payload = {{"text", text}, {"lines", json::array({line})}, {"x", rect.x}, {"y", rect.y},
                     {"width", rect.w}, {"height", rect.h}, {"kind", d.kind}};
     if (!style.empty()) payload["style"] = style;
+    // Console on this screen: the 16:9 video inside the stream window (physical px), so Alt / Üst sit in the picture
+    if (m_videoFrame)
+        payload["frame"] = {{"x", m_videoFrame->x}, {"y", m_videoFrame->y}, {"width", m_videoFrame->w}, {"height", m_videoFrame->h}};
+    m_sampleOnScreen = false;   // a real line replaces the sample
     if (boxWanted()) {   // console on the TV / phone: no box over the Remote Play window
         m_host.emitEvent("overlay.show", dump(payload));
         m_boxShown = true;

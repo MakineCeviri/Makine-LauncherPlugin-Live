@@ -103,6 +103,9 @@ class Session:
 
 shutil.rmtree(DATA, ignore_errors=True)
 s = Session()
+time.sleep(1)
+check(s.state()["reason"] == {"code": "signed_out", "text": "Makine hesabınla giriş yap.", "action": "login.start"},
+      "reason.action is an invoke method the screen calls as is")
 s.cmd("login.start {}", 1.5)
 for line in s.since():
     m = re.search(r"http://127\.0\.0\.1:\d+/onay\?kod=[\d-]+", line)
@@ -119,12 +122,33 @@ if fails:
 s.cmd('mode.set {"mode":"console"}')
 i = s.cmd("start {}")
 check("consent_required" in s.reply(i), "console start without consent is refused")
-check(s.state()["reason"]["code"] == "consent_required", "reason says consent_required")
-s.cmd('consoleConsent.set {"granted":true}')
+check(s.state()["reason"]["code"] == "consent_required" and "action" not in s.state()["reason"],
+      "reason says consent_required, no action (the screen asks)")
+i = s.cmd('consoleConsent.set {"enabled":true}')   # the screen may send enabled instead of granted
+check(s.state(i)["consoleConsent"] is True, "consent given as {enabled}")
 i = s.cmd("start {}")
-check(s.state(i)["running"] is True, "console start with consent runs")
+st1 = s.state(i)
+check(st1["running"] is True, "console start with consent runs")
+c = st1["counters"]
+check(set(c) == {"lines", "poolHits", "hitPct", "avgMs", "startedAt"} and isinstance(c["startedAt"], int)
+      and c["hitPct"] is None and c["avgMs"] is None, "counters while reading " + json.dumps(c))
 i = s.cmd('consoleConsent.set {"granted":false}')
-check(s.state(i)["running"] is False, "taking consent back stops reading")
+check(s.state(i)["running"] is False and s.state(i)["counters"]["startedAt"] is None,
+      "taking consent back stops reading (startedAt null)")
+
+# status.refresh, announcements read by number or string id, the sample on every output for 4 s
+i = s.cmd("status.refresh {}")
+check("Yenileniyor" in s.reply(i), "status.refresh answers")
+i = s.cmd('announcement.read {"id":"12"}')
+check("Okundu" in s.reply(i), "announcement id as a string")
+i = s.cmd('announcement.read {"id":"x"}')
+check("id gerekli" in s.reply(i), "a non-numeric id is refused")
+s.cmd('mode.set {"mode":"pc"}')
+i = s.cmd("sample {}", 0.8)
+shown = [l for l in s.since(i) if "emit overlay.show" in l]
+check(len(shown) == 1 and '"kind": "verified"' in shown[0], "sample shows one line")
+time.sleep(4.2)
+check(any("emit overlay.hide" in l for l in s.since(i)), "and hides it after 4 s")
 
 # PC mode, then PC -> console while running
 s.cmd('mode.set {"mode":"pc"}')

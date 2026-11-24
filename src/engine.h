@@ -85,6 +85,7 @@ private:
     makine::plugin::Result loginStart();
     makine::plugin::Result loginTeam(const nlohmann::json& params);
     makine::plugin::Result setBoxMovable(bool on);
+    makine::plugin::Result showSample();
     makine::plugin::Result pickRegion();
     makine::plugin::Result readOnce();
     makine::plugin::Result startReading();
@@ -100,6 +101,7 @@ private:
     void statusLoop();
     void syncPool(bool force);
     void syncHotkeys();                       // never under m_mutex
+    nlohmann::json countersLocked() const;
     void onHotkey(const std::string& action);
     void addHistoryLocked(const std::string& source, const std::string& text, const std::string& kind,
                           const std::string& origin);
@@ -187,6 +189,9 @@ private:
     bool m_running = false, m_picking = false;
     std::string m_status = "Hazır";
     nlohmann::json m_lastLine = nullptr;
+    std::deque<double> m_latMs;               // the last 30 translate requests (counters.avgMs)
+    std::vector<std::string> m_samples;       // sample lines (resources/sample_quotes.json)
+    int m_sampleGen = 0;
     std::deque<nlohmann::json> m_history;     // this session's lines, newest first (ui.state history)
     std::map<std::string, std::string> m_hotkeyKeys{{"start", "F9"}, {"region", "F10"}, {"move", "F8"}};
     bool m_hotkeysArmed = false;
@@ -256,6 +261,8 @@ private:
     LineTracker m_tracker;
     SubtitleScheduler m_scheduler;
     bool m_active = false, m_overlayShown = false;
+    bool m_sampleOnScreen = false;             // capture thread
+    std::optional<console::Box> m_videoFrame;  // capture thread: the console video rect (overlay.show frame)
     std::optional<Display> m_shown;
     std::map<int, std::string> m_lineSource;   // line id -> the text sent for translation
     std::vector<std::u32string> m_shownKeys;   // recent overlay texts (and their sources): never read back as source

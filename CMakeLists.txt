@@ -95,6 +95,7 @@ set(PACKAGE_DIR "${CMAKE_BINARY_DIR}/package")
 string(JSON PLUGIN_ENTRY GET "${MANIFEST_JSON}" entry)
 configure_file(manifest.json "${PACKAGE_DIR}/manifest.json" COPYONLY)
 configure_file(resources/en_words.txt "${PACKAGE_DIR}/resources/en_words.txt" COPYONLY)
+configure_file(spec/sample_quotes.json "${PACKAGE_DIR}/resources/sample_quotes.json" COPYONLY)   # "Örnek göster"
 configure_file(assets/logo_white-96.webp "${PACKAGE_DIR}/resources/logo.webp" COPYONLY)   # phone / OBS pages
 configure_file(LICENSE "${PACKAGE_DIR}/licenses/Makine-Live-LICENSE.txt" COPYONLY)
 configure_file(licenses/NOTICE.txt "${PACKAGE_DIR}/licenses/NOTICE.txt" COPYONLY)
