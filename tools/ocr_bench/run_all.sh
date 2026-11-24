@@ -50,6 +50,7 @@ CANDIDATES=(
   "ort_v5en_det_q8|ORT: det v3 + rec en v5, INT8 (kendi nicemleme)|ort|$Q/det_v3.onnx||$Q/rec_v5en.onnx|$DICT5E|4|1|"
   "ort_v4en_proj_q8|ORT: izdüşüm + rec en v4, INT8 (kendi nicemleme)|ort|none||$Q/rec_v4en.onnx|$DICT4E|4|1|"
   "ort_v5en_proj_q8|ORT: izdüşüm + rec en v5, INT8 (kendi nicemleme)|ort|none||$Q/rec_v5en.onnx|$DICT5E|4|1|"
+  "ort_v5en_proj_q8mm|ORT: izdüşüm + rec en v5, INT8 yalnız MatMul (kendi nicemleme)|ort|none||$Q/rec_v5en_mm.onnx|$DICT5E|4|1|"
   "winocr|Windows.Media.Ocr|winocr|||||-|-|"
 )
 # Thread caps / spinning / DirectML for the leaders: generated as <base>@t<N>s<0|1> and <base>@dml.
@@ -107,5 +108,5 @@ if [[ "${1:-}" != "--report" ]]; then
 fi
 
 commit="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
-"$EXE" report --words "$ROOT/resources/en_words.txt" --baseline dll_v3ch --commit "$commit" --date "$(date +%F)" \
+"$EXE" report --words "$ROOT/resources/en_words.txt" --baseline dll_v3ch --commit "$commit" --date "$(date +%F)" --passes "$PASSES" \
   --md "$B/report.md" --json "$B/report.json" "$B"/results/*.tsv

@@ -83,14 +83,14 @@ struct Frame {
 
 } // namespace
 
-int wmain(int argc, wchar_t** argv)
+static int run(int argc, wchar_t** argv)
 {
     if (argc < 3) {
         std::fprintf(stderr, "usage: winocr_bench <framesDir> <out.tsv> [passes] [warmup]\n");
         return 2;
     }
     init_apartment();
-    const std::filesystem::path dir = argv[1];
+    const std::filesystem::path dir = std::filesystem::path(argv[1]).make_preferred();  // StorageFile wants backslashes
     const int passes = argc > 3 ? _wtoi(argv[3]) : 2;
     const int warmup = argc > 4 ? _wtoi(argv[4]) : 10;
 
@@ -157,4 +157,16 @@ int wmain(int argc, wchar_t** argv)
         }
     std::printf("winocr (%s): %zu frames x %d passes\n", lang.c_str(), frames.size(), passes);
     return 0;
+}
+
+int wmain(int argc, wchar_t** argv)
+{
+    try {
+        return run(argc, argv);
+    } catch (const winrt::hresult_error& e) {
+        std::fprintf(stderr, "WinRT error 0x%08X: %s\n", static_cast<unsigned>(e.code()), to_string(e.message()).c_str());
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: %s\n", e.what());
+    }
+    return 1;
 }

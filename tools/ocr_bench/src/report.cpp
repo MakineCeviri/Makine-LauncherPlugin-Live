@@ -310,7 +310,9 @@ int report(const std::map<std::string, std::string>& opts, const std::vector<std
     std::ofstream js(std::filesystem::path(widen(opt("json"))), std::ios::binary);
     md << "# OCR kıyas raporu\n\n";
     md << "Makine: " << cands[0].head["cpu"] << " · commit " << opt("commit") << " · " << opt("date")
-       << " · ısınma " << cands[0].head["warmup"] << " kare, kare başına 2 tur (gecikme 1. tur; \"p95 2.\" ikinci tur)\n\n";
+       << " · ısınma " << cands[0].head["warmup"] << " kare, her kare " << opt("passes")
+       << " tur. Süreler gürültüye karşı her karenin turlar arasındaki en küçük değerinden (kare-min); \"p95 1. tur\" ve "
+          "\"max\" ilk turun ham değerleri (kuyruk + makine gürültüsü)\n\n";
     js << "{\n \"machine\": " << jsonStr(cands[0].head["cpu"]) << ",\n \"commit\": " << jsonStr(opt("commit"))
        << ",\n \"baseline\": " << jsonStr(baselineId) << ",\n \"runs\": [\n";
 
@@ -324,32 +326,44 @@ int report(const std::map<std::string, std::string>& opts, const std::vector<std
             if (c.head.at("set") == set) list.push_back(&c);
         const std::string setName = set.substr(set.find_last_of("/\\") + 1);
         md << "## Set: `" << setName << "` (" << list[0]->frames << " kare)\n\n";
-        md << "| Aday | iş p. | spin | toplam p50 | p95 | p95 2. | max | det p50 | maske+izdüşüm p50 | rec p50 | rec/satır p50/p95 "
+        md << "| Aday | iş p. | spin | toplam p50 | p95 | p95 1. tur | max | det p50 | maske+izdüşüm p50 | rec p50 | rec/satır p50/p95 "
               "| çekirdek | CER ham | **CER düz.** | CER boşluksuz | satır tam | G-KEY | boşluk doğru (ham/düz.) | G-ORDER | G-SPLIT |\n";
         md << "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
         const Cand* winner = nullptr;
+        double winnerP50 = 0;
         for (const Cand* c : list) {
             auto get = [&](int pass, const char* k) {
                 auto it = c->samples.find(pass);
                 if (it == c->samples.end() || !it->second.count(k)) return Stat{};
                 return stat(it->second.at(k));
             };
-            const Stat tot = get(1, "total"), tot2 = get(2, "total"), det = get(1, "S4d"), split = get(1, "S2S3"),
-                       rec = get(1, "S4"), recl = get(1, "S4line"), pre = get(1, "pre"), cls = get(1, "cls");
+            // per-frame minimum across passes: the machine is shared, the minimum is the pipeline's own cost
+            auto getMin = [&](const char* k) {
+                std::vector<double> m;
+                for (const auto& [pass, keys] : c->samples) {
+                    auto it = keys.find(k);
+                    if (it == keys.end()) return Stat{};
+                    if (m.empty()) m = it->second;
+                    else if (m.size() == it->second.size())
+                        for (size_t i = 0; i < m.size(); ++i) m[i] = std::min(m[i], it->second[i]);
+                }
+                return stat(m);
+            };
+            const Stat tot1 = get(1, "total"), tot = getMin("total"), det = getMin("S4d"), split = getMin("S2S3"),
+                       rec = getMin("S4"), recl = getMin("S4line"), pre = getMin("pre"), cls = getMin("cls");
             const double cores = c->wallSum > 0 ? c->cpuSum / c->wallSum : 0;
             const double lineMatch = c->truthLines ? 100.0 * c->linesFound / c->truthLines : 0;
             const double keyMatch = 100.0 * c->keyOk / c->frames;
             const double spRaw = c->nsOk ? 100.0 * c->spaceRaw / c->nsOk : -1;
             const double spFix = c->nsOk ? 100.0 * c->spaceFixed / c->nsOk : -1;
             md << "| " << c->head.at("label") << " | " << c->head.at("threads") << " | " << c->head.at("spin") << " | "
-               << fmt(tot.p50) << " | " << fmt(tot.p95) << " | " << fmt(tot2.p95) << " | " << fmt(tot.max) << " | "
+               << fmt(tot.p50) << " | " << fmt(tot.p95) << " | " << fmt(tot1.p95) << " | " << fmt(tot1.max) << " | "
                << fmt(det.p50) << " | " << fmt(split.p50, 2) << " | " << fmt(rec.p50) << " | " << fmt(recl.p50) << " / "
                << fmt(recl.p95) << " | " << fmt(cores, 2) << " | " << fmt(c->cer(c->editsRaw, c->chars), 2) << " | **"
                << fmt(c->cerFixed(), 2) << "** | " << fmt(c->cer(c->editsNs, c->charsNs), 2) << " | " << fmt(lineMatch)
                << "% | " << fmt(keyMatch) << "% | " << fmt(spRaw) << "% / " << fmt(spFix) << "% | " << c->orderFrames << " | " << c->splitFrames << " |\n";
             if (base && c->cerFixed() <= base->cerFixed() + 1e-9) {
-                const double p = tot.p50;
-                if (!winner || p < stat(winner->samples.at(1).at("total")).p50) winner = c;
+                if (!winner || tot.p50 < winnerP50) { winner = c; winnerP50 = tot.p50; }
             }
 
             auto js1 = [&](const char* name, const Stat& s) {
@@ -359,7 +373,7 @@ int report(const std::map<std::string, std::string>& opts, const std::vector<std
             auto num = [](double v) { return v < 0 ? std::string("null") : fmt(v, 3); };
             std::string stages = js1("pre", pre) + ", " + js1("S4d", det) + ", " + js1("S2S3", split) + ", " +
                                  js1("cls", cls) + ", " + js1("S4", rec) + ", " + js1("S4_line", recl) + ", " +
-                                 js1("total", tot) + ", " + js1("total_pass2", tot2);
+                                 js1("total", tot) + ", " + js1("total_pass1", tot1);
             std::string stagesClean;
             for (size_t i = 0; i < stages.size(); ++i) {  // "—" (no data) → null
                 if (stages.compare(i, 3, "\xE2\x80\x94") == 0) { stagesClean += "null"; i += 2; }
@@ -385,7 +399,7 @@ int report(const std::map<std::string, std::string>& opts, const std::vector<std
             firstJson = false;
         }
         md << "\nSüreler ms. *çekirdek* = süreç CPU zamanı / duvar saati (dönen iş parçacıkları dahil). "
-              "Kazanan kuralı: CER düz. ≤ taban olanların en hızlısı (toplam p50).\n\n";
+              "Kazanan kuralı: CER düz. ≤ taban olanların en hızlısı (kare-min toplam p50).\n\n";
         if (base) {
             md << "**Taban:** " << base->head.at("label") << " — CER düz. " << fmt(base->cerFixed(), 2) << "%. ";
             md << "**Kazanan (en hızlı, CER düz. ≤ taban):** " << (winner ? winner->head.at("label") : std::string("yok"))
