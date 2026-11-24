@@ -54,6 +54,8 @@ add_library(live-logic STATIC
     src/adb.cpp
     src/gzip_store.cpp
     src/text_mask.cpp
+    src/subtitle_finder.cpp
+    src/fit.cpp
 )
 target_include_directories(live-logic PUBLIC src)
 target_compile_definitions(live-logic PUBLIC ${LIVE_DEFINES})
@@ -158,6 +160,15 @@ if(MINGW)
 endif()
 foreach(case discord discord_pipe gzip adb_key web web_limits hotkeys tv_link)
     add_test(NAME ${case} COMMAND live_outputs_test ${case})
+endforeach()
+add_executable(live_fit_test tests/cpp/test_fit.cpp)
+target_link_libraries(live_fit_test PRIVATE live-logic)
+live_warnings(live_fit_test)
+if(MINGW)
+    target_link_options(live_fit_test PRIVATE -static)
+endif()
+foreach(case fit finder temp_grow)
+    add_test(NAME ${case} COMMAND live_fit_test ${case})
 endforeach()
 
 # F1 gate: the plugin's OCR reads every benchmark frame exactly as the benchmark's ORT path did

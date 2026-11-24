@@ -414,6 +414,35 @@ std::vector<OcrLine> OcrOrt::run(const uint8_t* bgra, int width, int height, std
     }
 }
 
+std::vector<OcrLine> OcrOrt::detect(const uint8_t* bgra, int width, int height, std::string& error)
+{
+    if (!d->det.session || !bgra || width <= 0 || height <= 0) return {};
+    try {
+        std::vector<Rect> boxes = d->detect(View{bgra, width, height});
+        std::sort(boxes.begin(), boxes.end(), [](const Rect& a, const Rect& b) { return a.y0 + a.y1 < b.y0 + b.y1; });
+        std::vector<OcrLine> lines;   // the same line grouping as run()
+        float rowY0 = 0, rowY1 = -1;
+        for (const Rect& r : boxes) {
+            const float cy = (r.y0 + r.y1) * 0.5f;
+            if (!lines.empty() && cy >= rowY0 && cy <= rowY1) {
+                OcrLine& l = lines.back();
+                l.x0 = std::min(l.x0, static_cast<int>(r.x0));
+                l.y0 = std::min(l.y0, static_cast<int>(r.y0));
+                l.x1 = std::max(l.x1, static_cast<int>(r.x1));
+                l.y1 = std::max(l.y1, static_cast<int>(r.y1));
+                continue;
+            }
+            rowY0 = r.y0;
+            rowY1 = r.y1;
+            lines.push_back({{}, static_cast<int>(r.x0), static_cast<int>(r.y0), static_cast<int>(r.x1), static_cast<int>(r.y1)});
+        }
+        return lines;
+    } catch (const std::exception& e) {
+        error = std::string("OCR: ") + e.what();
+        return {};
+    }
+}
+
 int OcrOrt::threads() const { return d->cfg.threads; }
 
 std::string OcrOrt::describe() const

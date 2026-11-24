@@ -43,6 +43,10 @@ public:
     /// left to right.
     std::vector<OcrLine> run(const uint8_t* bgra, int width, int height, std::string& error);
 
+    /// The detector alone (no recognition): line boxes, top to bottom, `text` empty. The subtitle finder
+    /// runs it over a whole (downscaled) window to find where the subtitles are.
+    std::vector<OcrLine> detect(const uint8_t* bgra, int width, int height, std::string& error);
+
     int threads() const;
     std::string describe() const;   // runtime version, the DLL actually loaded, classes
 
