@@ -148,16 +148,16 @@ bool Settings::save() const
     std::error_code ec;
     std::filesystem::create_directories(fsPath(m_path).parent_path(), ec);
 
-    // Sorted output keeps the file stable between saves.
+    // Sorted output keeps the file stable between saves; written next to it and renamed over it, so a
+    // crash or a kill mid-write never leaves half a settings file (and a lost session)
     std::map<std::string, std::string> sorted(m_values.begin(), m_values.end());
-    std::ofstream ofs(fsPath(m_path), std::ios::binary | std::ios::trunc);
-    if (!ofs) return false;
+    std::string out;
     for (const auto& [k, v] : sorted) {
         std::string stored = isSecret(k) ? protect(v) : v;
         if (isSecret(k) && !v.empty() && stored.empty()) continue;  // never fall back to plain text
-        ofs << k << '=' << escapeValue(stored) << '\n';
+        out += k + '=' + escapeValue(stored) + '\n';
     }
-    return ofs.good();
+    return win::writeFileAtomic(win::utf8ToWide(m_path), out);
 }
 
 std::string Settings::get(const std::string& key, const std::string& def) const

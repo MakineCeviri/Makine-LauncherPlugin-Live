@@ -41,7 +41,7 @@ constexpr double kCacheTtlS = 900;        // unapproved translations are reused 
 constexpr double kPoolSyncS = 180;        // local pool vs server while reading
 constexpr double kStatusPollS = 300;      // maintenance / version check
 constexpr double kOfflineRetryS = 30;
-constexpr auto kShutdownBudget = std::chrono::milliseconds(1500);
+constexpr auto kShutdownBudget = std::chrono::milliseconds(700);   // + bye 400 + Discord 200 < 1.5 s
 constexpr auto kReadOnceTimeout = std::chrono::seconds(25);   // invoke times out at 30 s
 constexpr const char* kSourceLang = "en";  // product decision: English → Turkish only
 constexpr const char* kTargetLang = "tr";
@@ -123,12 +123,11 @@ std::optional<console::Source> pickSource(const std::string& key, unsigned long 
     const auto found = console::findSources(customExes);
     for (const auto& s : found)
         if (pid && s.pid == pid) return s;
+    // A custom window (a media player…) only when the player picked it in this session (pid above)
     for (const auto& s : found)
-        if (!key.empty() && s.app.key == key) return s;
-    // Steam Link, Moonlight, Parsec, GeForce NOW can show any PC game, and console mode is the GTA VI
-    // pool: they are read only when the user picked them (console.select)
+        if (!key.empty() && s.app.key == key && s.app.key != "custom") return s;
     for (const auto& s : found)
-        if (s.app.console != "stream" && s.app.console != "cloud") return s;
+        if (s.app.key != "custom") return s;
     return std::nullopt;
 }
 
@@ -240,7 +239,8 @@ void Engine::shutdown()
     {
         std::lock_guard lock(m_mutex);
         m_quit = true;
-        m_jobs.clear();
+        m_jobs.clear();   // a style save still waiting on its debounce is written here instead
+        if (m_styleSaveGen) saveSettings();
     }
     m_captureCv.notify_all();
     m_netCv.notify_all();
@@ -249,7 +249,7 @@ void Engine::shutdown()
         std::lock_guard lock(m_mutex);
         if (m_usageReport && m_loginState == "signedIn") bye = beatPayloadLocked(true);
     }
-    if (!bye.is_null()) m_server.beat(bye, 700);   // short: the host's whole shutdown budget is 3 s
+    if (!bye.is_null()) m_server.beat(bye, 400);   // the launcher ends the host 1.5 s after shutdown starts
     stopOutputs();
     m_server.cancel();
     bool finished = false;
@@ -373,6 +373,23 @@ void Engine::saveSettings()   // under m_mutex
     m_settings.set("authToken", m_server.token());
     m_settings.set("authServer", m_server.token().empty() ? std::string() : serverUrl());
     if (!m_settings.save()) logLine(MAKINE_LOG_WARN, "Ayarlar kaydedilemedi (settings.cfg).");
+}
+
+bool Engine::consentMissingLocked() const
+{
+    return currentSlug() == console::kGameSlug && !m_consoleConsent;
+}
+
+void Engine::stopIfConsentMissing()
+{
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_running || !consentMissingLocked()) return;
+        m_running = false;
+    }
+    logLine(MAKINE_LOG_INFO, "Okuma durdu: GTA VI havuzu için oyuncunun onayı yok");
+    m_captureCv.notify_all();
+    publish();
 }
 
 std::string Engine::currentSlug() const
@@ -533,6 +550,7 @@ Result Engine::invoke(std::string_view method, const json& params)
             saveSettings();
         }
         m_captureCv.notify_all();
+        stopIfConsentMissing();
         applyOutputs();
         post([this] { syncPool(true); });
         return okMessage(mode == "console" ? "Konsol modu" : "PC modu");
@@ -557,6 +575,7 @@ Result Engine::invoke(std::string_view method, const json& params)
             m_consoleConsent = flag(params, "granted");
             saveSettings();
         }
+        stopIfConsentMissing();   // consent taken back: reading stops at once
         publish();
         return okMessage(flag(params, "granted") ? "Onaylandı." : "Onay geri alındı.");
     }
@@ -583,8 +602,16 @@ Result Engine::invoke(std::string_view method, const json& params)
                 else m_style[k] = v;
             }
             ++m_styleVersion;
-            saveSettings();
         }
+        int gen = 0;
+        {
+            std::lock_guard lock(m_mutex);
+            gen = ++m_styleSaveGen;
+        }
+        post([this, gen] {   // written once the slider rests for half a second
+            std::lock_guard lock(m_mutex);
+            if (gen == m_styleSaveGen) saveSettings();
+        }, 0.5);
         m_captureCv.notify_all();
         applyStyleOutputs();
         publish();
@@ -607,8 +634,11 @@ void Engine::onEvent(std::string_view event, const json& payload)
             m_gameName = stream ? std::string(console::kGameName) : name;
             m_gameSlug = stream ? std::string(console::kGameSlug) : text::gameSlug(name);
             m_gamePid = static_cast<unsigned long>(num(payload, "pid", 0));   // optional (contract addition)
+            const std::string exe = str(payload, "exe");
+            m_gameExe = text::toUtf8(text::lower(text::fromUtf8(exe.substr(exe.find_last_of("\\/") + 1))));
         }
         logLine(MAKINE_LOG_INFO, "Oyun: " + name);
+        stopIfConsentMissing();
         publish();
         post([this] { syncPool(true); });
         maybeAutoStart();
@@ -630,6 +660,7 @@ void Engine::onEvent(std::string_view event, const json& payload)
             m_gameName.clear();
             m_gameSlug.clear();
             m_gamePid = 0;
+            m_gameExe.clear();
         }
         m_captureCv.notify_all();
         publish();
@@ -812,7 +843,11 @@ void Engine::refreshStatus()
 
 void Engine::statusLoop()
 {
-    refreshStatus();
+    try {
+        refreshStatus();
+    } catch (const std::exception& e) {
+        logLine(MAKINE_LOG_WARN, std::string("Durum: ") + e.what());
+    }
     post([this] { statusLoop(); }, kStatusPollS);
 }
 
@@ -854,7 +889,7 @@ Result Engine::startReading()
         if (m_blocked) return Result::error(MAKINE_E_DENIED, m_serverMessage);
         if (m_mode == "pc" && !m_pcRegion)
             return Result::error(MAKINE_E_FAILED, "Önce okunacak bölgeyi seç.");
-        if (m_mode == "console" && !m_consoleConsent)   // the screen asks once (consoleConsent.set)
+        if (consentMissingLocked())   // console mode or a console stream app in PC mode; the screen asks once
             return Result::error(MAKINE_E_DENIED, "consent_required: Konsol modunda okunan her satır Makine Çeviri'nin "
                                                   "GTA VI çeviri havuzuna gider. Onaylıyor musun?");
         m_running = true;
@@ -1064,6 +1099,8 @@ void Engine::runNet()
             fn();
         } catch (const std::exception& e) {
             logLine(MAKINE_LOG_ERROR, std::string("İş: ") + e.what());
+        } catch (...) {
+            logLine(MAKINE_LOG_ERROR, "İş: beklenmeyen hata");
         }
         lock.lock();
     }
@@ -1133,6 +1170,18 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
             return;
         }
     }
+    struct InflightGuard {   // whatever happens below, the key leaves m_inflight and waiters wake
+        Engine* e;
+        std::u32string key;
+        ~InflightGuard()
+        {
+            {
+                std::lock_guard lock(e->m_mutex);
+                e->m_inflight.erase(key);
+            }
+            e->m_netCv.notify_all();
+        }
+    } inflightGuard{this, key};
 
     ApiResult res;
     std::string notice, noticeCode;
@@ -1187,7 +1236,6 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
         kind = str(res.data, "status", "pending") == "verified" ? "verified" : "pending";
     {
         std::lock_guard lock(m_mutex);
-        m_inflight.erase(key);
         if (!notice.empty()) {
             m_notice = notice;
             m_noticeCode = noticeCode;
@@ -1356,14 +1404,33 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         DWORD fgPid = 0;
         if (fg) GetWindowThreadProcessId(fg, &fgPid);
         unsigned long gamePid = 0;
+        std::string gameExe;
         {
             std::lock_guard lock(m_mutex);
             gamePid = m_gamePid;
+            gameExe = m_gameExe;
+        }
+        if (!gamePid && gameExe.empty()) {   // the launcher said neither: we cannot tell the game's window
+            if (code) *code = "game_unidentified";
+            return "Oyunun penceresi tanınamadı; Makine oyunun sürecini bildirmedi.";
+        }
+        bool isGame = gamePid && fgPid == gamePid;
+        if (!isGame && !gameExe.empty() && fgPid) {
+            if (const HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, fgPid)) {
+                wchar_t buf[1024];
+                DWORD size = 1024;
+                if (QueryFullProcessImageNameW(p, 0, buf, &size)) {
+                    const std::wstring path(buf, size);
+                    isGame = text::toUtf8(text::lower(text::fromUtf8(win::wideToUtf8(path.substr(path.find_last_of(L"\\/") + 1)))))
+                             == gameExe;
+                }
+                CloseHandle(p);
+            }
         }
         RECT r{};
         const int cx = pc->x + pc->w / 2, cy = pc->y + pc->h / 2;
         const bool covers = fg && GetWindowRect(fg, &r) && cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom;
-        if (!fg || fgPid == GetCurrentProcessId() || fgPid == m_launcherPid || (gamePid && fgPid != gamePid) || !covers)
+        if (!fg || fgPid == GetCurrentProcessId() || fgPid == m_launcherPid || !isGame || !covers)
         {
             if (code) *code = "game_not_front";
             return "Oyun önde değil · oyuna dönünce okuma sürer.";
@@ -1386,7 +1453,7 @@ void Engine::handleEvents(const std::vector<LineEvent>& events, const std::u32st
             {
                 std::lock_guard lock(m_mutex);
                 ++m_lines;
-                slug = currentSlug() == m_poolSlug ? m_poolSlug : std::string();
+                slug = currentSlug() == m_poolSlug && !consentMissingLocked() ? m_poolSlug : std::string();
                 warm = m_loginState == "signedIn";
             }
             // K12: an approved line found by its exact key on the very first reading shows at once;
@@ -1411,7 +1478,7 @@ void Engine::handleEvents(const std::vector<LineEvent>& events, const std::u32st
                 std::lock_guard lock(m_mutex);
                 seq = ++m_dispatchSeq[e.id];
                 if (m_dispatchSeq.size() > 400) m_dispatchSeq.erase(m_dispatchSeq.begin());
-                slug = currentSlug();
+                slug = consentMissingLocked() ? std::string() : currentSlug();   // never to the GTA VI pool unasked
                 name = m_mode == "console" ? std::string(console::kGameName) : m_gameName;
             }
             if (!slug.empty()) post([this, id = e.id, text, seq, slug, name] { translateJob(id, text, seq, slug, name); });
@@ -1428,7 +1495,11 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
     }
     const std::string text = text::toUtf8(d.text);
     json line = {{"text", text}};
-    if (style.value("showSource", false) && m_lineSource.count(d.id)) line["sourceText"] = m_lineSource[d.id];
+    const bool showSource = style.contains("showSource") && style["showSource"].is_boolean() && style["showSource"].get<bool>();
+    if (showSource && m_lineSource.count(d.id)) {
+        line["sourceText"] = m_lineSource[d.id];
+        m_shownKeys.push_back(text::compactPoolKey(text::fromUtf8(m_lineSource[d.id])));
+    }
     json payload = {{"text", text}, {"lines", json::array({line})}, {"x", rect.x}, {"y", rect.y},
                     {"width", rect.w}, {"height", rect.h}, {"kind", d.kind}};
     if (!style.empty()) payload["style"] = style;
@@ -1443,7 +1514,7 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
     m_overlayShown = true;
     m_shownKeys.push_back(text::compactPoolKey(d.text));
     ++m_shownCount;
-    if (m_shownKeys.size() > 4) m_shownKeys.erase(m_shownKeys.begin());
+    while (m_shownKeys.size() > 12) m_shownKeys.erase(m_shownKeys.begin());
 }
 
 // OCR boxes that are (pieces of) a translation we showed: with screen capture the overlay
@@ -1457,12 +1528,32 @@ std::string Engine::withoutOwnOverlay(const std::string& raw) const
         if (i < raw.size() && raw[i] != '\n') continue;
         const std::string line = raw.substr(b, i - b);
         b = i + 1;
-        const std::u32string k = text::compactPoolKey(text::fromUtf8(line));
+        // OCR of our own Turkish line may lose its ç ğ ı ö ş ü: compare with those letters folded too
+        const auto fold = [](std::u32string s) {
+            for (auto& c : s) {
+                switch (c) {
+                case U'ç': c = U'c'; break;
+                case U'ğ': c = U'g'; break;
+                case U'ı': c = U'i'; break;
+                case U'ö': c = U'o'; break;
+                case U'ş': c = U's'; break;
+                case U'ü': c = U'u'; break;
+                case U'â': c = U'a'; break;
+                case U'î': c = U'i'; break;
+                case U'û': c = U'u'; break;
+                default: break;
+                }
+            }
+            return s;
+        };
+        const std::u32string k = fold(text::compactPoolKey(text::fromUtf8(line)));
         bool own = false;
-        for (const auto& shown : m_shownKeys)
+        for (const auto& shownRaw : m_shownKeys) {
+            const std::u32string shown = fold(shownRaw);
             own = own || k == shown || keysSimilar(k, shown) || (k.size() >= 8 && shown.find(k) != std::u32string::npos)
                   || (shown.size() >= 8 && k.find(shown) != std::u32string::npos)
-                  || (k.size() >= 4 && text::sequenceRatio(k, shown) >= 0.8);
+                  || (k.size() >= 4 && text::sequenceRatio(k, shown) >= 0.7);
+        }
         if (own) continue;
         if (!kept.empty()) kept += '\n';
         kept += line;
@@ -1619,9 +1710,11 @@ void Engine::runCapture()
                     }
                     const auto d = m_scheduler.tick(t);
                     if (d && (!m_shown || m_shown->id != d->id || m_shown->text != d->text || styleVersion != seenStyle)) {
-                        if (reason.empty()) showOverlay(*d, overlay);
-                        m_shown = d;
-                        seenStyle = styleVersion;
+                        if (reason.empty()) {
+                            showOverlay(*d, overlay);
+                            m_shown = d;
+                            seenStyle = styleVersion;
+                        }
                     } else if (!d && m_shown) {
                         hideOverlay();
                         m_shown.reset();

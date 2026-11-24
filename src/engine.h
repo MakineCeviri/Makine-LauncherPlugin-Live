@@ -141,6 +141,8 @@ private:
     nlohmann::json beatPayloadLocked(bool bye);
     void saveSettings();
     std::string currentSlug() const;   // under m_mutex
+    bool consentMissingLocked() const;   // lines would go to the GTA VI pool without the player's consent
+    void stopIfConsentMissing();
     double now() const;
 
     const makine::plugin::Host m_host;
@@ -177,6 +179,7 @@ private:
     int m_styleVersion = 0;
     std::string m_gameName, m_gameSlug;       // PC: the game the launcher says is running
     unsigned long m_gamePid = 0;               // its process, when the launcher sends one
+    std::string m_gameExe;                     // or its exe name (lower case)
     unsigned long m_launcherPid = 0;
     std::string m_poolSlug;                    // the local pool in use
     double m_poolSyncedAt = -1e9;
@@ -212,6 +215,7 @@ private:
     // firewall question is coming before the first home-network listener opens
     std::string m_captureCode, m_noticeCode, m_noteCode;   // fixed reason codes (OCR_KARAR §6)
     bool m_noteRunning = false;
+    int m_styleSaveGen = 0;
     double m_darkSince = -1, m_blackCheckAt = 0;   // capture thread: black-frame detection
     bool m_consoleConsent = false, m_everStarted = false, m_lanOnce = false, m_firewallHeadsUp = false;
 
@@ -230,7 +234,7 @@ private:
     bool m_active = false, m_overlayShown = false;
     std::optional<Display> m_shown;
     std::map<int, std::string> m_lineSource;   // line id -> the text sent for translation
-    std::vector<std::u32string> m_shownKeys;   // recent overlay texts: never read back as source
+    std::vector<std::u32string> m_shownKeys;   // recent overlay texts (and their sources): never read back as source
     size_t m_shownCount = 0, m_filteredWith = 0;
     std::optional<console::Source> m_source;
     double m_nextPick = 0;

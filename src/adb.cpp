@@ -3,6 +3,7 @@
 
 #include "adb.h"
 
+#include "subtitle_web.h"   // lanIp(), isPrivateLan()
 #include "winutil.h"
 
 #include <winsock2.h>
@@ -399,25 +400,13 @@ std::string Key::androidPublicKey(const std::string& name) const
 std::vector<std::string> scanHosts(int port, int timeoutMs)
 {
     winsock();
+    // Only the /24 of the home-network interface, and only a private one (never a public range)
     std::vector<std::string> mine, candidates;
-    char hostName[256] = {};
-    addrinfo hints{};
-    hints.ai_family = AF_INET;
-    addrinfo* res = nullptr;
-    if (gethostname(hostName, sizeof hostName) == 0 && getaddrinfo(hostName, nullptr, &hints, &res) == 0) {
-        for (addrinfo* a = res; a; a = a->ai_next) {
-            char ip[INET_ADDRSTRLEN] = {};
-            inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(a->ai_addr)->sin_addr, ip, sizeof ip);
-            const std::string s = ip;
-            if (s.rfind("127.", 0) == 0 || s.rfind("169.254.", 0) == 0) continue;
-            mine.push_back(s);
-            const std::string net = s.substr(0, s.rfind('.') + 1);
-            for (int h = 1; h < 255; ++h)
-                if (std::find(candidates.begin(), candidates.end(), net + std::to_string(h)) == candidates.end())
-                    candidates.push_back(net + std::to_string(h));
-        }
-        freeaddrinfo(res);
-    }
+    const std::string lan = lanIp();
+    if (!isPrivateLan(lan)) return {};
+    mine.push_back(lan);
+    const std::string net = lan.substr(0, lan.rfind('.') + 1);
+    for (int h = 1; h < 255; ++h) candidates.push_back(net + std::to_string(h));
     std::vector<std::string> open;
     for (size_t start = 0; start < candidates.size(); start += 60) {   // FD_SETSIZE is 64 on Windows
         std::vector<std::pair<SOCKET, std::string>> batch;

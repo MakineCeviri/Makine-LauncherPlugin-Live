@@ -9,6 +9,7 @@
 #include "engine.h"
 
 #include "gzip_store.h"
+#include "jsonutil.h"
 #include "unitext.h"
 #include "winutil.h"
 
@@ -274,6 +275,8 @@ const ReasonText kReasons[] = {
     {"maintenance", "Makine Live şu an bakımda; bakım bitince kendiliğinden devam eder.", "none"},
     {"update_required", "Makine Live'ın bu sürümü artık desteklenmiyor. Makine'yi güncelle.", "update_launcher"},
     {"signed_out", "Makine hesabınla giriş yap.", "login"},
+    {"consent_required", "Okunan her satır Makine Çeviri'nin GTA VI çeviri havuzuna gider. Onaylarsan okuma başlar.", "consent"},
+    {"game_unidentified", "Oyunun penceresi tanınamadı; Makine oyunun sürecini bildirmedi.", "none"},
     {"offline", "Sunucuya ulaşılamıyor; bağlantı gelince devam eder.", "retry"},
     {"source_missing", "Konsol görüntüsü görünmüyor. PS Remote Play, Xbox uygulaması ya da yakalama programını aç.", "open_source"},
     {"source_minimized", "Konsol penceresi küçültülmüş. Pencereyi ekranda aç; başka pencerelerin altında kalabilir.", "restore_source"},
@@ -312,6 +315,7 @@ json Engine::reasonLocked() const
     if (m_blocked) return reasonJson("update_required");
     if (m_loginState == "signedOut") return reasonJson("signed_out");
     if (m_loginState == "offline") return reasonJson("offline");
+    if (consentMissingLocked()) return reasonJson("consent_required");
     if (m_running && !m_captureCode.empty()) return reasonJson(m_captureCode);
     if (m_mode == "console" && m_output == "tv" && m_tv) {
         const std::string tv = m_tv->state().first;
@@ -398,7 +402,7 @@ void Engine::onStatus(const json& data)
         if (m_annSeen.count(id)) continue;
         m_annSeen.insert(id);
         m_announcements.push_back({{"id", id},
-                                   {"kind", a.value("kind", std::string("info"))},
+                                   {"kind", jstr(a, "kind", "info")},
                                    {"kindLabel", str(a, "kind_label").empty() ? "Duyuru" : str(a, "kind_label")},
                                    {"title", str(a, "title")},
                                    {"body", str(a, "body")},
@@ -441,7 +445,10 @@ std::optional<Result> Engine::invokeOutputs(std::string_view method, const json&
         publish();
         post([this] {
             json found = json::array();
-            for (const TvInfo& t : discoverTvs(1600)) found.push_back(t.toJson());
+            try {
+                for (const TvInfo& t : discoverTvs(1600)) found.push_back(t.toJson());
+            } catch (...) {   // the searching flag must not stay on
+            }
             {
                 std::lock_guard lock(m_mutex);
                 m_tvFound = found;
@@ -522,6 +529,7 @@ std::optional<Result> Engine::invokeOutputs(std::string_view method, const json&
         publish();
         // Minutes with a user prompt on the TV: its own thread, not a net thread
         std::thread([self = shared_from_this(), host, port] {
+          try {
             const auto setStep = [&](const std::string& s) {
                 {
                     std::lock_guard lock(self->m_mutex);
@@ -549,6 +557,14 @@ std::optional<Result> Engine::invokeOutputs(std::string_view method, const json&
             self->logLine(error.empty() ? MAKINE_LOG_INFO : MAKINE_LOG_WARN,
                           "TV'ye kurulum (" + host + "): " + (error.empty() ? "tamam" : error));
             self->publish();
+          } catch (...) {   // a thread that throws would end the plugin host
+            {
+                std::lock_guard lock(self->m_mutex);
+                self->m_tvInstall["state"] = "error";
+                self->m_tvInstall["message"] = "Kurulum beklenmedik bir hatayla yarıda kaldı.";
+            }
+            self->publish();
+          }
         }).detach();
         return ok("Makine TV kuruluyor.");
     }

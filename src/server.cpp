@@ -139,6 +139,15 @@ ApiResult ServerClient::call(const wchar_t* method, const std::string& pathAndQu
         std::lock_guard lock(g_activeMutex);
         g_active.insert(req);
     }
+    if (m_cancelled) {   // cancel() ran between the check above and the insert: it did not see this request
+        {
+            std::lock_guard lock(g_activeMutex);
+            if (g_active.erase(req)) WinHttpCloseHandle(req);
+        }
+        WinHttpCloseHandle(connect);
+        r.error = "iptal edildi";
+        return r;
+    }
     WinHttpSetTimeouts(req, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
 
     std::string headers = "Accept: application/json\r\nX-Makine-Device: " + m_device + "\r\nX-Makine-Version: "
