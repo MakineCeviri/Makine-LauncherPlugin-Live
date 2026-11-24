@@ -228,6 +228,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `announcement.read` | `{id}` (sayı ya da rakamlardan oluşan metin): duyuruyu kapatır (sunucuya `ann_read`) |
 | `status.refresh` | bakım / sürüm / duyuruları hemen yeniden sorar (bakım sürerken kendiliğinden 30 sn'de bir, yoksa 300 sn) |
 | `sample` | örnek bir replik (`resources/sample_quotes.json`) açık her çıktıya (kutu, TV, telefon / OBS) 4 sn gider |
+| `region.keepGrown` | kesik satır yüzünden bu oturumda büyüyen bölgeyi (`regionGrow`) kalıcı kaydeder |
 | `support.dismiss` | "kayıt gönderildi" kartını kapatır |
 | `donate` / `donate.dismiss` | bağış sayfasını (`makineceviri.org/destek`) `ui.openUrl` ile açar / ilk açılış kartını kapatır |
 
@@ -239,6 +240,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "history": [{"source", "text", "kind": "verified|pending|api", "origin", "at"}],   // bu oturum, en yeni önde, en çok 50
   "hotkeys": {"armed", "keys": {"start|region|move": {"key": "F9|…|off", "active", "error"}}},
   "boxMove": {"on", "supported"},
+  "regionGrow": {"left", "right", "top", "bottom"},   // bu oturumda kesik satır yüzünden büyüme (bölge boyunun payı, en çok 0.3)
   "mode": "pc|console",
   "sources": [ ... ], "selectedSource": {"key", "pid"} | null,
   "region": {"pc": {"x", "y", "width", "height"} | null, "console": {"x", "y", "width", "height"} (video alanına oran)},
@@ -261,7 +263,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 }
 ```
 
-Çeviri `overlay.show` ile gider: `text` (eski Makine'ler için), `lines: [{text, sourceText?}]`, bölge (`x, y, width,
+Çeviri `overlay.show` ile gider: `text` (eski Makine'ler için), `lines: [{text, sourceText?}]` (konuşmacı başına bir satır), bölge (`x, y, width,
 height`; konsolda video alanındaki bölgenin ekran karşılığı) ve kayıtlı `style`; konsolda "Bu ekranda" çıktısında `frame: {x, y, width, height}` (fiziksel px), yayın penceresindeki
 16:9 video alanıdır (Alt / Üst onun içinde hesaplanır). PC oyununda oyun Makine'nin
 `game.started` / `game.stopped` olaylarından ve `games.running`'den gelir; konsol modu her zaman GTA VI havuzudur.
@@ -271,6 +273,14 @@ Makine olmamalı ve bölgenin ortasını kapsamalı. Ekrandan okunan ve gösterd
 cümle birleştirilmeden önce atılır; yine de Makine'nin kaplama penceresinin `SetWindowDisplayAffinity(
 WDA_EXCLUDEFROMCAPTURE)` ile yakalamadan gizlenmesi gerekir. Yerel havuz, oyun Makine'nin kütüphanesinden
 geldiği için sormadan indirilir. Katalog dışı oyunlar `{gameId: "exe:<exe>", name, pid, exe, catalog: false}` ile gelir: havuz adı `name`dan (yol ya da exe adıysa yalnız dosya adının gövdesi) türer, harf yoksa oyun okunmaz (`game_unidentified`); Remote Play gibi konsol yayın uygulamaları bu yoldan da GTA VI sayılır, ayrı bir PC oyunu olmaz.
+
+**Havuz kalitesi** (sunucunun `src/live/text.ts` kuralları, `garbage.cpp`'de `<regex>` olmadan; sunucunun vektörleri
+`spec/speaker_vectors.json`, `line_issue_vectors.json`, `clipped_edge_vectors.json` ctest'te): konuşmacı etiketi ve dil
+notu satırdan ayrılır ("Jason: What?" → anahtar ve `/translate` yalnız "What?"); ekranda etiket çevirinin önünde,
+çevrilmeden durur ("Jason: Ne?", "Mia: (İspanyolca) …"). Tek blokta okunan iki konuşmacı her `[.!?…] Ad:` sınırında
+ayrı satır olur. OCR her satırın kutusunu verir: kutu bölgenin kenarına değiyor ve kenardaki kelime gerçek değilse
+(ya da sarılmış altyazının öbür satırı üstte / altta kalmışsa) satır gönderilmez, bölge o yöne %10 büyür (bu oturum,
+yan başına en çok 3 kez) ve sonraki kare yeniden okunur; oyuncu `region.keepGrown` ile kalıcı yapar.
 
 **Kısayollar** (0.3.2 exe'deki gibi: F9 başlat/durdur, F10 bölge seç, F8 kutuyu taşı/kilitle): manifest ayarları
 `hotkeyStart` / `hotkeyRegion` / `hotkeyMove` (F1–F12 ya da `off`). Eklentinin kendi iş parçacığında, yalnız mesaj
