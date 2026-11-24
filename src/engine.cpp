@@ -97,7 +97,7 @@ std::vector<std::string> splitOn(const std::string& s, char sep)
     return out;
 }
 
-uint64_t frameHash(const uint8_t* data, size_t size)   // as live_core.cpp
+uint64_t frameHash(const uint8_t* data, size_t size)   // as 0.3.x live_core.cpp
 {
     uint64_t h = 0x9E3779B97F4A7C15ULL ^ size;
     size_t i = 0;
@@ -1218,7 +1218,16 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
 
 bool Engine::ensureOcr(std::string& error)
 {
-    if (m_ocr && m_ocr->isReady() && m_capture) return true;
+    bool console = false;
+    {
+        std::lock_guard lock(m_mutex);
+        console = m_mode == "console";
+    }
+    // K8: PC mode leaves the cores to the game (one OCR thread, the capture thread below normal);
+    // console mode has the PC to itself (two threads, normal priority)
+    const int threads = console ? 2 : 1;
+    SetThreadPriority(GetCurrentThread(), console ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_BELOW_NORMAL);
+    if (m_ocr && m_ocr->threads() == threads && m_capture) return true;
     const std::wstring words = m_init.pluginDir + L"\\resources\\en_words.txt";
     const auto list = win::readFile(words);
     if (!list || !m_garbage.setWords(*list)) {
@@ -1226,26 +1235,29 @@ bool Engine::ensureOcr(std::string& error)
         return false;
     }
     m_spacing.load(words);
-    m_capture = std::make_unique<ScreenCapture>();
-    if (!m_capture->init(CaptureMethod::Auto)) {
-        error = "Ekran yakalama başlatılamadı: " + m_capture->lastError();
-        m_capture.reset();
-        return false;
+    if (!m_capture) {
+        m_capture = std::make_unique<ScreenCapture>();
+        if (!m_capture->init(CaptureMethod::Auto)) {
+            error = "Ekran yakalama başlatılamadı: " + m_capture->lastError();
+            m_capture.reset();
+            return false;
+        }
     }
-    m_ocr = std::make_unique<RapidOcrEngine>();
-    m_ocr->setLanguage("ch");
-    m_ocr->setPaths(m_init.pluginDir + L"\\bin", m_init.pluginDir + L"\\models", m_init.dataDir + L"\\ocr");
-    if (!m_ocr->init(win::wideToUtf8(m_init.dataDir))) {
-        error = m_ocr->lastError();
-        m_ocr.reset();
+    // The OCR reads the captured frame in memory: no file is written per frame
+    auto ocr = std::make_unique<OcrOrt>();
+    const std::wstring models = m_init.pluginDir + L"\\models\\";
+    if (!ocr->load({m_init.pluginDir + L"\\bin\\onnxruntime.dll", models + L"ch_PP-OCRv3_det_infer.onnx",
+                    models + L"ch_PP-OCRv3_rec_infer.onnx", models + L"ppocr_keys_v1.txt", threads},
+                   error))
         return false;
-    }
+    m_ocr = std::move(ocr);
+    m_lastHash = 0;
     m_frame.pixels.reserve(1920 * 200 * 4);
-    logLine(MAKINE_LOG_INFO, "OCR hazır (RapidOcrOnnx, PP-OCRv3)");
+    logLine(MAKINE_LOG_INFO, "OCR hazır: " + m_ocr->describe());
     return true;
 }
 
-// Port of live_core.cpp captureAndRunOcr: an unchanged frame returns the previous text without OCR.
+// An unchanged frame returns the previous text without OCR (as 0.3.x captureAndRunOcr).
 bool Engine::readRegion(void* hwnd, const CaptureRegion& region, std::string& textOut, std::string& error)
 {
     if (!m_capture->captureRegion(hwnd, region, m_frame)) {
@@ -1266,16 +1278,18 @@ bool Engine::readRegion(void* hwnd, const CaptureRegion& region, std::string& te
     m_lastHash = hash;
     std::string text;
     const auto ocrStart = Clock::now();
-    const auto boxes = m_ocr->recognize(m_frame.pixels.data(), m_frame.width, m_frame.height);
+    std::string ocrError;
+    const auto lines = m_ocr->run(m_frame.pixels.data(), m_frame.width, m_frame.height, ocrError);
+    if (!ocrError.empty()) logLine(MAKINE_LOG_WARN, ocrError);
     const double ocrMs = std::chrono::duration<double, std::milli>(Clock::now() - ocrStart).count();
     if (ocrMs > 40) {   // as the harness: only real OCR runs, not unchanged frames
         std::lock_guard lock(m_mutex);
         m_ocrMs.push_back(ocrMs);
         if (m_ocrMs.size() > 50) m_ocrMs.pop_front();
     }
-    for (const auto& box : boxes) {
+    for (const auto& line : lines) {
         if (!text.empty()) text += "\n";
-        text += box.text;
+        text += line;
     }
     text = dropForeignScriptTokens(text);   // Latin-script source: CJK tokens are model noise
     text = m_spacing.fix(text);             // "Iwas goingto" → "I was going to"

@@ -4,14 +4,14 @@ Makine Live — third-party components
 Makine Live (bin/makine-live.dll) is licensed under AGPL-3.0-only with the
 Commons Clause condition; see Makine-Live-LICENSE.txt. It ships with:
 
-bin/RapidOcrOnnx.dll
-    RapidOcrOnnx 1.2.3, https://github.com/RapidAI/RapidOcrOnnx
-    Apache License 2.0 — RapidOcrOnnx-LICENSE.txt
-    Statically linked into it:
-      ONNX Runtime 1.15.1, https://github.com/microsoft/onnxruntime
-        MIT License — onnxruntime-LICENSE.txt, onnxruntime-ThirdPartyNotices.txt
-      OpenCV 4.8.1, https://github.com/opencv/opencv
-        Apache License 2.0 — opencv-LICENSE.txt
+bin/onnxruntime.dll
+    ONNX Runtime 1.24.3 (Microsoft.ML.OnnxRuntime, signed by Microsoft),
+    https://github.com/microsoft/onnxruntime
+    MIT License — onnxruntime-LICENSE.txt, onnxruntime-ThirdPartyNotices.txt
+
+bin/msvcp140.dll, bin/msvcp140_1.dll, bin/vcruntime140.dll, bin/vcruntime140_1.dll
+    Microsoft Visual C++ runtime, redistributed under the Visual Studio
+    redistributable code terms (app-local deployment, signed by Microsoft)
 
 models/ch_PP-OCRv3_det_infer.onnx
 models/ch_ppocr_mobile_v2.0_cls_infer.onnx

@@ -8,7 +8,7 @@
 // (README "Launcher screen API").
 //
 // initialize only reads settings and starts the threads; the OCR runtime loads on the
-// first start / readOnce. The ABI 1 exports of the Python test harness are in abi1.cpp.
+// first start / readOnce.
 
 #include "engine.h"
 #include "winutil.h"

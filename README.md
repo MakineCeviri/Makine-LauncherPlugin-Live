@@ -107,16 +107,17 @@ kadar ayrıntılı rehber: [docs/GTA6_MAKINE_LIVE_REHBERI.md](docs/GTA6_MAKINE_L
 ### OCR çalışma dosyaları
 
 Boyutları nedeniyle depoda değiller. `python tools/fetch_ocr.py` hepsini adresi ve SHA-256'sı sabitlenmiş olarak
-`.cache/ocr/` altına indirir (ikinci çalıştırmada yalnızca doğrular): RapidOcrOnnx 1.2.3 C kütüphanesi (statik
-CRT; ONNX Runtime ve OpenCV içinde, tek DLL) ve PP-OCRv3 modelleri. CMake bunları `build/package/` ve
-`build/release/` altına kopyalar.
+`.cache/ocr/` altına indirir (ikinci çalıştırmada yalnızca doğrular): nuget.org'daki resmî Microsoft.ML.OnnxRuntime
+1.24.3 paketinden `onnxruntime.dll` ve C API başlığı, PP-OCRv3 modelleri; onnxruntime'ın istediği VC++ çalışma
+dosyaları yerel Visual Studio redist klasöründen kopyalanır. Her DLL'in Microsoft Authenticode imzası denetlenir.
+CMake bunları `build/package/` altına kopyalar.
 
 ```
 .cache/ocr/
-├── bin/RapidOcrOnnx.dll
+├── bin/onnxruntime.dll, msvcp140.dll, msvcp140_1.dll, vcruntime140.dll, vcruntime140_1.dll
+├── include/onnxruntime_c_api.h     (yalnız derleme)
 ├── models/
 │   ├── ch_PP-OCRv3_det_infer.onnx
-│   ├── ch_ppocr_mobile_v2.0_cls_infer.onnx
 │   ├── ch_PP-OCRv3_rec_infer.onnx
 │   └── ppocr_keys_v1.txt
 └── licenses/
@@ -142,12 +143,12 @@ Adım adım:
 ```powershell
 python tools/fetch_ocr.py        # OCR çalışma dosyaları (bir kez)
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build              # → build/package/ (Makine'nin paketlediği eklenti) + build/release/ (Python koşucusu)
+cmake --build build              # → build/package/ (Makine'nin paketlediği eklenti)
 cmake --build build --target pack   # → build/org.makineceviri.live-<sürüm>.mkplugin
 py -m makine_live                # test koşucusunu derlemeden çalıştırma (geliştirme)
 ```
 
-`build/package/`: `manifest.json`, `bin/makine-live.dll` (girdi), `bin/RapidOcrOnnx.dll`, `models/`,
+`build/package/`: `manifest.json`, `bin/makine-live.dll` (girdi), `bin/onnxruntime.dll` + VC++ çalışma dosyaları, `models/`,
 `resources/en_words.txt`, `licenses/`. Makine bu klasörü `plugins/org.makineceviri.live/` olarak paketine koyar.
 
 ### Testler
@@ -186,15 +187,13 @@ yayınlar. Python ya da `MakineLive.exe` gerekmez, eklenti hiçbir şey indirip 
 - `initialize` yalnız ayarları okur ve iş parçacıklarını başlatır (< 1 sn). OCR çalışma dosyaları ve modeller ilk
   `start` / `readOnce`'ta yüklenir. Her şey `dataDir`'e yazılır (`settings.cfg`, `device_id`, `pool/`, `ocr/`);
   `pluginDir` salt okunurdur (MSIX).
-- RapidOcrOnnx `char*` yolları bayt bayt genişlettiği için modellere ve görüntüye göreli ASCII adlarla, geniş API ile
-  ayarlanan çalışma klasöründen erişilir (`ocr_rapid.cpp` `setPaths`).
 - Oturum jetonu `settings.cfg`'de Windows DPAPI ile şifreli durur. Cihaz kimliği eklentiye özgü, `dataDir\device_id`.
 - İstekler `pool_client.py` ile aynı başlıkları taşır (`X-Makine-Device`, `X-Makine-Version`, `User-Agent:
   MakineLive/<sürüm>`) ve `X-Makine-Client: launcher/<Makine sürümü>`. Sunucunun güncelleme yanıtındaki indirme
   kullanılmaz (eklentiyi Makine günceller); bakım ve zorunlu güncelleme `ui.state` → `server` ile gösterilir.
 - Çöp / HUD süzgeci, normalizasyon ve havuz anahtarı, satır takibi ve altyazı zamanlaması Python koşucusunun birebir
   C++ karşılığıdır (`src/garbage.cpp`, `src/subtitle_timing.cpp`, `src/unitext.cpp`); `ctest` aynı vektörlerle sınar.
-- ABI 1 dışa aktarımları (`src/abi1.cpp`) yalnız Python test koşucusu içindir.
+- OCR (F1, OCR_KARAR): onnxruntime C API'siyle PP-OCRv3 algılama + Çince tanıma, yakalanan kare bellekten okunur (kare başına dosya yazılmaz), satırlar soldan sağa birleştirilir. `bin/onnxruntime.dll` Microsoft imzalı (1.24.3), eklenti klasöründen tam yolla yüklenir; yanında VC++ çalışma dosyaları. RapidOcrOnnx, açı sınıflandırıcısı ve ABI 1 dışa aktarımları (Python koşucusunun `build/release`'i) kaldırıldı. Kapı: `live_ocr_gate` ocrbench karelerini kıyas aracının ORT yoluyla birebir aynı okumalı (`ctest -R ocr_gate`).
 
 ### Launcher screen API
 
@@ -351,6 +350,6 @@ Kod katkısında:
 
 [AGPL-3.0](LICENSE) + Commons Clause: kaynak kodu açıktır, değiştirilip paylaşılabilir; yazılımın kendisi ücretli olarak
 satılamaz. Üçüncü taraf bileşenler: `resources/en_words.txt` ([wordninja](https://github.com/keredson/wordninja), MIT),
-çalışma zamanında [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) ve [ONNX Runtime](https://onnxruntime.ai) (depoda değil).
+çalışma zamanında [ONNX Runtime](https://onnxruntime.ai) (depoda değil).
 
 <sub>Makine Live, [Makine Çeviri](https://makineceviri.org) topluluğu tarafından geliştirilir.</sub>

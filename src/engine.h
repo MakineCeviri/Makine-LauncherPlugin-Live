@@ -19,7 +19,7 @@
 #include "console_mode.h"
 #include "garbage.h"
 #include "local_pool.h"
-#include "ocr_rapid.h"
+#include "ocr_ort.h"
 #include "server.h"
 #include "settings.h"
 #include "subtitle_timing.h"
@@ -216,7 +216,7 @@ private:
 
     // ── capture thread only ──
     std::unique_ptr<ScreenCapture> m_capture;
-    std::unique_ptr<RapidOcrEngine> m_ocr;
+    std::unique_ptr<OcrOrt> m_ocr;
     SpacingFixer m_spacing;
     text::Garbage m_garbage;
     CapturedFrame m_frame;
