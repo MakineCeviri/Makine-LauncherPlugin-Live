@@ -79,6 +79,8 @@ public:
     void sourceGone(int id, double lastSeen);
     void translationReady(int id, const std::u32string& text, const std::string& kind, double t);
     void translationFailed(int id);
+    /// A line shown in chunks (fit.h) stays at least this long once its source is gone, unless a newer line waits.
+    void holdFor(int id, double seconds);
     void clear();
 
     std::optional<Display> tick(double now);
@@ -92,6 +94,7 @@ private:
         std::optional<std::u32string> text;
         std::string kind = "api";
         std::optional<double> readyAt, shownAt;
+        double hold = 0;
         bool visible() const { return !lastSeen; }
         double srcDuration() const { return lastSeen ? std::max(0.0, *lastSeen - firstSeen) : 0.0; }
         bool hasText() const { return text && !text->empty(); }

@@ -6,6 +6,7 @@
 
 #include "fit.h"
 #include "subtitle_finder.h"
+#include "subtitle_timing.h"
 #include "unitext.h"
 
 #include <cstdio>
@@ -85,6 +86,15 @@ void testFit()
     check(std::abs(p.total() - (2.0 + 1.2 + 1.2)) < 1e-9, "player total");
     p.clear();
     check(!p.active(), "player cleared");
+
+    // the scheduler holds a chunked line for all its chunks once the source is gone
+    SubtitleScheduler s;
+    s.sourceNew(1, 0);
+    s.translationReady(1, U"Kısa.", "api", 0.1);
+    check(s.tick(0.2).has_value(), "shown");
+    s.holdFor(1, 6.0);
+    s.sourceGone(1, 1.0);
+    check(s.tick(5.0).has_value() && !s.tick(6.3).has_value(), "held for the chunks, then gone");
 }
 
 finder::Observed line(double x0, double y0, double x1, double y1, double fill, const std::string& text)

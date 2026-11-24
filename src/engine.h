@@ -28,6 +28,8 @@
 #include "tv_link.h"
 #include "text_fix.h"
 #include "text_mask.h"
+#include "fit.h"
+#include "subtitle_finder.h"
 
 #include <makine/plugin/sdk.hpp>
 #include <nlohmann/json.hpp>
@@ -128,7 +130,8 @@ private:
     std::string resolveTarget(void*& hwnd, CaptureRegion& region, console::Box& overlay, bool needGame,
                               std::string* code = nullptr);
     void handleEvents(const std::vector<LineEvent>& events, const std::u32string& reading = {});
-    void showOverlay(const Display& d, const console::Box& rect);
+    void showOverlay(const Display& d, const console::Box& rect, int chunk = 0, int chunks = 1);
+    void showLine(const Display& d, const console::Box& rect, double t);   // plans the chunks (fit.h), shows the first
     void hideOverlay();
     std::string withoutOwnOverlay(const std::string& raw) const;
     void stopTracking();
@@ -150,7 +153,7 @@ private:
     void applyOutputs();
     void applyStyleOutputs();
     bool boxWanted() const;
-    void routeLine(const Display& d);
+    void routeLine(const Display& d, int chunk = 0, int chunks = 1);
     void routeClear();
     void updateDiscord();
     nlohmann::json outputsStateLocked() const;
@@ -274,6 +277,8 @@ private:
     std::array<double, 4> m_grow{};
     std::optional<console::Box> m_videoFrame;  // capture thread: the console video rect (overlay.show frame)
     std::optional<Display> m_shown;
+    fit::ChunkPlayer m_chunks;                 // the shown line in chunks, when it does not fit
+    int m_shownChunk = 0;
     std::map<int, std::string> m_lineSource;   // line id -> the text sent for translation
     std::vector<std::u32string> m_shownKeys;   // recent overlay texts (and their sources): never read back as source
     size_t m_shownCount = 0, m_filteredWith = 0;

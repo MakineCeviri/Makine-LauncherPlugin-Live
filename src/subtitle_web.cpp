@@ -272,7 +272,7 @@ void SubtitleWeb::bump()
     m_cv.notify_all();
 }
 
-void SubtitleWeb::sendLine(int id, const std::string& text, const std::string& kind)
+void SubtitleWeb::sendLine(int id, const std::string& text, const std::string& kind, int chunk, int chunks)
 {
     std::lock_guard lock(m_mutex);
     if (m_line.is_object() && !m_line.value("text", std::string()).empty() && m_line.value("text", std::string()) != text) {
@@ -280,6 +280,7 @@ void SubtitleWeb::sendLine(int id, const std::string& text, const std::string& k
         while (m_history.size() > kHistory) m_history.pop_front();
     }
     m_line = {{"t", "line"}, {"id", id}, {"text", text}, {"kind", kind}};
+    if (chunks > 1) m_line["fit"] = {{"chunk", chunk}, {"chunks", chunks}};
     bump();
 }
 

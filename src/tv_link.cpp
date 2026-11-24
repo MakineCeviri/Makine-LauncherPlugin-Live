@@ -255,9 +255,11 @@ void TvLink::onChange(std::function<void()> fn)
     m_onChange = std::move(fn);
 }
 
-void TvLink::sendLine(int id, const std::string& text, const std::string& kind)
+void TvLink::sendLine(int id, const std::string& text, const std::string& kind, int chunk, int chunks)
 {
-    put({{"t", "line"}, {"id", id}, {"text", text}, {"kind", kind}});
+    json line = {{"t", "line"}, {"id", id}, {"text", text}, {"kind", kind}};
+    if (chunks > 1) line["fit"] = {{"chunk", chunk}, {"chunks", chunks}};
+    put(std::move(line));
 }
 
 void TvLink::clear() { put({{"t", "clear"}}); }

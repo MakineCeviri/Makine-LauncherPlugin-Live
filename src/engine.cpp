@@ -1966,7 +1966,7 @@ void Engine::handleEvents(const std::vector<LineEvent>& events, const std::u32st
     }
 }
 
-void Engine::showOverlay(const Display& d, const console::Box& rect)
+void Engine::showOverlay(const Display& d, const console::Box& rect, int chunk, int chunks)
 {
     json style;
     {
@@ -1988,6 +1988,11 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
     json payload = {{"text", text}, {"lines", lines}, {"x", rect.x}, {"y", rect.y},
                     {"width", rect.w}, {"height", rect.h}, {"kind", d.kind}};
     if (!style.empty()) payload["style"] = style;
+    // Fit plan (fit.h): the renderer wraps to maxLines, may shrink to minFontScale and widen to maxWidthFrac of
+    // the frame; a line that still does not fit arrives as chunk i of n (text / lines hold the chunk)
+    if (d.id >= 0)
+        payload["fit"] = {{"maxLines", static_cast<int>(num(style, "maxLines", 2))}, {"minFontScale", fit::kMinFontScale},
+                          {"maxWidthFrac", fit::kMaxWidthFrac}, {"chunk", chunk}, {"chunks", chunks}};
     // Console on this screen: the 16:9 video inside the stream window (physical px), so Alt / Üst sit in the picture
     if (m_videoFrame)
         payload["frame"] = {{"x", m_videoFrame->x}, {"y", m_videoFrame->y}, {"width", m_videoFrame->w}, {"height", m_videoFrame->h}};
@@ -1999,12 +2004,46 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
         m_host.emitEvent("overlay.hide", "{}");
         m_boxShown = false;
     }
-    routeLine(d);
+    routeLine(d, chunk, chunks);
     m_overlayShown = true;
     for (const json& l : lines)   // one key per speaker line, label off: a label never makes two lines look alike
         m_shownKeys.push_back(text::compactPoolKey(text::fromUtf8(text::splitSpeaker(l["text"].get<std::string>()).text)));
     ++m_shownCount;
     while (m_shownKeys.size() > 12) m_shownKeys.erase(m_shownKeys.begin());
+}
+
+// A long line that the renderer cannot fit even at its smallest font in its widest band goes in chunks
+// (fit.h), each for its reading time; the scheduler holds the line for all of them.
+void Engine::showLine(const Display& d, const console::Box& rect, double t)
+{
+    json style;
+    bool tv = false;
+    {
+        std::lock_guard lock(m_mutex);
+        style = m_style;
+        tv = m_mode == "console" && m_output == "tv";
+    }
+    int frameW = m_videoFrame ? m_videoFrame->w : 0;
+    if (frameW <= 0) {   // the screen the box is on
+        const RECT r{rect.x, rect.y, rect.x + std::max(1, rect.w), rect.y + std::max(1, rect.h)};
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        frameW = GetMonitorInfoW(MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST), &mi) ? mi.rcMonitor.right - mi.rcMonitor.left
+                                                                                      : GetSystemMetrics(SM_CXSCREEN);
+    }
+    fit::Budget budget = fit::budget(frameW, num(style, "sizePx", 28), static_cast<int>(num(style, "maxLines", 2)));
+    if (tv) budget = fit::tighter(budget, fit::tvBudget(0.046, 2));   // Makine TV's relSize / maxLines
+    std::vector<std::u32string> chunks = fit::split(d.text, budget);
+    if (chunks.size() <= 1) {
+        m_chunks.clear();
+        m_shownChunk = 0;
+        showOverlay(d, rect);
+        return;
+    }
+    m_chunks.start(d.id, std::move(chunks), m_scheduler.minBase, t);
+    m_scheduler.holdFor(d.id, m_chunks.total());
+    m_shownChunk = 0;
+    showOverlay({d.id, m_chunks.chunk(0), d.kind}, rect, 0, m_chunks.count());
 }
 
 // OCR boxes that are (pieces of) a translation we showed: with screen capture the overlay
@@ -2065,6 +2104,7 @@ void Engine::stopTracking()
     m_tracker.reset();
     m_scheduler.clear();
     m_shown.reset();
+    m_chunks.clear();
     hideOverlay();
     m_lastHash = 0;
     m_lastRaw.clear();
@@ -2208,13 +2248,19 @@ void Engine::runCapture()
                     const auto d = m_scheduler.tick(t);
                     if (d && (!m_shown || m_shown->id != d->id || m_shown->text != d->text || styleVersion != seenStyle)) {
                         if (reason.empty()) {
-                            showOverlay(*d, overlay);
+                            showLine(*d, overlay, t);
                             m_shown = d;
                             seenStyle = styleVersion;
+                        }
+                    } else if (d && m_chunks.active() && m_chunks.id() == d->id && m_chunks.at(t) != m_shownChunk) {
+                        if (reason.empty()) {   // the next chunk of a long line
+                            m_shownChunk = m_chunks.at(t);
+                            showOverlay({d->id, m_chunks.chunk(m_shownChunk), d->kind}, overlay, m_shownChunk, m_chunks.count());
                         }
                     } else if (!d && m_shown) {
                         hideOverlay();
                         m_shown.reset();
+                        m_chunks.clear();
                     }
                 }
             }

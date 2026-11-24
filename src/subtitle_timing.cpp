@@ -182,6 +182,12 @@ void SubtitleScheduler::translationFailed(int id)
     if (it != m_entries.end() && !it->second.shownAt && !it->second.text) m_entries.erase(it);
 }
 
+void SubtitleScheduler::holdFor(int id, double seconds)
+{
+    const auto it = m_entries.find(id);
+    if (it != m_entries.end()) it->second.hold = seconds;
+}
+
 void SubtitleScheduler::clear()
 {
     m_entries.clear();
@@ -207,7 +213,7 @@ double SubtitleScheduler::endTime(const Entry& e) const
             break;
         }
     // Nothing queued: at least long enough to read
-    if (!next) return *e.shownAt + std::max(src, readingMin(*e.text, minBase, perChar, minCap));
+    if (!next) return *e.shownAt + std::max({src, readingMin(*e.text, minBase, perChar, minCap), e.hold});
     // A newer line is queued: move at the game's pace; if the next one would fall more than
     // backlogLag behind the game, shorten by the difference
     double base = src;

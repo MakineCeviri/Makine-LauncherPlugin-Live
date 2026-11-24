@@ -264,7 +264,7 @@ bool Engine::boxWanted() const
     return m_mode != "console" || m_output == "pc";
 }
 
-void Engine::routeLine(const Display& d)
+void Engine::routeLine(const Display& d, int chunk, int chunks)
 {
     bool tv = false;
     {
@@ -273,8 +273,8 @@ void Engine::routeLine(const Display& d)
     }
     ++m_lineSeq;
     const std::string text = text::toUtf8(d.text);
-    if (tv && m_tv) m_tv->sendLine(m_lineSeq, text, d.kind);
-    if (m_web && m_web->running()) m_web->sendLine(m_lineSeq, text, d.kind);
+    if (tv && m_tv) m_tv->sendLine(m_lineSeq, text, d.kind, chunk, chunks);
+    if (m_web && m_web->running()) m_web->sendLine(m_lineSeq, text, d.kind, chunk, chunks);
 }
 
 void Engine::routeClear()

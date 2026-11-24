@@ -46,7 +46,7 @@ public:
     void close();
     void pair(std::optional<TvInfo> tv, const std::string& code);   // nullopt: let go
 
-    void sendLine(int id, const std::string& text, const std::string& kind);
+    void sendLine(int id, const std::string& text, const std::string& kind, int chunk = 0, int chunks = 1);   // chunk i of n (fit.h)
     void clear();
     void setStyle(int size, const std::string& pos, int opacity);
     void setStyle(nlohmann::json style);   // with the optional fields (relSize, safeArea, maxLines, text, band)

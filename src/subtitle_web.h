@@ -37,7 +37,7 @@ public:
     void configure(bool enabled, bool lan);
     void stop() { configure(false, false); }
 
-    void sendLine(int id, const std::string& text, const std::string& kind);
+    void sendLine(int id, const std::string& text, const std::string& kind, int chunk = 0, int chunks = 1);   // chunk i of n (fit.h)
     void clear();
     void setStyle(const nlohmann::json& style);   // subtitle_web keys: size, opacity, text, band, font, outline, …
 
