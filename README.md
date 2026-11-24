@@ -212,7 +212,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `console.select` | `{sourceId}` (`console.sources`'tan); listede olmayan bir pencere seçilirse exe'si kaynak olarak hatırlanır |
 | `region.pick` | PC'de ekrandan, konsolda kaynağın 16:9 video alanı içinden (`overlay.pickRegion {within}`) bölge seçtirir |
 | `start` / `stop` | okumayı başlatır / durdurur (giriş ve PC'de bölge gerekir) |
-| `box.move` | `{on?}` (yoksa tersine çevirir): altyazı kutusunu sürüklenebilir yapar / kilitler. Makine'nin isteğe bağlı `overlay.setMovable {on}` yöntemini çağırır; `on:false` yanıtı `{x, y}` (kutu merkezi, ekrana oran) getirirse `style.boxX/boxY` olarak saklanır. Makine bu yöntemi bilmiyorsa `E_UNSUPPORTED` ve `boxMove.supported: false` |
+| `box.move` | `{on?}` (yoksa tersine çevirir): altyazı kutusunu sürüklenebilir yapar / kilitler. Makine'nin isteğe bağlı `overlay.setMovable {on}` yöntemini çağırır; `on:false` yanıtı `{x, y}` (kutu merkezi, ekrana oran) getirirse `style.boxX/boxY` olarak saklanır. Makine bu yöntemi bilmiyorsa `E_UNSUPPORTED` ve `boxMove.supported: false`. Sürüklemeden sonra Makine `overlay.moved {x, y, width, height}` (fiziksel px) olayını da gönderir; aynı yere çevrilip saklanır (manifestte bildirilmez: Makine bu olayı yalnız taşıyan eklentiye yollar) |
 | `readOnce` | → `{text, filtered, region, window}`: bölgeyi bir kez okur, çevirmez |
 | `autoStart.set` / `usageReport.set` | `{enabled}` → Makine'nin ayar deposuna `settings.set` ile yazılır (manifest ayarları; Makine `autoStart`'ı eklenti kapalıyken de okur) |
 | `style.set` | `{preset, font, sizePx, …}` (Makine'nin `overlay.show.style` anahtarları; `null` siler) → `{style}` |
@@ -267,7 +267,7 @@ PC modunda okuma yalnızca oyun öndeyken yapılır (test koşucusunun hedef kil
 Makine olmamalı ve bölgenin ortasını kapsamalı. Ekrandan okunan ve gösterdiğimiz çeviriye benzeyen OCR kutuları
 cümle birleştirilmeden önce atılır; yine de Makine'nin kaplama penceresinin `SetWindowDisplayAffinity(
 WDA_EXCLUDEFROMCAPTURE)` ile yakalamadan gizlenmesi gerekir. Yerel havuz, oyun Makine'nin kütüphanesinden
-geldiği için sormadan indirilir.
+geldiği için sormadan indirilir. Katalog dışı oyunlar `{gameId: "exe:<exe>", name, pid, exe, catalog: false}` ile gelir: havuz adı `name`dan (yol ya da exe adıysa yalnız dosya adının gövdesi) türer, harf yoksa oyun okunmaz (`game_unidentified`); Remote Play gibi konsol yayın uygulamaları bu yoldan da GTA VI sayılır, ayrı bir PC oyunu olmaz.
 
 **Kısayollar** (0.3.2 exe'deki gibi: F9 başlat/durdur, F10 bölge seç, F8 kutuyu taşı/kilitle): manifest ayarları
 `hotkeyStart` / `hotkeyRegion` / `hotkeyMove` (F1–F12 ya da `off`). Eklentinin kendi iş parçacığında, yalnız mesaj

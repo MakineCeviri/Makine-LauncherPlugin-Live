@@ -10,6 +10,7 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <ctime>
 #include <cstdlib>
@@ -166,6 +167,21 @@ unsigned long parentPid()   // the launcher that started this plugin host
 }
 
 constexpr size_t kHistoryLines = 50;
+
+// The name a game is shown and pooled under. The launcher names games outside its catalogue itself; whatever it
+// sends, a path or an exe name never becomes a pool: only the file's stem, and only if letters remain.
+std::string gameDisplayName(std::string name)
+{
+    if (const size_t cut = name.find_last_of("\\/"); cut != std::string::npos) name = name.substr(cut + 1);
+    if (name.size() > 4) {
+        std::string tail = name.substr(name.size() - 4);
+        for (auto& ch : tail) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        if (tail == ".exe") name.resize(name.size() - 4);
+    }
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) name.erase(0, 1);
+    return name.size() > 120 ? name.substr(0, 120) : name;
+}
 
 const char* hotkeySetting(const std::string& action)
 {
@@ -687,24 +703,53 @@ Result Engine::invoke(std::string_view method, const json& params)
 void Engine::onEvent(std::string_view event, const json& payload)
 {
     if (event == "game.started") {
-        const std::string name = str(payload, "name");
-        if (name.empty()) return;
+        // Catalogue games and, since launcher 0.3, any other game it sees ({gameId: "exe:<exe>", catalog: false})
+        const std::string exe = str(payload, "exe"), gameId = str(payload, "gameId");
+        const std::string name = gameDisplayName(str(payload, "name"));
+        // A console stream app (Remote Play, Asobi, Xbox…) shows the console's game: GTA VI (0.3.2), whichever
+        // way the launcher names it; never a PC game of its own
+        const bool stream = console::isConsoleStream(str(payload, "name")) || console::isConsoleStream(exe)
+                            || (gameId.rfind("exe:", 0) == 0 && console::isConsoleStream(gameId.substr(4)));
+        // gameSlug gives a placeholder for a name without letters: such a name is no name
+        const bool named = std::any_of(name.begin(), name.end(), [](char ch) {
+            return std::isalnum(static_cast<unsigned char>(ch)) || static_cast<unsigned char>(ch) >= 0x80;
+        });
+        const std::string slug = stream ? std::string(console::kGameSlug) : named ? text::gameSlug(name) : std::string();
         {
             std::lock_guard lock(m_mutex);
-            // A console stream app (Remote Play, Asobi, Xbox…) shows the console's game: GTA VI (0.3.2)
-            const bool stream = console::isConsoleStream(name) || console::isConsoleStream(str(payload, "exe"));
-            m_gameName = stream ? std::string(console::kGameName) : name;
-            m_gameSlug = stream ? std::string(console::kGameSlug) : text::gameSlug(name);
+            m_gameUnknown = slug.empty();   // no usable name: no pool to send to, so nothing is read
+            m_gameName = stream ? std::string(console::kGameName) : m_gameUnknown ? std::string() : name;
+            m_gameSlug = slug;
             m_gamePid = static_cast<unsigned long>(num(payload, "pid", 0));   // optional (contract addition)
-            const std::string exe = str(payload, "exe");
             m_gameExe = text::toUtf8(text::lower(text::fromUtf8(exe.substr(exe.find_last_of("\\/") + 1))));
         }
-        logLine(MAKINE_LOG_INFO, "Oyun: " + name);
+        logLine(MAKINE_LOG_INFO, "Oyun: " + (slug.empty() ? std::string("(adı bilinmiyor)") : name));
         stopIfConsentMissing();
         syncHotkeys();
         publish();
         post([this] { syncPool(true); });
         maybeAutoStart();
+    } else if (event == "overlay.moved") {
+        // The launcher's word on where the player left the box ({x, y, width, height}, physical px): kept as the
+        // box centre in fractions of its monitor, like overlay.setMovable's answer
+        const double w = num(payload, "width", 0), h = num(payload, "height", 0);
+        if (w <= 0 || h <= 0) return;
+        const POINT c{static_cast<LONG>(num(payload, "x", 0) + w / 2), static_cast<LONG>(num(payload, "y", 0) + h / 2)};
+        MONITORINFO mi{};
+        mi.cbSize = sizeof mi;
+        if (!GetMonitorInfoW(MonitorFromPoint(c, MONITOR_DEFAULTTONEAREST), &mi)) return;
+        const RECT& m = mi.rcMonitor;
+        if (m.right <= m.left || m.bottom <= m.top) return;
+        {
+            std::lock_guard lock(m_mutex);
+            m_style["boxX"] = std::clamp((c.x - m.left) / double(m.right - m.left), 0.0, 1.0);
+            m_style["boxY"] = std::clamp((c.y - m.top) / double(m.bottom - m.top), 0.0, 1.0);
+            ++m_styleVersion;
+            saveSettings();
+        }
+        m_captureCv.notify_all();
+        applyStyleOutputs();
+        publish();
     } else if (event == "settings.changed") {
         const std::string key = str(payload, "key");
         for (const char* action : {"start", "region", "move"}) {
@@ -731,6 +776,7 @@ void Engine::onEvent(std::string_view event, const json& payload)
             std::lock_guard lock(m_mutex);
             m_gameName.clear();
             m_gameSlug.clear();
+            m_gameUnknown = false;
             m_gamePid = 0;
             m_gameExe.clear();
         }
@@ -1610,6 +1656,7 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
                                   std::string* code)
 {
     std::string mode, key, gameName;
+    bool gameUnknown = false;
     unsigned long pid = 0;
     std::vector<std::string> exes;
     std::optional<console::Box> pc;
@@ -1623,6 +1670,7 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         pc = m_pcRegion;
         frac = m_consoleRegion;
         gameName = m_gameName;
+        gameUnknown = m_gameUnknown;
     }
     hwnd = nullptr;
     if (mode == "console") {
@@ -1643,6 +1691,10 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
     if (!pc) {
         if (code) *code = "region_missing";
         return "Önce okunacak bölgeyi seç.";
+    }
+    if (needGame && gameUnknown) {
+        if (code) *code = "game_unidentified";
+        return "Oyun tanınamadı; adı bilinmeyen bir oyun okunmaz.";
     }
     if (needGame && gameName.empty()) {
         if (code) *code = "game_missing";

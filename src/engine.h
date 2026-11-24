@@ -196,6 +196,7 @@ private:
     std::string m_serverMessage, m_notice;
     int m_styleVersion = 0;
     std::string m_gameName, m_gameSlug;       // PC: the game the launcher says is running
+    bool m_gameUnknown = false;                // a game the launcher saw but could not name: not read
     unsigned long m_gamePid = 0;               // its process, when the launcher sends one
     std::string m_gameExe;                     // or its exe name (lower case)
     unsigned long m_launcherPid = 0;

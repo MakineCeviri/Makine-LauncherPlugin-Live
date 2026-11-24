@@ -175,6 +175,23 @@ check("desteklemiyor" in s.reply(i) and s.state()["boxMove"]["supported"] is Fal
 i = s.cmd('!game.stopped {"gameId":"g"}')
 check(s.state(i)["hotkeys"]["armed"] is False, "game closed: keys given back")
 
+# games outside the catalogue (launcher 0.3: gameId "exe:<exe>", catalog false)
+i = s.cmd('!game.started {"gameId":"exe:foo bar.exe","name":"C:\\\\Games\\\\Foo Bar.exe","pid":77,'
+          '"exe":"C:\\\\Games\\\\Foo Bar.exe","catalog":false}')
+g = s.state(i)["game"]
+check(g == {"name": "Foo Bar", "slug": "foo-bar"}, "a path for a name pools under its stem, never the path " + json.dumps(g))
+i = s.cmd('!game.started {"gameId":"exe:x.exe","name":"  ","pid":78,"exe":"x.exe","catalog":false}')
+st4 = s.state(i)
+check(st4["game"]["slug"] == "" and (st4["reason"] or {}).get("code") == "game_unidentified",
+      "no name: not read, reason game_unidentified " + json.dumps([st4["game"], st4["reason"]], ensure_ascii=False))
+i = s.cmd('!game.started {"gameId":"exe:remoteplay.exe","name":"RemotePlay","pid":79,'
+          '"exe":"C:\\\\Program Files\\\\Sony\\\\RemotePlay.exe","catalog":false}')
+check(s.state(i)["game"]["slug"] == "grand-theft-auto-vi", "a console stream is never a PC game of its own")
+s.cmd('!game.stopped {"gameId":"exe:remoteplay.exe"}')
+i = s.cmd('!overlay.moved {"x":100,"y":200,"width":400,"height":100}')
+style = s.state(i)["style"]
+check(0 < style.get("boxX", -1) < 1 and 0 < style.get("boxY", -1) < 1, "overlay.moved keeps the box centre in style")
+
 # team account: username + password, the password never written
 s.cmd("logout {}", 1.5)
 check(s.wait_for(lambda st: st["login"]["state"] == "signedOut", 10)["login"]["state"] == "signedOut", "signed out")

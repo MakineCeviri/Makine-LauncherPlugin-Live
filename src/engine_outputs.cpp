@@ -310,7 +310,7 @@ const ReasonText kReasons[] = {
     {"update_required", "Makine Live'ın bu sürümü artık desteklenmiyor. Makine'yi güncelle.", "update_launcher"},
     {"signed_out", "Makine hesabınla giriş yap.", "login"},
     {"consent_required", "Okunan her satır Makine Çeviri'nin GTA VI çeviri havuzuna gider. Onaylarsan okuma başlar.", "consent"},
-    {"game_unidentified", "Oyunun penceresi tanınamadı; Makine oyunun sürecini bildirmedi.", "none"},
+    {"game_unidentified", "Oyun tanınamadı (adı ya da süreci bilinmiyor); bu oyun okunmuyor.", "none"},
     {"offline", "Sunucuya ulaşılamıyor; bağlantı gelince devam eder.", "retry"},
     {"source_missing", "Konsol görüntüsü görünmüyor. PS Remote Play, Xbox uygulaması ya da yakalama programını aç.", "open_source"},
     {"source_minimized", "Konsol penceresi küçültülmüş. Pencereyi ekranda aç; başka pencerelerin altında kalabilir.", "restore_source"},
@@ -350,6 +350,7 @@ json Engine::reasonLocked() const
     if (m_loginState == "signedOut") return reasonJson("signed_out");
     if (m_loginState == "offline") return reasonJson("offline");
     if (consentMissingLocked()) return reasonJson("consent_required");
+    if (m_mode == "pc" && m_gameUnknown) return reasonJson("game_unidentified");   // shown before a start, too
     if (m_running && !m_captureCode.empty()) return reasonJson(m_captureCode);
     if (m_mode == "console" && m_output == "tv" && m_tv) {
         const std::string tv = m_tv->state().first;
