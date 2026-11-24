@@ -22,7 +22,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
+#include <optional>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -103,13 +105,14 @@ int main(int argc, char** argv)
         return 1;
     }
     const int recognize = argc > 4 ? std::atoi(argv[4]) : 1;   // lines read per sample (as the engine)
-    int positives = 0, proposed = 0, correct = 0, found = 0, locked = 0, falseBands = 0;
+    int positives = 0, proposed = 0, correct = 0, found = 0, locked = 0, falseBands = 0, moves = 0;   // moves: the band changed after it was proposed
     std::vector<double> ms, foundS, lockS;
     for (const auto& ep : truth) {
         const int w = ep["width"], h = ep["height"];
         const bool positive = !ep["band"].is_null();
         positives += positive;
         live::finder::SubtitleFinder f;
+        std::optional<live::finder::Rect> prev;
         double t = 0, foundAt = -1, lockAt = -1;
         for (const auto& fr : ep["frames"]) {
             std::vector<uint8_t> px;
@@ -126,6 +129,11 @@ int main(int argc, char** argv)
                     std::printf("  t%-3.0f %.3f,%.3f-%.3f,%.3f fill %.2f like %.2f '%s'\n", t, o.box.x0, o.box.y0, o.box.x1,
                                 o.box.y1, o.fill, live::finder::likeness(o), o.text.c_str());
             f.addSample(obs, t);
+            if (const auto now = f.band(); prev && now
+                && (std::abs(prev->x0 - now->x0) > 0.01 || std::abs(prev->y0 - now->y0) > 0.01
+                    || std::abs(prev->x1 - now->x1) > 0.01 || std::abs(prev->y1 - now->y1) > 0.01))
+                ++moves;
+            prev = f.band();
             if (foundAt < 0 && f.band()) foundAt = t + live::finder::kIntervalS;   // the sample's own run time
             if (lockAt < 0 && f.state() == live::finder::State::Locked) lockAt = t + live::finder::kIntervalS;
             t += live::finder::kIntervalS;
@@ -154,8 +162,8 @@ int main(int argc, char** argv)
     const double recall = positives ? double(correct) / positives : 1.0;
     std::printf("\n%s\nepisodes %zu (%d with subtitles)  precision %.3f  recall %.3f  bands without subtitles %d\n",
                 ocr.describe().c_str(), truth.size(), positives, precision, recall, falseBands);
-    std::printf("time to found p50 %.0f s max %.0f s · to locked p50 %.0f s max %.0f s (%d of %d locked)\n",
-                pct(foundS, 0.5), pct(foundS, 1.0), pct(lockS, 0.5), pct(lockS, 1.0), locked, found);
+    std::printf("time to found p50 %.0f s max %.0f s · to locked p50 %.0f s max %.0f s (%d of %d locked), band moves after found %d\n",
+                pct(foundS, 0.5), pct(foundS, 1.0), pct(lockS, 0.5), pct(lockS, 1.0), locked, found, moves);
     std::printf("sample cost p50 %.1f ms p95 %.1f ms (%s threads; one sample per %.0f s)\n", pct(ms, 0.5), pct(ms, 0.95),
                 argv[3], live::finder::kIntervalS);
     // precision first: a wrong band reads the wrong text into the pool's game

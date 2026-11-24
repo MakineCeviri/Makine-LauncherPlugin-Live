@@ -10,6 +10,7 @@
 
 #include <windows.h>
 #include <tlhelp32.h>
+#include <shellscalingapi.h>
 
 #include <algorithm>
 #include <cctype>
@@ -2259,6 +2260,13 @@ void Engine::showLine(const Display& d, const console::Box& rect, double t)
         mi.cbSize = sizeof(mi);
         frameW = GetMonitorInfoW(MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST), &mi) ? mi.rcMonitor.right - mi.rcMonitor.left
                                                                                       : GetSystemMetrics(SM_CXSCREEN);
+    }
+    // physical px → the overlay's logical px (style.sizePx is logical): the monitor's scale
+    {
+        const RECT r{rect.x, rect.y, rect.x + std::max(1, rect.w), rect.y + std::max(1, rect.h)};
+        UINT dpiX = 96, dpiY = 96;
+        if (SUCCEEDED(GetDpiForMonitor(MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST), MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) && dpiX >= 96)
+            frameW = frameW * 96 / static_cast<int>(dpiX);
     }
     fit::Budget budget = fit::budget(frameW, num(style, "sizePx", 28), static_cast<int>(num(style, "maxLines", 2)));
     if (tv) budget = fit::tighter(budget, fit::tvBudget(0.046, 2));   // Makine TV's relSize / maxLines

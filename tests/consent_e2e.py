@@ -150,6 +150,18 @@ check(len(shown) == 1 and '"kind": "verified"' in shown[0], "sample shows one li
 time.sleep(4.2)
 check(any("emit overlay.hide" in l for l in s.since(i)), "and hides it after 4 s")
 
+# the subtitle finder: in the state, nothing to accept yet, reset searches again, PC start needs no region
+st = s.state()
+check(set(st["autoRegion"]) == {"state", "rect", "confidence"} and st["autoRegion"]["rect"] is None,
+      "autoRegion in the state " + json.dumps(st["autoRegion"]))
+i = s.cmd("autoRegion.accept {}")
+check("bölgesi yok" in s.reply(i), "autoRegion.accept with nothing found is refused")
+i = s.cmd("autoRegion.reset {}")
+check("aranıyor" in s.reply(i), "autoRegion.reset searches again")
+i = s.cmd("start {}")
+check(s.state(i)["running"] is True, "PC start without a region runs (the finder looks for the subtitles)")
+s.cmd("stop {}")
+
 # PC mode, then PC -> console while running
 s.cmd('mode.set {"mode":"pc"}')
 s.cmd("region.pick {}", 1)

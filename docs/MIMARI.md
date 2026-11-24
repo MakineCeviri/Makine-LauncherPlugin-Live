@@ -84,6 +84,9 @@ graph TD
 │   ├── translator.h/.cpp       #   WinHTTP: makine (sunucu), GPT, DeepL, Google
 │   ├── settings.h/.cpp         #   settings.cfg (key=value, kaçışlı, apiKey ve authToken DPAPI ile şifreli)
 │   ├── text_fix.h/.cpp         #   OCR'ın İngilizcede yuttuğu kelime boşluklarını geri koyar (SpacingFixer)
+│   ├── subtitle_finder.h/.cpp  #   altyazı bandını kendi bulur (kanıt biriktirir, oyun başına kilitler) + geçici büyüme
+│   ├── finder_ocr.h/.cpp       #   bulucunun örneği: pencere ≤ 640 px, yalnız dedektör, en olası satırın başı okunur
+│   ├── fit.h/.cpp              #   uzun çeviri: sığmayan satır cümle / yan cümle sınırından parçalara, okuma süresiyle
 │   └── winutil.h               #   UTF-8 ↔ UTF-16 ↔ ANSI yol dönüşümleri
 ├── third_party/rapidocr/       # (git'te yok) RapidOcrOnnx.dll, onnxruntime.dll, models/
 ├── resources/en_words.txt      # İngilizce kelime sıklık listesi (wordninja, MIT) → build/release/resources/

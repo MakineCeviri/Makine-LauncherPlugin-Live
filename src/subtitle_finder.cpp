@@ -246,8 +246,16 @@ void SubtitleFinder::addSample(const std::vector<Observed>& lines, double now)
         }
     m_confidence = bestScore;
     if (!best || bestScore < kFoundScore || best->present < 3 || now - m_firstAt < kFoundS - 0.05) return;
-    m_band = bandOf(*best);
-    m_state = bestScore >= kLockScore && now - m_firstAt >= kLockS - 0.05 ? State::Locked : State::Found;
+    // The proposed band moves only when the subtitle shows outside it: every move restarts the line being read
+    const Rect next = bandOf(*best);
+    const double m = 0.01;
+    const bool inside = m_band && next.x0 >= m_band->x0 - m && next.x1 <= m_band->x1 + m && best->top >= m_band->y0 - m
+                        && best->bottom <= m_band->y1 + m;
+    if (!inside) m_band = next;
+    if (m_state != State::Found) m_foundAt = now;
+    const bool sure = bestScore >= kLockScore && now - m_firstAt >= kLockS - 0.05;
+    const bool settled = now - m_foundAt >= kSettleS - 0.05;   // proposed for long enough without a better band
+    m_state = sure || settled ? State::Locked : State::Found;
 }
 
 double SubtitleFinder::score(const Cluster& c, double) const

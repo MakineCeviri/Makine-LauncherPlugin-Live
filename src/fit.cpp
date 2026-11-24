@@ -112,8 +112,9 @@ std::vector<std::u32string> splitLine(const std::u32string& line, const Budget& 
 
 Budget budget(double frameWidthPx, double sizePx, int maxLines)
 {
-    // SubtitleBlock: padX 22 px at 28 px (grows with the font), a 14 px gutter on each side
-    const double font = std::max(8.0, sizePx * kMinFontScale);
+    // SubtitleBlock: padX 22 px at 28 px (grows with the font), a 14 px gutter on each side. Budgeted at the full
+    // font: a chunk fits even on a renderer that does not shrink (kMinFontScale is its extra margin)
+    const double font = std::max(8.0, sizePx);
     const double inner = frameWidthPx * kMaxWidthFrac - 2 * 22 * std::max(1.0, font / 28) - 2 * 14;
     return {std::max(8, static_cast<int>(inner / (kGlyphEm * font))), std::max(1, maxLines)};
 }

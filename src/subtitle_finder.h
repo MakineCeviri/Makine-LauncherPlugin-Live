@@ -26,6 +26,7 @@ constexpr double kIntervalS = 2.0;   // one detector run per this many seconds, 
 constexpr int kMaxWidth = 640;       // the frame the detector sees is at most this wide (brief: ≤ 960; 640 halves the cost)
 constexpr double kFoundS = 6.0;      // evidence over at least this long before a band is proposed
 constexpr double kLockS = 16.0;      // … and this long (with high confidence) before it locks by itself
+constexpr double kSettleS = 30.0;    // a band proposed this long locks too (the detector stops)
 
 struct Rect {   // fractions of the searched area (0..1)
     double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
@@ -79,7 +80,7 @@ private:
     State m_state = State::Searching;
     std::vector<Cluster> m_clusters;
     std::optional<Rect> m_band;
-    double m_confidence = 0, m_firstAt = -1, m_lastRun = -1e9;
+    double m_confidence = 0, m_firstAt = -1, m_lastRun = -1e9, m_foundAt = 0;
     int m_samples = 0;
 };
 

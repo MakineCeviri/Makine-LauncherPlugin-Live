@@ -84,7 +84,7 @@ add_library(makine-live SHARED
 )
 target_include_directories(makine-live PRIVATE include src)
 target_include_directories(makine-live SYSTEM PRIVATE "${LIVE_OCR_DIR}/include")
-target_link_libraries(makine-live PRIVATE live-logic d3d11 dxgi winhttp crypt32 bcrypt advapi32 shell32 ole32)
+target_link_libraries(makine-live PRIVATE live-logic d3d11 dxgi winhttp crypt32 bcrypt advapi32 shell32 ole32 shcore)
 set_target_properties(makine-live PROPERTIES PREFIX "")   # makine-live.dll, not libmakine-live.dll
 live_warnings(makine-live)
 if(MINGW)

@@ -23,11 +23,11 @@ constexpr double kCharsPerSecond = 17;   // Turkish reading speed for a chunk's 
 constexpr double kGlyphEm = 0.55;        // average advance of a mixed-case Latin glyph (Inter), conservative
 
 struct Budget {
-    int charsPerRow = 0;   // code points one row holds at the smallest font in the widest band
+    int charsPerRow = 0;   // code points one row holds at the full font in the widest band
     int maxLines = 2;      // rows on screen (style.maxLines)
 };
 
-/// Budget of a band `frameWidthPx` wide (the frame the renderer may widen to 90 % of) with style.sizePx.
+/// Budget of a band `frameWidthPx` wide (the frame the renderer may widen to 90 % of; logical px, as style.sizePx).
 Budget budget(double frameWidthPx, double sizePx, int maxLines);
 /// Budget of Makine TV: relSize = font height / screen height, a 16:9 screen, the TV's maxLines.
 Budget tvBudget(double relSize, int maxLines);
