@@ -3,6 +3,8 @@
 
 #include "engine.h"
 
+#include "finder_ocr.h"
+
 #include "unitext.h"
 #include "winutil.h"
 
@@ -244,6 +246,12 @@ Engine::Engine(makine::plugin::Host host, EngineInit init)
                               std::strtod(cr[2].c_str(), nullptr), std::strtod(cr[3].c_str(), nullptr)};
         if (console::validRegion(f)) m_consoleRegion = f;
     }
+    // the player's own console region; before the finder, a saved region other than the default was one
+    const std::string manual = m_settings.get("consoleRegionManual");
+    const console::Frac d = console::kDefaultRegion;
+    m_consoleManual = manual.empty() ? cr.size() == 4 && (std::abs(m_consoleRegion.x - d.x) > 1e-6 || std::abs(m_consoleRegion.y - d.y) > 1e-6
+                                                          || std::abs(m_consoleRegion.w - d.w) > 1e-6 || std::abs(m_consoleRegion.h - d.h) > 1e-6)
+                                     : manual == "true";
     m_sourceKey = m_settings.get("consoleSource");
     if (const std::string out = m_settings.get("output"); out == "tv" || out == "phone") m_output = out;
     m_obs = m_settings.get("obs") == "true";
@@ -356,6 +364,7 @@ json Engine::stateLocked() const
                   {"slug", console ? console::kGameSlug : m_gameSlug}}},
     };
     state["reason"] = reasonLocked();
+    state["autoRegion"] = autoRegionLocked();
     {
         const json registered = m_hotkeys ? m_hotkeys->state() : json::object();
         json keys = json::object();
@@ -444,6 +453,7 @@ void Engine::saveSettings()   // under m_mutex
     m_settings.set("consoleConsent", m_consoleConsent ? "true" : "false");
     m_settings.set("everStarted", m_everStarted ? "true" : "false");
     m_settings.set("lanOnce", m_lanOnce ? "true" : "false");
+    m_settings.set("consoleRegionManual", m_consoleManual ? "true" : "false");
     m_settings.set("tv", dump(m_tvSaved));
     m_settings.set("tvCode", m_tvCode);
     m_settings.set("user", m_user);
@@ -616,6 +626,13 @@ Result Engine::invoke(std::string_view method, const json& params)
                 const double x1 = std::min(1.0, f.x + f.w * (1 + g[1])), y1 = std::min(1.0, f.y + f.h * (1 + g[3]));
                 f = {x0, y0, x1 - x0, y1 - y0};
             }
+            if (const auto b = m_finder.band(); b && ((m_mode == "pc" && !m_pcRegion) || (m_mode == "console" && !m_consoleManual))) {
+                const double w = b->w(), hh = b->h();   // the finder's band, kept grown for this game
+                m_finder.restore({std::max(0.0, b->x0 - w * g[0]), std::max(0.0, b->y0 - hh * g[2]),
+                                  std::min(1.0, b->x1 + w * g[1]), std::min(1.0, b->y1 + hh * g[3])},
+                                 m_finder.confidence());
+                storeBandLocked();
+            }
             m_grow = {};
             saveSettings();
         }
@@ -675,6 +692,33 @@ Result Engine::invoke(std::string_view method, const json& params)
     if (method == "console.sources") return listSources(flag(params, "all"));
     if (method == "console.select") return selectSource(params);
     if (method == "region.pick") return pickRegion();
+    if (method == "autoRegion.accept") {   // the proposed band is right: keep it for this game
+        {
+            std::lock_guard lock(m_mutex);
+            if (!m_finder.accept()) return Result::error(MAKINE_E_FAILED, "Önerilen bir altyazı bölgesi yok.");
+            storeBandLocked();
+        }
+        publish();
+        return okMessage("Altyazı bölgesi bu oyun için kaydedildi.");
+    }
+    if (method == "autoRegion.reset") {   // forget the band and the player's own region: search again
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_mode == "pc") m_pcRegion.reset();
+            else {
+                m_consoleManual = false;
+                m_consoleRegion = console::kDefaultRegion;
+            }
+            m_finderSlug = currentSlug();
+            if (!m_finderSlug.empty()) m_settings.set("autoRegion:" + m_finderSlug, "");
+            m_finder.reset();
+            m_grow = {};
+            saveSettings();
+        }
+        m_captureCv.notify_all();
+        publish();
+        return okMessage("Altyazı aranıyor.");
+    }
     if (method == "start") return startReading();
     if (method == "stop") {
         {
@@ -1276,8 +1320,6 @@ Result Engine::startReading()
         std::lock_guard lock(m_mutex);
         if (m_loginState != "signedIn") return Result::error(MAKINE_E_DENIED, "Önce Makine hesabınla giriş yap.");
         if (m_blocked) return Result::error(MAKINE_E_DENIED, m_serverMessage);
-        if (m_mode == "pc" && !m_pcRegion)
-            return Result::error(MAKINE_E_FAILED, "Önce okunacak bölgeyi seç.");
         if (consentMissingLocked())   // console mode or a console stream app in PC mode; the screen asks once
             return Result::error(MAKINE_E_DENIED, "consent_required: Konsol modunda okunan her satır Makine Çeviri'nin "
                                                   "GTA VI çeviri havuzuna gider. Onaylıyor musun?");
@@ -1412,7 +1454,10 @@ Result Engine::pickRegion()
             if (box && mode == "pc") m_pcRegion = box;
             if (box && video) {
                 const console::Frac f = console::screenToRegion(*video, *box);
-                if (console::validRegion(f)) m_consoleRegion = f;
+                if (console::validRegion(f)) {
+                    m_consoleRegion = f;
+                    m_consoleManual = true;
+                }
             }
             if (box) saveSettings();
         }
@@ -1814,8 +1859,12 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
     std::vector<std::string> exes;
     std::optional<console::Box> pc;
     console::Frac frac;
+    bool consoleManual = false;
+    std::optional<finder::Rect> band;
     {
         std::lock_guard lock(m_mutex);
+        consoleManual = m_consoleManual;
+        band = m_finder.band();
         mode = m_mode;
         key = m_sourceKey;
         pid = m_sourcePid;
@@ -1828,6 +1877,8 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
     }
     hwnd = nullptr;
     m_videoFrame.reset();
+    m_finderArea.reset();
+    for (size_t s = 0; s < 4; ++s) grow[s] = std::max(grow[s], m_tempGrow.grow()[s]);   // cut lines, wide lines
     if (mode == "console") {
         // The console window's own content (PrintWindow): read even when covered, never minimised
         if ((!m_source || !console::alive(*m_source) || (pid && m_source->pid != pid)) && now() >= m_nextPick) {
@@ -1838,6 +1889,10 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         if (code) *code = console::blockCode(m_source ? &*m_source : nullptr);
         if (!reason.empty()) return reason;
         hwnd = m_source->hwnd;
+        if (!consoleManual && band) frac = {band->x0, band->y0, band->w(), band->h()};   // the finder's band
+        const console::Box all = console::clientRegion(hwnd, {0, 0, 1, 1});   // the finder reads the whole video area
+        m_finderHwnd = hwnd;
+        m_finderArea = CaptureRegion{all.x, all.y, all.w, all.h};
         if (grow != std::array<double, 4>{}) {   // grown past a cut line, inside the video
             const double w = frac.w, h = frac.h;
             const double x0 = std::max(0.0, frac.x - w * grow[0]), y0 = std::max(0.0, frac.y - h * grow[2]);
@@ -1851,10 +1906,11 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         m_videoFrame = console::Box{video.l, video.t, video.r - video.l, video.b - video.t};
         return {};
     }
-    if (!pc) {
+    if (!pc && !needGame) {   // no region of the player's: the finder needs the game's window
         if (code) *code = "region_missing";
         return "Önce okunacak bölgeyi seç.";
     }
+    HWND gameWnd = nullptr;
     if (needGame && gameUnknown) {
         if (code) *code = "game_unidentified";
         return "Oyun tanınamadı; adı bilinmeyen bir oyun okunmaz.";
@@ -1894,22 +1950,45 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
             }
         }
         RECT r{};
-        const int cx = pc->x + pc->w / 2, cy = pc->y + pc->h / 2;
-        const bool covers = fg && GetWindowRect(fg, &r) && cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom;
+        const int cx = pc ? pc->x + pc->w / 2 : 0, cy = pc ? pc->y + pc->h / 2 : 0;
+        const bool covers = fg && GetWindowRect(fg, &r) && (!pc || (cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom));
         if (!fg || fgPid == GetCurrentProcessId() || fgPid == m_launcherPid || !isGame || !covers)
         {
             if (code) *code = "game_not_front";
             return "Oyun önde değil · oyuna dönünce okuma sürer.";
         }
+        gameWnd = fg;
     }
-    console::Box box = *pc;
-    if (grow != std::array<double, 4>{}) {   // grown past a cut line, on the screen
-        const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        const int vr = vx + GetSystemMetrics(SM_CXVIRTUALSCREEN), vb = vy + GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        const int x0 = std::max(vx, pc->x - static_cast<int>(pc->w * grow[0]));
-        const int y0 = std::max(vy, pc->y - static_cast<int>(pc->h * grow[2]));
-        const int x1 = std::min(vr, pc->x + pc->w + static_cast<int>(pc->w * grow[1]));
-        const int y1 = std::min(vb, pc->y + pc->h + static_cast<int>(pc->h * grow[3]));
+    // never past the screen, nor past the game's window
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vr = vx + GetSystemMetrics(SM_CXVIRTUALSCREEN), vb = vy + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (RECT gr{}; gameWnd && GetWindowRect(gameWnd, &gr)) {
+        vx = std::max(vx, static_cast<int>(gr.left));
+        vy = std::max(vy, static_cast<int>(gr.top));
+        vr = std::min(vr, static_cast<int>(gr.right));
+        vb = std::min(vb, static_cast<int>(gr.bottom));
+    }
+    console::Box base;
+    if (pc) {
+        base = *pc;
+    } else {   // the finder's band (or low in the middle while it searches) in the game's client area
+        console::Rect c = console::clientRect(gameWnd);
+        c = {std::max(c.l, vx), std::max(c.t, vy), std::min(c.r, vr), std::min(c.b, vb)};
+        if (c.r - c.l < 64 || c.b - c.t < 64) {
+            if (code) *code = "game_not_front";
+            return "Oyun önde değil · oyuna dönünce okuma sürer.";
+        }
+        m_finderHwnd = nullptr;
+        m_finderArea = CaptureRegion{c.l, c.t, c.r - c.l, c.b - c.t};
+        const console::Frac f = band ? console::Frac{band->x0, band->y0, band->w(), band->h()} : console::kDefaultRegion;
+        base = console::regionToScreen(c, f);
+    }
+    console::Box box = base;
+    if (grow != std::array<double, 4>{}) {   // grown past a cut line or for a wide line, on the screen
+        const int x0 = std::max(vx, base.x - static_cast<int>(base.w * grow[0]));
+        const int y0 = std::max(vy, base.y - static_cast<int>(base.h * grow[2]));
+        const int x1 = std::min(vr, base.x + base.w + static_cast<int>(base.w * grow[1]));
+        const int y1 = std::min(vb, base.y + base.h + static_cast<int>(base.h * grow[3]));
         box = {x0, y0, x1 - x0, y1 - y0};
     }
     region = {box.x, box.y, box.w, box.h};
@@ -2010,6 +2089,98 @@ void Engine::showOverlay(const Display& d, const console::Box& rect, int chunk, 
         m_shownKeys.push_back(text::compactPoolKey(text::fromUtf8(text::splitSpeaker(l["text"].get<std::string>()).text)));
     ++m_shownCount;
     while (m_shownKeys.size() > 12) m_shownKeys.erase(m_shownKeys.begin());
+}
+
+// ── the subtitle finder (subtitle_finder.h) ─────────────────────────────────
+
+bool Engine::syncFinderLocked()
+{
+    const std::string slug = currentSlug();
+    const bool manual = m_mode == "pc" ? m_pcRegion.has_value() : m_consoleManual;
+    const finder::State was = m_finder.state();
+    const auto restore = [&] {   // a band locked earlier for this game
+        const auto v = splitOn(m_settings.get("autoRegion:" + slug), ',');
+        if (slug.empty() || v.size() < 5) return;
+        const finder::Rect r{std::strtod(v[0].c_str(), nullptr), std::strtod(v[1].c_str(), nullptr),
+                             std::strtod(v[2].c_str(), nullptr), std::strtod(v[3].c_str(), nullptr)};
+        if (r.w() > 0.05 && r.h() > 0.02 && r.x0 >= 0 && r.y0 >= 0 && r.x1 <= 1 && r.y1 <= 1)
+            m_finder.restore(r, std::strtod(v[4].c_str(), nullptr));
+    };
+    bool changed = false;
+    if (slug != m_finderSlug) {
+        m_finderSlug = slug;
+        m_finder.reset();
+        restore();
+        changed = true;
+    }
+    if (manual && m_finder.state() != finder::State::Manual) {
+        m_finder.setManual(true);
+    } else if (!manual && m_finder.state() == finder::State::Manual) {
+        m_finder.setManual(false);
+        restore();
+    }
+    return changed || m_finder.state() != was;
+}
+
+void Engine::storeBandLocked()
+{
+    const auto b = m_finder.band();
+    if (!b || m_finderSlug.empty()) return;
+    m_settings.set("autoRegion:" + m_finderSlug, std::to_string(b->x0) + "," + std::to_string(b->y0) + "," + std::to_string(b->x1)
+                                                     + "," + std::to_string(b->y1) + "," + std::to_string(m_finder.confidence()));
+    saveSettings();
+    logLine(MAKINE_LOG_INFO, "Altyazı bölgesi bu oyun için kaydedildi: " + m_finderSlug);
+}
+
+json Engine::autoRegionLocked() const
+{
+    const finder::State s = m_finder.state();
+    const auto b = m_finder.band();
+    // searching only while reading: nothing is captured before the player's start
+    const char* name = s == finder::State::Searching && !m_running ? "off" : finder::stateName(s);
+    return {{"state", name},
+            {"rect", b ? json{{"x", b->x0}, {"y", b->y0}, {"width", b->w()}, {"height", b->h()}} : json(nullptr)},
+            {"confidence", std::round(m_finder.confidence() * 100) / 100}};
+}
+
+// Every finder::kIntervalS while searching (or proposing): the whole game window / console video area,
+// downscaled, through the detector. Its text never reaches the tracker or the pool.
+void Engine::runFinder()
+{
+    const double t = now();
+    if (!m_finderArea || !m_ocr || t - m_finderAt < finder::kIntervalS) return;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_finder.due(t)) return;
+    }
+    m_finderAt = t;
+    if (!m_capture->captureRegion(m_finderHwnd, *m_finderArea, m_finderFrame)) return;
+    std::string error;
+    const auto obs = finder::observe(*m_ocr, m_finderFrame.pixels.data(), m_finderFrame.width, m_finderFrame.height, error,
+                                     1, [this](const std::string& s) { return withoutOwnOverlay(s).empty(); });
+    if (!error.empty()) logLine(MAKINE_LOG_WARN, error);
+    std::optional<finder::Rect> before, after;
+    finder::State was, is;
+    {
+        std::lock_guard lock(m_mutex);
+        before = m_finder.band();
+        was = m_finder.state();
+        m_finder.addSample(obs, now());
+        after = m_finder.band();
+        is = m_finder.state();
+        if (is == finder::State::Locked && was != finder::State::Locked) storeBandLocked();
+    }
+    const auto apart = [](double a, double b) { return std::abs(a - b) > 0.01; };
+    const bool moved = before.has_value() != after.has_value()
+                       || (before && after && (apart(before->x0, after->x0) || apart(before->y0, after->y0)
+                                               || apart(before->x1, after->x1) || apart(before->y1, after->y1)));
+    if (moved) {   // another region: the line read so far is gone, nothing half read is sent
+        handleEvents(m_tracker.reset());
+        m_tempGrow.clear();
+        m_lastHash = 0;
+        logLine(MAKINE_LOG_INFO, std::string("Altyazı bölgesi ") + finder::stateName(is));
+    }
+    if (moved || is != was) publish();
 }
 
 // A long line that the renderer cannot fit even at its smallest font in its widest band goes in chunks
@@ -2183,6 +2354,15 @@ void Engine::runCapture()
                     CaptureRegion region;
                     console::Box overlay;
                     std::string code;
+                    bool finderMoved = false;
+                    {
+                        std::lock_guard guard(m_mutex);
+                        finderMoved = syncFinderLocked();
+                    }
+                    if (finderMoved) {
+                        m_tempGrow.clear();
+                        m_lastHash = 0;
+                    }
                     const std::string reason = resolveTarget(hwnd, region, overlay, true, &code);
                     std::string filtered;
                     bool read = false, regrow = false;
@@ -2215,7 +2395,17 @@ void Engine::runCapture()
                                 m_lastFiltered = m_garbage.filterOcr(hwnd ? raw : withoutOwnOverlay(raw), kSourceLang);
                             }
                             filtered = m_lastFiltered;
-                            if (!filtered.empty() && growForCutLine(hwnd == nullptr)) regrow = true;
+                            if (!filtered.empty() && growForCutLine(hwnd == nullptr)) {
+                                regrow = true;
+                            } else {   // a line running into the region's edge: grow that way for a while
+                                std::vector<std::array<int, 4>> boxes;
+                                if (!filtered.empty())
+                                    for (const text::OcrBox& b : m_lastBoxes)
+                                        if (hwnd || !withoutOwnOverlay(b.text).empty()) boxes.push_back({b.x0, b.y0, b.x1, b.y1});
+                                const auto before = m_tempGrow.grow();
+                                if (m_tempGrow.update(boxes, m_frame.width, m_frame.height, now())) regrow = true;
+                                if (before != m_tempGrow.grow()) m_lastHash = 0;
+                            }
                             setStatus(mode == "console" && m_source ? "Okunuyor · " + m_source->app.label
                                                                     : std::string("Okunuyor"));
                         } else {
@@ -2262,6 +2452,7 @@ void Engine::runCapture()
                         m_shown.reset();
                         m_chunks.clear();
                     }
+                    if (read && !regrow) runFinder();
                 }
             }
         } catch (const std::exception& e) {

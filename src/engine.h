@@ -135,6 +135,10 @@ private:
     void hideOverlay();
     std::string withoutOwnOverlay(const std::string& raw) const;
     void stopTracking();
+    bool syncFinderLocked();      // the finder follows the game (slug) and the manual region; true when it changed
+    void storeBandLocked();       // a locked band, per game
+    void runFinder();             // one detector run over the whole window, when due
+    nlohmann::json autoRegionLocked() const;
 
     // any thread
     nlohmann::json stateLocked() const;
@@ -191,6 +195,9 @@ private:
     std::string m_mode = "pc";
     std::optional<console::Box> m_pcRegion;
     console::Frac m_consoleRegion = console::kDefaultRegion;
+    bool m_consoleManual = false;             // the player picked the console region (else the finder's band)
+    finder::SubtitleFinder m_finder;          // the subtitle band found by itself (subtitle_finder.h)
+    std::string m_finderSlug;                 // the game the finder's band is for
     std::string m_sourceKey;                  // preferred console source
     unsigned long m_sourcePid = 0;            // the one the user selected
     std::vector<std::string> m_customExes;
@@ -277,6 +284,11 @@ private:
     std::array<double, 4> m_grow{};
     std::optional<console::Box> m_videoFrame;  // capture thread: the console video rect (overlay.show frame)
     std::optional<Display> m_shown;
+    CapturedFrame m_finderFrame;               // capture thread: the whole window for the finder
+    void* m_finderHwnd = nullptr;              // capture thread: what the finder reads (console window / screen)
+    std::optional<CaptureRegion> m_finderArea; // … and where: the console video area / the game's client area
+    double m_finderAt = -1e9;
+    finder::TempGrow m_tempGrow;               // capture thread: a wide line grows the region for a while
     fit::ChunkPlayer m_chunks;                 // the shown line in chunks, when it does not fit
     int m_shownChunk = 0;
     std::map<int, std::string> m_lineSource;   // line id -> the text sent for translation
