@@ -29,6 +29,8 @@ resources/en_words.txt
 bin/makine-live.dll includes:
     nlohmann/json 3.12.0, https://github.com/nlohmann/json
     MIT License — nlohmann-json-LICENSE.txt
+    libssh2 1.11.1 (Windows CNG backend), https://libssh2.org
+    BSD 3-Clause License — libssh2-LICENSE.txt
 
 None of these files are modified. tools/fetch_ocr.py in the source repository
 lists the exact download URLs and SHA-256 hashes.

@@ -125,14 +125,20 @@ CMake bunları `build/package/` altına kopyalar.
 
 ### Derleme ve paketleme
 
-Tek adımda sürüm: `build.cmd`'ye çift tıklayın ya da komut satırından çalıştırın. DLL'i derler, testleri çalıştırır,
-`dist/MakineLive.exe`'yi paketler, exe'nin içinden selftest yapar ve sonunda boyutu ve SHA-256'yı yazar.
+Tek adımda sürüm: `build.cmd`'ye çift tıklayın ya da komut satırından çalıştırın. Makine TV APK'sını derler
+(`tv\gradlew.bat assembleRelease`), OCR dosyaları yoksa indirir, DLL'i derler, testleri çalıştırır, eklentiyi gerçek
+`makine-plugin-host.exe`'de açar (bulursa: `MAKINE_PLUGIN_HOST`, `../Makine-Launcher/build/dev/`) ve
+`build/org.makineceviri.live-<sürüm>.mkplugin`'i paketler; sonunda boyutu ve SHA-256'yı yazar.
 
 ```powershell
 build.cmd                        # yeni sürüm numarasını sorar (boş = aynı sürüm)
-build.cmd 0.3.3                  # sürümü her yerde 0.3.3 yapar, sonra derler
+build.cmd 0.4.1                  # sürümü her yerde 0.4.1 yapar, sonra derler
 build.cmd --hizli                # testleri atlar
 ```
+
+Makine TV APK'sı için Android SDK (`tv/local.properties` içinde `sdk.dir=…` ya da `ANDROID_HOME`) ve JDK 17 gerekir.
+İmza: `MAKINE_TV_KEYSTORE` (+ `MAKINE_TV_KEYSTORE_PASS`) tanımlıysa o anahtar, değilse `~/.android/debug.keystore`.
+TV'lerde kurulu uygulama ancak aynı anahtarla imzalı bir APK ile güncellenir: anahtarı yedekleyin, değiştirmeyin.
 
 Sunucuya bağlanmadan denemek için `test.cmd`: bilgisayarda küçük bir sahte sunucu açar ve uygulamayı ona bağlar
 (giriş kendiliğinden onaylanır, çeviriler örnek repliklerden ya da indirilmiş onaylı havuzdan gelir). Gerçek oturuma ve
@@ -222,16 +228,19 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `tv.pair` | `{id, code}` (`tv.found`'dan) ya da `{host, port?, code}` (adresle bağlan); konsol modunda çıktıyı `tv` yapar |
 | `tv.unpair` | eşleşmeyi siler |
 | `tv.install.scan` | `{platform: "android" \| "lg"}`: ev ağında ADB (5555) / LG geliştirici modu (9922) açık cihazlar → `tvInstall.hosts` |
-| `tv.install` | `{platform: "android", host, port?}`: Android TV / Google TV / Fire TV'ye ADB ile kurar; ilerleme `tvInstall.step`, sonuç `tvInstall.state` (`running` · `done` · `error`) ve `message`. `lg` → `E_UNSUPPORTED` (elle kurulum: `tvInstall.guide.lg`) |
+| `tv.install` | `{platform: "android", host, port?}`: Android TV / Google TV / Fire TV'ye ADB ile kurar; ilerleme `tvInstall.step`, sonuç `tvInstall.state` (`running` · `done` · `error`) ve `message`. `{platform: "lg", host, passphrase}`: LG webOS'a geliştirici modu üzerinden kurar (aynı ilerleme alanları) |
 | `tv.install.saveFile` | `{platform: "android" \| "lg"}` → `{path}`: `makine-tv.apk` / `.ipk` İndirilenler klasörüne (USB bellek ya da elle kurulum) |
 | `consoleConsent.set` | `{granted}` ya da `{enabled}`: konsol modunda her satırın GTA VI havuzuna gittiğine oyuncunun onayı; onaysız `start` konsolda `E_DENIED` "consent_required: …" döner |
 | `announcement.read` | `{id}` (sayı ya da rakamlardan oluşan metin): duyuruyu kapatır (sunucuya `ann_read`) |
-| `status.refresh` | bakım / sürüm / duyuruları hemen yeniden sorar (bakım sürerken kendiliğinden 30 sn'de bir, yoksa 300 sn) |
+| `status.refresh` | bakım / sürüm / duyuruları hemen yeniden sorar (bakım sürerken kendiliğinden 30 sn'de bir, yoksa 300 sn). Bakım okumayı durdurur; bakım bitince okuma kendiliğinden yeniden başlar |
 | `sample` | örnek bir replik (`resources/sample_quotes.json`) açık her çıktıya (kutu, TV, telefon / OBS) 4 sn gider |
 | `region.keepGrown` | kesik satır yüzünden bu oturumda büyüyen bölgeyi (`regionGrow`) kalıcı kaydeder (bulunan bantta da) |
 | `autoRegion.accept` | önerilen altyazı bandını (`autoRegion.state: found`) bu oyun için kilitler ve saklar |
 | `autoRegion.reset` | bandı ve oyuncunun kendi bölgesini unutur, altyazıyı yeniden arar |
 | `support.dismiss` | "kayıt gönderildi" kartını kapatır |
+| `pools.refresh` | oyun havuzlarının sunucudaki onaylı satır sayısını sorar (`pool?action=sync&head=1`, oyun başına bir istek, okuma sürerken tek tek, yoksa ikişer); sonuçlar geldikçe `ui.state.pools`. Giriş gerekir; bakımda `E_FAILED` |
+| `pools.download` | `{slug}` (`pools.items`'tan): o oyunun onaylı satırlarını bu bilgisayara indirir (oyun yerel havuzda onaylanır, sonra güncellemeleri kendiliğinden gelir). Listede olmayan slug `E_NOT_FOUND` |
+| `pools.downloadAll` | `missing` (sunucu sayısı bilinen) ve `outdated` havuzların hepsini sırayla indirir; yoksa "İndirilecek havuz yok; hepsi güncel." |
 | `donate` / `donate.dismiss` | bağış sayfasını (`makineceviri.org/destek`) `ui.openUrl` ile açar / ilk açılış kartını kapatır |
 
 `ui.state` (her değişiklikte `emitEvent`):
@@ -265,6 +274,12 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "discord": {"connected"},
   "announcements": [{"id", "kind", "kindLabel", "title", "body", "author", "createdAt"}],
   "support": {"time", "sizeKb"} | null,
+  "pools": {"refreshing": false, "updatedAt": 1795526851 | null,   // son sunucu yoklaması (unix sn), ayarlarda kalır
+            "items": [{"slug", "name", "local": 120,              // bu bilgisayardaki onaylı satır
+                       "remote": 160 | null,                      // sunucudaki (null: henüz sorulmadı)
+                       "state": "current|outdated|missing|downloading|error|empty",
+                       "error": "…",                              // yalnız state error iken
+                       "playing": true}]},                        // şu anki oyun (konsol modunda GTA VI)
   "donate": {"url", "seen"}
 }
 ```
@@ -331,12 +346,28 @@ GTA VI'da Makine × GTA VI görseli. Discord'un yerel IPC kanalı kullanılır, 
 **TV'ye kur.** Android TV, Google TV ve Fire TV: eklenti ADB protokolünü kendisi konuşur (`src/adb.cpp`; adb.exe yok):
 RSA-2048 anahtarı Windows CNG ile üretilir, DPAPI ile `dataDir\adbkey.bin`'de durur; TV bir kez "bu bilgisayara izin
 verilsin mi" diye sorar. APK `sync:` ile yüklenir, `pm install` ile kurulur, altyazı katmanı izni verilir, uygulama
-açılır. LG webOS: SSH istemcisi gerektirdiği için şimdilik elle kurulum (`tvInstall.guide.lg`, `tv.install.saveFile`).
+açılır. LG webOS: geliştirici modundaki TV'nin anahtarı `http://TV:9991/webos_rsa`'dan alınır, Passphrase ile çözülür
+(Windows CNG), libssh2 (WinCNG) ile `prisoner@TV:9922`'ye bağlanılır, `.ipk` yüklenip `luna-send` ile kurulur ve açılır
+(`src/webos_install.cpp`); elle kurulum için `tv.install.saveFile` duruyor.
 Paketler: `resources/makine-tv.apk` (`tv\gradlew.bat assembleRelease`; imzalı sürüm için `MAKINE_TV_KEYSTORE`) ve
 `resources/makine-tv.ipk` (`tools/build_webos.py`, derlemede kendiliğinden).
 
+**Oyun havuzları** (`pools`, `src/pool_list.*`). Liste: Makine kütüphanesindeki oyunlar (`games.list`, yetenek
+`game-files-read`; yalnız adlar okunur, adı `game.started`'daki gibi havuz adına çevrilir, harfi olmayan atlanır), bu
+bilgisayarda havuzu olan oyunlar ve GTA VI; en çok 200. Durum: `missing` sunucuda satır var, burada yok · `outdated`
+sürüm (`rev`) ya da sunucunun sayısı son indirmeden beri değişti · `current` aynı sürüm · `empty` sunucuda onaylı satır
+yok · `downloading` · `error` (son yoklama / indirme başarısız, `error` Türkçe metin). Sunucu henüz sorulmadıysa
+(`remote: null`) burada satır varsa `current`, yoksa `missing`. Sıra: oynanan oyun, sonra `outdated` / `missing` /
+`downloading` sunucu sayısı çoktan aza, sonra kalanlar ada göre. Okunan oyunun havuzu okuma sürerken 180 sn'de bir
+eşitlenir. Girişten sonra ve `game.started`'da, en çok 6 saatte bir (`poolsCheckedAt`) kendiliğinden yoklanır: bu
+yoklama yalnız bu bilgisayardaki havuzları, GTA VI'ı ve oynanan oyunu sorar (her oyuncu × her kütüphane oyunu sunucuda
+D1 okuması demek); tüm kütüphane `pools.refresh` ile. Her yoklamanın sonunda burada satırı olan (`local > 0`) ve
+`outdated` olan havuzlar sormadan indirilir; oyuncunun hiç seçmediği (`missing`) havuz kendiliğinden inmez.
+
 **Duyurular, destek, bağış.** Sunucunun duyuruları `announcements`'ta; ekip bir oturumun kaydını isterse
-(`beat` → `log_request`) eklentinin kendi kayıt satırları (bellekte son 512 KB) gzip ile gider ve `support` kartı çıkar.
+(`beat` → `log_request`) eklentinin kendi kayıt satırları (bellekte son 512 KB) önce Makine'nin Sentry Logs'una
+(`telemetry.logs`) gider ve istek `log_sent` ile yanıtlanır; Makine Sentry'ye gönderemezse ya da sunucu `log_sent`'i
+tanımıyorsa (bugünkü Makine-WEB: 400) kayıt gzip ile `log_upload`'a da gider. İkisinden biri tutunca `support` kartı çıkar.
 Bağış bağlantısı `https://makineceviri.org/destek` (site bağış sayfasına yönlendirir), `ui.openUrl` ile açılır.
 
 **Konsol / yakalama kaynakları** (öncelik: GTA VI, PlayStation ve Xbox): PS Remote Play, chiaki / chiaki-ng, Asobi,
@@ -369,7 +400,7 @@ chiaki, Xbox uygulaması, Greenlight) PC modunda da GTA VI sayılır.
 ├── tools/                exe ve eklenti paketleme, ikon üretimi, LG paketleyici, TV emülatör testi
 ├── tests/                bütün testler
 ├── docs/                 teknik mimari, kullanıcı rehberleri, sürüm notları
-├── build.cmd             tek adımda sürüm: DLL → testler → exe → selftest (tools/build.py)
+├── build.cmd             tek adımda sürüm: TV APK → DLL → testler → .mkplugin (tools/build.py)
 └── test.cmd              sunucusuz deneme: yerel sahte sunucuyla uygulamayı açar (tools/offline.py)
 ```
 

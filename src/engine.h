@@ -21,6 +21,7 @@
 #include "hotkeys.h"
 #include "local_pool.h"
 #include "ocr_ort.h"
+#include "pool_list.h"
 #include "scene.h"
 #include "server.h"
 #include "settings.h"
@@ -102,8 +103,25 @@ private:
     void loginPoll(int gen, std::string secret, double deadline, double interval);
     void validateSession();
     void refreshStatus();
-    void statusLoop();
+    void statusLoop(int gen);   // one chain; maintenance starting supersedes it with a 30 s one
     void syncPool(bool force);
+    void maybeSyncPool();       // while reading: the current game's pool every kPoolSyncS (posts syncPool)
+    // Game pools ("Oyun havuzları", ui.state pools): candidates, head syncs, downloads. Net threads.
+    // A full sync of one game; confirms it in LocalPool first. false: `error` says why (Turkish).
+    bool fetchPool(const std::string& slug, const std::string& name, std::string& error);
+    void loadPoolCandidates();          // launcher library (games.list) + LocalPool + GTA VI
+    void reloadPoolSummaries();         // LocalPool → m_poolLocal
+    bool startPoolsRefresh(bool automatic);   // any thread; false when one is running already
+    void refreshPools(bool automatic);
+    void poolHeadStep(int gen);         // one head sync, then the next of the queue
+    void finishPoolsRefresh();
+    void queuePoolDownloads(const std::vector<std::string>& slugs);
+    void poolDownloadStep();            // one queued download at a time
+    void maybeAutoRefreshPools();       // after sign-in and on game.started: at most once per 6 h
+    void publishPoolsThrottled();
+    std::vector<pools::Entry> poolEntriesLocked() const;
+    nlohmann::json poolsStateLocked() const;
+    std::optional<makine::plugin::Result> invokePools(std::string_view method, const nlohmann::json& params);
     void syncHotkeys();                       // never under m_mutex
     bool growForCutLine(bool screen);          // capture thread
     nlohmann::json countersLocked() const;
@@ -164,6 +182,11 @@ private:
     void applyOutputs();
     void applyStyleOutputs();
     bool boxWanted() const;
+    // The in-game question (overlay.prompt, launcher 0.4+): "lock the subtitle area / the moved box?"
+    std::string wantedPromptLocked() const;   // "" | "lockBox" | "lockRegion"
+    std::string lockKeyLocked() const;        // a free F key for "lock", held only while the question is up
+    void syncPrompt();
+    void answerPrompt(const std::string& id, const std::string& action);
     void routeLine(const Display& d, int chunk = 0, int chunks = 1);
     void routeClear();
     void updateDiscord();
@@ -229,6 +252,9 @@ private:
     std::map<std::string, std::string> m_hotkeyKeys{{"start", "F9"}, {"region", "F10"}, {"move", "F8"}};
     bool m_hotkeysArmed = false;
     bool m_boxMovable = false, m_boxMoveSupported = true;
+    std::string m_prompt;   // the question on screen ("" = none)
+    bool m_promptSupported = true, m_promptQueued = false;
+    bool m_regionPromptDismissed = false, m_boxPromptDismissed = false;   // "Şimdi değil": until the band / box changes
     int m_lines = 0, m_poolHits = 0;
     bool m_maintenance = false, m_blocked = false;
     std::string m_serverMessage, m_notice;
@@ -240,6 +266,23 @@ private:
     unsigned long m_launcherPid = 0;
     std::string m_poolSlug;                    // the local pool in use
     double m_poolSyncedAt = -1e9;
+    bool m_poolSyncPosted = false;             // maybeSyncPool: one syncPool(false) queued at a time
+    // game pools (ui.state pools)
+    struct PoolRow {
+        std::string name;                      // library name, else the server's
+        std::optional<int> remote;             // the server's approved count (head sync)
+        std::string remoteRev, error;
+    };
+    std::map<std::string, PoolRow> m_poolRows;          // candidates by slug
+    std::map<std::string, PoolSummary> m_poolLocal;     // what this PC has (LocalPool summaries)
+    std::deque<std::string> m_poolHeadQueue, m_poolDownloadQueue;
+    std::string m_poolDownloading;             // the slug being downloaded, "" none
+    bool m_poolsRefreshing = false, m_poolDownloadRunning = false;
+    int m_poolsGen = 0, m_poolChains = 0, m_poolHeadsOk = 0;
+    std::optional<int64_t> m_poolsUpdatedAt;   // unix seconds of the last refresh that reached the server (settings)
+    double m_poolsPublishedAt = -1e9;
+    int m_statusGen = 0;                       // statusLoop chain
+    bool m_resumeAfterMaintenance = false;     // reading stopped for maintenance: it starts again after
     // translation bookkeeping
     std::deque<Translated> m_results;
     std::unordered_map<int, int> m_dispatchSeq;
