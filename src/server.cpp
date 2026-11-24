@@ -231,13 +231,16 @@ ApiResult ServerClient::logout()
 }
 
 ApiResult ServerClient::translate(const std::string& game, const std::string& gameName, const std::string& text,
-                                  const std::string& sourceLang, const std::string& targetLang)
+                                  const std::string& sourceLang, const std::string& targetLang, const json& scene)
 {
-    const json body = {{"game", game},
-                       {"game_name", gameName},
-                       {"text", text},
-                       {"source_lang", sourceLang},
-                       {"target_lang", targetLang}};
+    json body = {{"game", game},
+                 {"game_name", gameName},
+                 {"text", text},
+                 {"source_lang", sourceLang},
+                 {"target_lang", targetLang}};
+    if (scene.is_object())
+        for (const char* k : {"speaker", "context", "scene_id", "script_line_id"})
+            if (scene.contains(k)) body[k] = scene[k];
     return call(L"POST", "/api/live/translate", &body, 12000);
 }
 

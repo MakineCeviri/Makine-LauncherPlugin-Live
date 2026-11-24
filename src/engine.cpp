@@ -680,6 +680,7 @@ Result Engine::invoke(std::string_view method, const json& params)
         {
             std::lock_guard lock(m_mutex);
             m_mode = mode;
+            m_convo.clear();
             saveSettings();
         }
         m_captureCv.notify_all();
@@ -801,6 +802,7 @@ void Engine::onEvent(std::string_view event, const json& payload)
         {
             std::lock_guard lock(m_mutex);
             m_gameUnknown = slug.empty();   // no usable name: no pool to send to, so nothing is read
+            m_convo.clear();
             m_gameName = stream ? std::string(console::kGameName) : m_gameUnknown ? std::string() : name;
             m_gameSlug = slug;
             m_gamePid = static_cast<unsigned long>(num(payload, "pid", 0));   // optional (contract addition)
@@ -859,6 +861,7 @@ void Engine::onEvent(std::string_view event, const json& payload)
             std::lock_guard lock(m_mutex);
             m_gameName.clear();
             m_gameSlug.clear();
+            m_convo.clear();
             m_gameUnknown = false;
             m_gamePid = 0;
             m_gameExe.clear();
@@ -953,6 +956,39 @@ bool Engine::growForCutLine(bool screen)
     m_lastHash = 0;
     publish();
     return true;
+}
+
+// The line's scene: who says it, and up to three lines before it from this conversation (each shown at most
+// 8 s after the one before it, the newest at most 8 s ago), oldest first, as read, plain text. A gap ends the
+// conversation: nothing before it is sent. The pool key never sees any of this.
+std::pair<json, std::vector<std::string>> Engine::sceneFor(const text::ReadLine& rl, const std::string& slug)
+{
+    json inp = json::object();
+    if (!rl.speaker.empty()) inp["speaker"] = rl.speaker;
+    json context = json::array();
+    {
+        std::lock_guard lock(m_mutex);
+        const double t = now();
+        double newer = t;
+        std::vector<json> picked;
+        for (auto it = m_convo.rbegin(); it != m_convo.rend() && picked.size() < scene::kMaxContext; ++it) {
+            if ((newer - it->at) * 1000 > scene::kContextFreshMs) break;
+            newer = it->at;
+            const std::string said = scene::plain(it->text);
+            if (said.empty() || text::fromUtf8(said).size() > scene::kMaxContextLine) continue;   // dropped, not cut
+            json item = {{"text", said}, {"age_ms", static_cast<int64_t>(std::llround((t - it->at) * 1000))}};
+            if (!it->speaker.empty()) item["speaker"] = it->speaker;
+            const std::u32string tr = text::fromUtf8(scene::plain(it->translated));
+            if (!tr.empty()) item["translated"] = text::toUtf8(tr.substr(0, std::min(tr.size(), scene::kMaxContextLine)));
+            picked.push_back(std::move(item));
+        }
+        for (auto it = picked.rbegin(); it != picked.rend(); ++it) context.push_back(*it);
+    }
+    if (!context.empty()) inp["context"] = context;
+    // no scene_id / script_line_id yet: they come with the game's script dump, never from a guess
+    const scene::Scene s = scene::readScene(inp, rl.speaker, m_garbage);
+    const std::string form = slug.empty() ? std::string() : m_pool.ruleForm(slug, s.speaker, scene::listenerOf(s));
+    return {inp, scene::variantSignals(s, form)};
 }
 
 void Engine::addHistoryLocked(const std::string& source, const std::string& text, const std::string& kind,
@@ -1567,8 +1603,15 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
     bool fresh = false;   // a part came from the pool or the server, not the cache: counters changed
     for (const std::string& part : parts) {
         const text::ReadLine rl = m_garbage.readLine(part, kSourceLang);
-        const auto [translated, partKind] = translatePart(line, part, rl.line, slug, gameName, ocrUs, rl.prefix, !rl.hard, fresh);
+        const auto [scene, signals] = sceneFor(rl, slug);
+        const auto [translated, partKind] =
+            translatePart(line, part, rl.line, slug, gameName, ocrUs, rl.prefix, !rl.hard, scene, signals, fresh);
         if (translated.empty()) continue;
+        {
+            std::lock_guard lock(m_mutex);
+            m_convo.push_back({part, rl.speaker, translated, now()});
+            while (m_convo.size() > scene::kMaxContext) m_convo.pop_front();
+        }
         shown += (shown.empty() ? "" : "\n") + rl.prefix + translated;
         if (kind.empty() || rankOf(partKind) < rankOf(kind)) kind = partKind;
     }
@@ -1583,33 +1626,39 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
 std::pair<std::string, std::string> Engine::translatePart(int line, const std::string& textUtf8, const std::string& bare,
                                                           const std::string& slug, const std::string& gameName,
                                                           std::pair<uint64_t, uint64_t> ocrUs, const std::string& prefix,
-                                                          bool clean, bool& fresh)
+                                                          bool clean, const json& scene,
+                                                          const std::vector<std::string>& signals, bool& fresh)
 {
-    const std::u32string key = text::compactPoolKey(text::fromUtf8(bare));
+    const std::u32string poolKey = text::compactPoolKey(text::fromUtf8(bare));
+    // the cache, the in-flight set and the skip list go by what is asked: the line, and a variant signal if any
+    std::u32string key = poolKey;
+    for (const std::string& s : signals) key += U"\x1f" + text::fromUtf8(s);
     std::string poolSlug;
     {
         std::lock_guard lock(m_mutex);
         poolSlug = m_poolSlug;
     }
     if (!slug.empty() && slug == poolSlug) {
-        if (const auto hit = m_pool.lookup(slug, bare, clean)) {   // a cut or merged reading: exact key only
+        // (key, variant) → plain key; a cut or merged reading gets the exact key only
+        if (const auto hit = m_pool.lookup(slug, bare, clean, signals)) {
+            const std::string hitKind = hit->variant.empty() ? "verified" : "pending";   // a variant is no approval
             {
                 std::lock_guard lock(m_mutex);
                 ++m_poolHits;
                 ++m_poolCount;
                 ++m_linesTotal;
                 ++m_sessionLines;
-                m_lastLine = {{"source", textUtf8}, {"text", prefix + hit->translation}, {"kind", "verified"}, {"origin", "local"}};
-                addHistoryLocked(textUtf8, prefix + hit->translation, "verified", "local");
+                m_lastLine = {{"source", textUtf8}, {"text", prefix + hit->translation}, {"kind", hitKind}, {"origin", "local"}};
+                addHistoryLocked(textUtf8, prefix + hit->translation, hitKind, "local");
             }
             fresh = true;
-            return {hit->translation, "verified"};
+            return {hit->translation, hitKind};
         }
     }
     bool owner = false;
     {
         std::unique_lock lock(m_mutex);
-        if (m_skipKeys.count(key)) return {};
+        if (m_skipKeys.count(poolKey)) return {};
         for (int attempt = 0; attempt < 2 && !owner; ++attempt) {
             const auto c = m_cache.find(key);
             if (c != m_cache.end() && (c->second.kind == "verified" || now() - c->second.at <= kCacheTtlS))
@@ -1642,7 +1691,7 @@ std::pair<std::string, std::string> Engine::translatePart(int line, const std::s
     const uint64_t requestStartUs = wallUs();
     for (int attempt = 1; attempt <= 2; ++attempt) {
         const auto sent = Clock::now();
-        res = m_server.translate(slug, gameName, bare, kSourceLang, kTargetLang);   // the line without its label
+        res = m_server.translate(slug, gameName, bare, kSourceLang, kTargetLang, scene);   // the line without its label
         requestMs = std::chrono::duration<double, std::milli>(Clock::now() - sent).count();
         bool retry = false;
         if (res.ok()) break;
@@ -1656,7 +1705,7 @@ std::pair<std::string, std::string> Engine::translatePart(int line, const std::s
             retry = true;
         } else if (res.status == 422) {
             std::lock_guard lock(m_mutex);
-            m_skipKeys.insert(key);
+            m_skipKeys.insert(poolKey);
             logLine(MAKINE_LOG_DEBUG, "Sunucu çöp saydı (" + str(res.data, "reason") + "): " + bare);
             break;
         } else if (res.status == 429) {
@@ -1690,6 +1739,14 @@ std::pair<std::string, std::string> Engine::translatePart(int line, const std::s
     std::string kind = "api";
     if (!translated.empty() && str(res.data, "origin", "deepl") == "pool")
         kind = str(res.data, "status", "pending") == "verified" && !flag(res.data, "provisional") ? "verified" : "pending";
+    if (!str(res.data, "variant").empty() && kind == "verified") kind = "pending";   // a variant is no approval
+    // A translation made with the line before as a hint is this player's alone: never cached for another reading
+    const bool hinted = flag(res.data, "context_used");
+    if (flag(res.data, "address_flip")) {   // counted on the server too (formflip): a missing address rule
+        std::lock_guard lock(m_mutex);
+        ++m_addressFlips;
+        logLine(MAKINE_LOG_DEBUG, "Hitap değişti (sen/siz), kural yok: " + bare);
+    }
     {
         std::lock_guard lock(m_mutex);
         if (!notice.empty()) {
@@ -1701,7 +1758,7 @@ std::pair<std::string, std::string> Engine::translatePart(int line, const std::s
                 m_notice.clear();
                 m_noticeCode.clear();
             }
-            m_cache[key] = {translated, kind, now()};
+            if (!hinted) m_cache[key] = {translated, kind, now()};
             if (m_cache.size() > 1000) m_cache.erase(m_cache.begin());
             if (kind != "api") ++m_poolHits;
             ++m_linesTotal;
@@ -2015,8 +2072,9 @@ void Engine::handleEvents(const std::vector<LineEvent>& events, const std::u32st
                 const std::string readingUtf8 = text::toUtf8(reading);
                 if (m_garbage.speakerLines(readingUtf8).size() <= 1) {   // one speaker: keyed without the label
                     const text::ReadLine rl = m_garbage.readLine(readingUtf8, kSourceLang);
-                    if (const auto hit = m_pool.lookupExact(slug, rl.line))
-                        m_scheduler.translationReady(e.id, text::fromUtf8(rl.prefix + hit->translation), "verified", e.t);
+                    if (const auto hit = m_pool.lookupExact(slug, rl.line, sceneFor(rl, slug).second))
+                        m_scheduler.translationReady(e.id, text::fromUtf8(rl.prefix + hit->translation),
+                                                     hit->variant.empty() ? "verified" : "pending", e.t);
                 }
             }
             // K13: the line settles in ~200 ms; open the connection now if it went idle

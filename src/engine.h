@@ -21,6 +21,7 @@
 #include "hotkeys.h"
 #include "local_pool.h"
 #include "ocr_ort.h"
+#include "scene.h"
 #include "server.h"
 #include "settings.h"
 #include "subtitle_timing.h"
@@ -116,7 +117,10 @@ private:
     std::pair<std::string, std::string> translatePart(int line, const std::string& source, const std::string& bare,
                                                       const std::string& slug, const std::string& gameName,
                                                       std::pair<uint64_t, uint64_t> ocrUs, const std::string& prefix,
-                                                      bool clean, bool& fresh);
+                                                      bool clean, const nlohmann::json& scene,
+                                                      const std::vector<std::string>& signals, bool& fresh);
+    // The line's scene as the server reads it ({speaker?, context?}) and its stable variant signals
+    std::pair<nlohmann::json, std::vector<std::string>> sceneFor(const text::ReadLine& rl, const std::string& slug);
     void traceLine(std::pair<uint64_t, uint64_t> ocrUs, uint64_t requestStartUs, uint64_t requestEndUs,
                    const std::string& kind);
     void signedOut(const std::string& message);
@@ -209,7 +213,13 @@ private:
     std::deque<double> m_latMs;               // the last 30 translate requests (counters.avgMs)
     std::vector<std::string> m_samples;       // sample lines (resources/sample_quotes.json)
     int m_sampleGen = 0;
-    std::deque<nlohmann::json> m_history;     // this session's lines, newest first (ui.state history)
+    std::deque<nlohmann::json> m_history;
+    struct Said {   // this conversation's last lines: the context of the next one (never a key)
+        std::string text, speaker, translated;
+        double at = 0;
+    };
+    std::deque<Said> m_convo;
+    int m_addressFlips = 0;   // the server saw a speaker switch sen/siz with no rule deciding it     // this session's lines, newest first (ui.state history)
     std::map<std::string, std::string> m_hotkeyKeys{{"start", "F9"}, {"region", "F10"}, {"move", "F8"}};
     bool m_hotkeysArmed = false;
     bool m_boxMovable = false, m_boxMoveSupported = true;

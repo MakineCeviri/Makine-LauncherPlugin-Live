@@ -42,8 +42,10 @@ public:
     ApiResult me();
     ApiResult appLogin(const std::string& username, const std::string& password);   // team accounts
     ApiResult logout();
+    /// scene: the line's speaker and context ({speaker?, context?, scene_id?, script_line_id?}), all optional
     ApiResult translate(const std::string& game, const std::string& gameName, const std::string& text,
-                        const std::string& sourceLang, const std::string& targetLang);
+                        const std::string& sourceLang, const std::string& targetLang,
+                        const nlohmann::json& scene = nlohmann::json::object());
     ApiResult poolSync(const std::string& game, const std::string& rev, bool head);
     ApiResult poolHits(const std::string& game, const nlohmann::json& hits);
     ApiResult status();
