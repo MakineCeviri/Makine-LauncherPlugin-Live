@@ -364,7 +364,7 @@ void Engine::report(const char* reason, const char* level, const std::string& me
                 {"game", console ? std::string(console::kGameSlug) : m_gameSlug}};
     }
     m_host.emitEvent("telemetry.capture",
-                     dump({{"reason", reason}, {"level", level}, {"message", message.substr(0, 300)}, {"tags", tags}}));
+                     dump({{"reason", reason}, {"level", level}, {"message", message}, {"tags", tags}}));
 }
 
 void Engine::saveSettings()   // under m_mutex
