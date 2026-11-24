@@ -23,8 +23,8 @@ constexpr double kFoundScore = 0.45, kLockScore = 0.60;
 struct Block {
     double top = 1, bottom = 0, x0 = 1, x1 = 0, lineH = 0, like = 0;
     int lines = 0;
-    bool speaker = false;
-    std::string sig;
+    bool speaker = false, words = false;
+    std::string sig;   // the compact key of its read text ("" = not read)
     double cx() const { return (x0 + x1) / 2; }
     double cy() const { return (top + bottom) / 2; }
 };
@@ -47,10 +47,17 @@ double textFactor(const std::string& s)
     return spaces >= 1 ? 1.0 : 0.7;
 }
 
-std::string signature(const Block& b)
+// Read text that is words: at least four letters, mostly letters. A detector false positive (an edge, a
+// texture) reads as a stray glyph or two.
+bool wordy(const std::string& s)
 {
-    if (!b.sig.empty()) return b.sig;
-    return "#" + std::to_string(static_cast<int>(std::lround((b.x1 - b.x0) * 40))) + "x" + std::to_string(b.lines);
+    int letters = 0, other = 0;
+    for (char32_t c : text::fromUtf8(s)) {
+        if (c == U' ') continue;
+        if (text::strIsAlpha(std::u32string_view(&c, 1))) ++letters;
+        else ++other;
+    }
+    return letters >= 4 && letters >= 2 * other;
 }
 
 } // namespace
@@ -143,7 +150,10 @@ void SubtitleFinder::addSample(const std::vector<Observed>& lines, double now)
                 b.lineH += r.h();
                 ++b.lines;
                 b.like = std::max(b.like, like);
-                if (!l->text.empty()) b.sig += text::toUtf8(text::compactPoolKey(text::fromUtf8(l->text)));
+                if (wordy(l->text)) {
+                    b.words = true;
+                    b.sig += text::toUtf8(text::compactPoolKey(text::fromUtf8(l->text)));
+                }
                 continue;
             }
         }
@@ -155,8 +165,9 @@ void SubtitleFinder::addSample(const std::vector<Observed>& lines, double now)
         b.lineH = r.h();
         b.lines = 1;
         b.like = like;
-        b.speaker = !l->text.empty() && !text::splitSpeaker(l->text).speaker.empty();
-        if (!l->text.empty()) b.sig = text::toUtf8(text::compactPoolKey(text::fromUtf8(l->text)));
+        b.words = wordy(l->text);
+        b.speaker = b.words && !text::splitSpeaker(l->text).speaker.empty();
+        if (b.words) b.sig = text::toUtf8(text::compactPoolKey(text::fromUtf8(l->text)));
         blocks.push_back(std::move(b));
     }
     for (Block& b : blocks) b.lineH /= b.lines;
@@ -189,14 +200,17 @@ void SubtitleFinder::addSample(const std::vector<Observed>& lines, double now)
         ++c.present;
         c.likeSum += b.like;
         if (b.speaker) ++c.speakers;
+        if (b.words) ++c.words;
         c.anchors.push_back(b.cy() >= 0.5 ? b.bottom : b.top);   // a lower band grows up, a top band down
         if (c.anchors.size() > 16) c.anchors.erase(c.anchors.begin());
-        const std::string sig = signature(b);
-        if (sig != c.lastSig && std::find(c.signatures.begin(), c.signatures.end(), sig) == c.signatures.end()) {
-            c.signatures.push_back(sig);
+        // another text, not the same one read a little differently over a moving background
+        const auto same = [&](const std::string& s) {
+            return text::sequenceRatio(text::fromUtf8(s), text::fromUtf8(b.sig)) >= 0.75;
+        };
+        if (!b.sig.empty() && std::none_of(c.signatures.begin(), c.signatures.end(), same)) {
+            c.signatures.push_back(b.sig);
             if (c.signatures.size() > 8) c.signatures.erase(c.signatures.begin());
         }
-        c.lastSig = sig;
     }
     for (size_t i = 0; i < blocks.size(); ++i) {
         const Block& b = blocks[i];
@@ -211,9 +225,9 @@ void SubtitleFinder::addSample(const std::vector<Observed>& lines, double now)
         c.wasPresent = true;
         c.likeSum = b.like;
         c.speakers = b.speaker ? 1 : 0;
+        c.words = b.words ? 1 : 0;
         c.anchors.push_back(b.cy() >= 0.5 ? b.bottom : b.top);
-        c.lastSig = signature(b);
-        c.signatures.push_back(c.lastSig);
+        if (!b.sig.empty()) c.signatures.push_back(b.sig);
         c.firstAt = now;
         m_clusters.push_back(std::move(c));
     }
@@ -238,10 +252,10 @@ void SubtitleFinder::addSample(const std::vector<Observed>& lines, double now)
 
 double SubtitleFinder::score(const Cluster& c, double) const
 {
-    if (c.present < 2) return 0;
+    if (c.present < 2 || c.words < 2) return 0;   // a subtitle band is read as words at least twice
     const double like = c.likeSum / c.present;
     // dynamics: its text changes, it comes and goes with the dialogue
-    const double change = clamp01((static_cast<double>(c.signatures.size()) - 1) / 2);
+    const double change = clamp01((static_cast<double>(c.signatures.size()) - 1) / 2);   // distinct texts read
     const double blink = clamp01((c.transitions - 1) / 2.0);   // the first appearance is no evidence
     const double dyn = std::max(change, 0.8 * blink);
     // a stable baseline

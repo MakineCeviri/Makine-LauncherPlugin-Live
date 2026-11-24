@@ -23,7 +23,7 @@
 namespace live::finder {
 
 constexpr double kIntervalS = 2.0;   // one detector run per this many seconds, at most
-constexpr int kMaxWidth = 960;       // the frame the detector sees is at most this wide
+constexpr int kMaxWidth = 640;       // the frame the detector sees is at most this wide (brief: ≤ 960; 640 halves the cost)
 constexpr double kFoundS = 6.0;      // evidence over at least this long before a band is proposed
 constexpr double kLockS = 16.0;      // … and this long (with high confidence) before it locks by itself
 
@@ -66,12 +66,11 @@ private:
     struct Cluster {
         double top = 0, bottom = 0, lineH = 0;   // running means of the block's extent and line height
         double cx = 0.5, halfW = 0;              // centre and the widest half width seen
-        int present = 0, absent = 0, transitions = 0, speakers = 0;
+        int present = 0, absent = 0, transitions = 0, speakers = 0, words = 0;
         bool wasPresent = false;
         double likeSum = 0;
         std::vector<double> anchors;             // the block's baseline per sample (stability)
-        std::vector<std::string> signatures;     // distinct texts (or shapes) seen
-        std::string lastSig;
+        std::vector<std::string> signatures;     // distinct texts read
         double firstAt = 0;
     };
     double score(const Cluster& c, double now) const;

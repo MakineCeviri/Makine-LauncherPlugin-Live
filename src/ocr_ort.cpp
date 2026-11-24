@@ -420,23 +420,42 @@ std::vector<OcrLine> OcrOrt::detect(const uint8_t* bgra, int width, int height, 
     try {
         std::vector<Rect> boxes = d->detect(View{bgra, width, height});
         std::sort(boxes.begin(), boxes.end(), [](const Rect& a, const Rect& b) { return a.y0 + a.y1 < b.y0 + b.y1; });
-        std::vector<OcrLine> lines;   // the same line grouping as run()
-        float rowY0 = 0, rowY1 = -1;
+        // run()'s line grouping, but only for boxes near each other: across a whole window two texts on
+        // one height (an objective on the left, money on the right) are not one line
+        std::vector<OcrLine> lines;
+        std::vector<Rect> rows;   // each line's first box
         for (const Rect& r : boxes) {
             const float cy = (r.y0 + r.y1) * 0.5f;
-            if (!lines.empty() && cy >= rowY0 && cy <= rowY1) {
-                OcrLine& l = lines.back();
+            bool joined = false;
+            for (size_t i = lines.size(); i-- > 0 && !joined;) {
+                const Rect& row = rows[i];
+                if (cy < row.y0 || cy > row.y1) continue;
+                OcrLine& l = lines[i];
+                const float gap = std::max(float(l.x0) - r.x1, r.x0 - float(l.x1));
+                if (gap > 1.5f * (row.y1 - row.y0)) continue;
                 l.x0 = std::min(l.x0, static_cast<int>(r.x0));
                 l.y0 = std::min(l.y0, static_cast<int>(r.y0));
                 l.x1 = std::max(l.x1, static_cast<int>(r.x1));
                 l.y1 = std::max(l.y1, static_cast<int>(r.y1));
-                continue;
+                joined = true;
             }
-            rowY0 = r.y0;
-            rowY1 = r.y1;
+            if (joined) continue;
+            rows.push_back(r);
             lines.push_back({{}, static_cast<int>(r.x0), static_cast<int>(r.y0), static_cast<int>(r.x1), static_cast<int>(r.y1)});
         }
         return lines;
+    } catch (const std::exception& e) {
+        error = std::string("OCR: ") + e.what();
+        return {};
+    }
+}
+
+std::string OcrOrt::read(const uint8_t* bgra, int width, int height, const OcrLine& box, std::string& error)
+{
+    if (!d->rec.session || !bgra || box.x1 - box.x0 < 2 || box.y1 - box.y0 < 2) return {};
+    try {
+        return d->recognize(View{bgra, width, height},
+                            Rect{float(box.x0), float(box.y0), float(box.x1), float(box.y1)});
     } catch (const std::exception& e) {
         error = std::string("OCR: ") + e.what();
         return {};

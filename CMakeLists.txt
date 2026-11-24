@@ -78,6 +78,7 @@ add_library(makine-live SHARED
     src/server.cpp
     src/capture.cpp
     src/ocr_ort.cpp
+    src/finder_ocr.cpp
     src/settings.cpp
 )
 target_include_directories(makine-live PRIVATE include src)
@@ -190,6 +191,24 @@ if(EXISTS "${LIVE_OCR_BENCH_DIR}/results/ort_v3ch_det.tsv")
     endforeach()
 else()
     message(STATUS "OCR gate skipped: no benchmark results in ${LIVE_OCR_BENCH_DIR}")
+endif()
+
+# Subtitle-finder gate on whole screens (python tools/make_scene_frames.py --bench <ocrbench>)
+set(LIVE_SCENE_DIR "${CMAKE_BINARY_DIR}/scene_frames" CACHE PATH "Scene frames (tools/make_scene_frames.py)")
+add_executable(live_finder_gate tests/cpp/finder_gate.cpp src/finder_ocr.cpp src/ocr_ort.cpp)
+target_include_directories(live_finder_gate PRIVATE src)
+target_include_directories(live_finder_gate SYSTEM PRIVATE "${LIVE_OCR_DIR}/include")
+target_link_libraries(live_finder_gate PRIVATE live-logic windowscodecs ole32)
+live_warnings(live_finder_gate)
+if(MINGW)
+    target_link_options(live_finder_gate PRIVATE -static)
+endif()
+if(EXISTS "${LIVE_SCENE_DIR}/truth.json")
+    foreach(threads 1 2)
+        add_test(NAME finder_gate_${threads}t COMMAND live_finder_gate "${LIVE_SCENE_DIR}" "${LIVE_OCR_DIR}" ${threads})
+    endforeach()
+else()
+    message(STATUS "Finder gate skipped: no scene frames in ${LIVE_SCENE_DIR}")
 endif()
 
 # K3 gate: the console-mode text mask on D-C (python tools/make_dc_frames.py --bench <ocrbench>)
