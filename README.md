@@ -279,7 +279,7 @@ notu kaldırır). TV stili isteğe bağlı `relSize` (ekran yüksekliğine oran,
 kendi aralığına göre, 8×8 piksel hücre) son OCR'dakinden farklıysa ve en geç 2,5 sn'de bir çalışır; kapı D-C'de G-MISS = 0
 (`tools/make_dc_frames.py`, `ctest -R mask_gate`). K12: yerel havuzda tam anahtarı olan satır ilk okumada gösterilir (iki
 okuma kuralı aynen sürer). K13: yeni satır belirince 15 sn'dir boşta duran bağlantı `ping` ile açılır. TV, çizdiği satıra
-`{"t":"drawn","id"}` yanıtı verirse (TV ölçüm derlemesi) `tv.hopP50/hopP95` gidiş-dönüşün yarısıdır.
+`{"t":"drawn","id"}` yanıtını Makine TV (Android ve LG) satırı ekrana çizince verir; `tv.hopP50/hopP95` gidiş-dönüşün yarısıdır.
 
 **Çıktılar.** Çeviri, PC modunda ve konsol modunda `output: "pc"` iken Makine'nin kaplamasıyla gösterilir; `tv` iken
 Makine TV'ye (UDP 47710 keşif, TCP satır-JSON, TV'deki 4 haneli kod; `src/tv_link.cpp`), `phone` iken telefon / tablet
