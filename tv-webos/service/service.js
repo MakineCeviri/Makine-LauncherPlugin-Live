@@ -4,6 +4,7 @@
  * PC'deki Makine Live ile bağlantı; protokol v1, Android TV'deki LinkServer.kt ve PC'deki tv_link.py ile aynı:
  *   Keşif  UDP 47710: {"t":"discover"} → {"t":"here","v":1,"id","name","port"}
  *   Akış   TCP 47711: hello{v,code,pc} → ok{tv} | bad_code; sonra line / clear / style / ping (satır başına bir JSON)
+ *          TV → PC: drawn{id} — uygulama kimlikli satırı ekrana çizince "drawn" yöntemini çağırır (gecikme ölçümü)
  * Aynı anda tek PC bağlıdır; 15 sn sessizlikte bağlantı kapanır ve altyazı temizlenir. Eşleşme kodu deneme yanılmaya
  * karşı korunur: her yanlışta 1 sn bekleme, 5 yanlıştan sonra yeni kod ve 60 sn kilit.
  *
@@ -228,7 +229,8 @@ function serve(sock) {
             return true;
         }
         if (msg.t === 'line' && msg.text) {
-            emit({ event: 'line', text: String(msg.text), kind: String(msg.kind || 'api') });
+            emit({ event: 'line', text: String(msg.text), kind: String(msg.kind || 'api'),
+                   id: typeof msg.id === 'number' ? msg.id : -1 });
         } else if (msg.t === 'clear') {
             emit({ event: 'clear' });
         } else if (msg.t === 'note') {
@@ -296,6 +298,15 @@ service.register('start', function (message) {
         if (keepAlive && keepAlive !== true) service.activityManager.complete(keepAlive, function () {});
         keepAlive = null;
     }
+});
+
+// Uygulama satırı ekrana çizdi: bağlı PC'ye drawn{id} (PC, G-TV-HOP / uçtan uca gecikmeyi bundan ölçer)
+service.register('drawn', function (message) {
+    var id = (message.payload || {}).id;
+    if (current && typeof id === 'number' && id >= 0) {
+        try { current.write(JSON.stringify({ t: 'drawn', id: id }) + '\n'); } catch (e) { /* kapandı */ }
+    }
+    message.respond({ returnValue: true });
 });
 
 service.register('newCode', function (message) {

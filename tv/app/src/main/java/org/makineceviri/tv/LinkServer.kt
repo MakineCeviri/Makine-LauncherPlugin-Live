@@ -12,6 +12,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.security.MessageDigest
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 /**
@@ -19,15 +20,17 @@ import kotlin.concurrent.thread
  *
  *  Keşif  UDP 47710: {"t":"discover"} → {"t":"here","v":1,"id","name","port"}
  *  Akış   TCP 47711: hello{v,code,pc} → ok{tv} | bad_code; sonra line / clear / style / ping (satır başına bir JSON)
+ *         TV → PC: drawn{id} — kimlikli bir satır ekrana çizilince (PC gecikmeyi bundan ölçer)
  *
  * Aynı anda tek PC bağlıdır; yeni gelen bağlantı eskisini düşürür. IDLE_TIMEOUT_MS boyunca hiçbir şey gelmezse
- * (PC kapandı, ağ koptu) bağlantı kapatılır ve altyazı temizlenir. TV, "ok"tan sonra PC'ye hiçbir şey yazmaz:
+ * (PC kapandı, ağ koptu) bağlantı kapatılır ve altyazı temizlenir. TV, "ok"tan sonra PC'ye yalnız drawn yazar;
  * PC bağlantının kapandığını okunabilir hâle gelmesinden anlar.
  */
 class LinkServer(private val prefs: Prefs, private val listener: Listener) {
 
     interface Listener {
-        fun onLine(text: String, kind: String)
+        /** id: PC'nin satır kimliği (drawn ile geri bildirilir); not satırlarında -1 */
+        fun onLine(text: String, kind: String, id: Int)
         fun onClear()
         fun onStyle(size: Int?, position: String?, opacity: Int?)
         /** PC 0.4+: boyut ekran yüksekliğine oran, güvenli alan, en çok satır, renkler (yoksa null). */
@@ -45,6 +48,8 @@ class LinkServer(private val prefs: Prefs, private val listener: Listener) {
     private var current: Socket? = null
     private var failures = 0
     private var lockedUntil = 0L
+    // drawn yanıtları ana iş parçacığından değil buradan yazılır (ağ, arayüzü bekletmesin)
+    private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "drawn").apply { isDaemon = true } }
 
     var port: Int = TCP_PORT
         private set
@@ -60,7 +65,17 @@ class LinkServer(private val prefs: Prefs, private val listener: Listener) {
         running = false
         runCatching { udp?.close() }
         runCatching { tcp?.close() }
+        writer.shutdown()
         kick()
+    }
+
+    /** Satır [id] ekrana çizildi: bağlı PC'ye drawn{id} (G-TV-HOP / uçtan uca gecikme ölçümü). */
+    fun drawn(id: Int) {
+        if (id < 0) return
+        writer.execute {
+            val sock = synchronized(lock) { current } ?: return@execute
+            runCatching { write(sock.getOutputStream(), JSONObject().put("t", "drawn").put("id", id)) }
+        }
     }
 
     /** Bağlı PC'yi düşürür (yeni kod üretildi). */
@@ -152,11 +167,11 @@ class LinkServer(private val prefs: Prefs, private val listener: Listener) {
                 val msg = parse(line) ?: continue
                 when (msg.optString("t")) {
                     "line" -> msg.optString("text").takeIf { it.isNotBlank() }?.let {
-                        listener.onLine(it, msg.optString("kind", "api"))
+                        listener.onLine(it, msg.optString("kind", "api"), msg.optInt("id", -1))
                     }
                     "clear" -> listener.onClear()
                     // PC'den oyuncuya not (kaynak kayboldu, okuma durdu, kota): satır gibi gösterilir, boşsa temizlenir
-                    "note" -> msg.optString("text").let { if (it.isBlank()) listener.onClear() else listener.onLine(it, "note") }
+                    "note" -> msg.optString("text").let { if (it.isBlank()) listener.onClear() else listener.onLine(it, "note", -1) }
                     "style" -> listener.onStyle(
                         msg.optInt("size", -1).takeIf { it >= 0 },
                         msg.optString("pos").takeIf { it.isNotEmpty() },

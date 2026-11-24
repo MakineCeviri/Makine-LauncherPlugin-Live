@@ -92,6 +92,7 @@ class OverlayService : Service(), LinkServer.Listener {
         }
         val v = SubtitleView(this)
         v.onHidden = { setPassThrough(true) }
+        v.onDrawn = { id -> link.drawn(id) }
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -166,11 +167,11 @@ class OverlayService : Service(), LinkServer.Listener {
 
     // ── LinkServer.Listener (bağlantı iş parçacıklarından gelir) ──
 
-    override fun onLine(text: String, kind: String) {
+    override fun onLine(text: String, kind: String, id: Int) {
         main.post {
             main.removeCallbacks(hideSample)
             setPassThrough(false)
-            view?.show(text, kind)
+            view?.show(text, kind, id)
         }
     }
 

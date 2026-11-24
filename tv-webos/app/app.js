@@ -257,6 +257,12 @@
         } else if (e.event === 'line') {
             clearTimeout(hideTimer);
             showSub(e.text, e.kind);
+            if (e.id >= 0) {   // after the next paint: the PC measures the hop from this
+                var id = e.id;
+                window.requestAnimationFrame(function () {
+                    window.requestAnimationFrame(function () { call('drawn', SVC + 'drawn', { id: id }); });
+                });
+            }
         } else if (e.event === 'clear') {
             hideSub();
         } else if (e.event === 'style') {

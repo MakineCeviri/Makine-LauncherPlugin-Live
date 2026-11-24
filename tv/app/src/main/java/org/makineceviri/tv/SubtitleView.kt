@@ -67,7 +67,12 @@ class SubtitleView(context: Context) : View(context) {
     private val rect = RectF()
     private val ease = PathInterpolator(0.2f, 0.7f, 0.2f, 1f)
 
-    fun show(newText: String, newKind: String) {
+    /** Kimlikli bir satır ilk kez görünür biçimde çizildiğinde (LinkServer.drawn) */
+    var onDrawn: ((Int) -> Unit)? = null
+    private var pendingDrawn = -1
+
+    fun show(newText: String, newKind: String, id: Int = -1) {
+        pendingDrawn = id
         val wasVisible = text != null && alphaF > 0.5f
         text = newText
         kind = newKind
@@ -172,6 +177,11 @@ class SubtitleView(context: Context) : View(context) {
         strokeLayout?.draw(canvas)
         l.draw(canvas)
         canvas.restore()
+        if (pendingDrawn >= 0) {
+            val id = pendingDrawn
+            pendingDrawn = -1
+            onDrawn?.invoke(id)
+        }
     }
 
     companion object {
