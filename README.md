@@ -204,6 +204,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 |---|---|
 | `state` | → tam durum (aşağıda) |
 | `login.start` | → `{message}`; kod ve bağlantı `ui.state.login`'de, tarayıcı `ui.openUrl` ile açılır |
+| `login.team` | `{username, password}`: ekip hesabı (yönetici, çevirmen, test) şifreyle (`auth?action=app_login`); şifre saklanmaz, günlüğe yazılmaz; jeton cihaz girişindeki gibi DPAPI ile kalır. Sonuç `ui.state.login` (`role`) |
 | `login.cancel` | giriş beklemesini bırakır |
 | `logout` | oturumu kapatır (sunucuda da) |
 | `mode.set` | `{mode: "pc" \| "console"}` |
@@ -211,6 +212,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `console.select` | `{sourceId}` (`console.sources`'tan); listede olmayan bir pencere seçilirse exe'si kaynak olarak hatırlanır |
 | `region.pick` | PC'de ekrandan, konsolda kaynağın 16:9 video alanı içinden (`overlay.pickRegion {within}`) bölge seçtirir |
 | `start` / `stop` | okumayı başlatır / durdurur (giriş ve PC'de bölge gerekir) |
+| `box.move` | `{on?}` (yoksa tersine çevirir): altyazı kutusunu sürüklenebilir yapar / kilitler. Makine'nin isteğe bağlı `overlay.setMovable {on}` yöntemini çağırır; `on:false` yanıtı `{x, y}` (kutu merkezi, ekrana oran) getirirse `style.boxX/boxY` olarak saklanır. Makine bu yöntemi bilmiyorsa `E_UNSUPPORTED` ve `boxMove.supported: false` |
 | `readOnce` | → `{text, filtered, region, window}`: bölgeyi bir kez okur, çevirmez |
 | `autoStart.set` / `usageReport.set` | `{enabled}` → Makine'nin ayar deposuna `settings.set` ile yazılır (manifest ayarları; Makine `autoStart`'ı eklenti kapalıyken de okur) |
 | `style.set` | `{preset, font, sizePx, …}` (Makine'nin `overlay.show.style` anahtarları; `null` siler) → `{style}` |
@@ -231,7 +233,10 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 
 ```json
 {
-  "login": {"state": "signedOut|checking|starting|waiting|signedIn|offline", "code", "url", "user", "message"},
+  "login": {"state": "signedOut|checking|starting|waiting|signedIn|offline", "code", "url", "user", "role", "message"},
+  "history": [{"source", "text", "kind": "verified|pending|api", "origin", "at"}],   // bu oturum, en yeni önde, en çok 50
+  "hotkeys": {"armed", "keys": {"start|region|move": {"key": "F9|…|off", "active", "error"}}},
+  "boxMove": {"on", "supported"},
   "mode": "pc|console",
   "sources": [ ... ], "selectedSource": {"key", "pid"} | null,
   "region": {"pc": {"x", "y", "width", "height"} | null, "console": {"x", "y", "width", "height"} (video alanına oran)},
@@ -264,10 +269,17 @@ cümle birleştirilmeden önce atılır; yine de Makine'nin kaplama penceresinin
 WDA_EXCLUDEFROMCAPTURE)` ile yakalamadan gizlenmesi gerekir. Yerel havuz, oyun Makine'nin kütüphanesinden
 geldiği için sormadan indirilir.
 
+**Kısayollar** (0.3.2 exe'deki gibi: F9 başlat/durdur, F10 bölge seç, F8 kutuyu taşı/kilitle): manifest ayarları
+`hotkeyStart` / `hotkeyRegion` / `hotkeyMove` (F1–F12 ya da `off`). Eklentinin kendi iş parçacığında, yalnız mesaj
+alan bir pencereye `RegisterHotKey` (klavye kancası yok). Windows tuşu kaydedenden başka programlara vermez; bu
+yüzden tuşlar yalnız giriş yapılmışken ve bir oyun açıkken (ya da konsol modunda) alınır (`hotkeys.armed`). Başka
+programın tuttuğu tuş `keys.<eylem>.error`'da yazar; sonraki eşitlemede yeniden denenir. Kısayolun hatası oyuncu
+oyundayken `ui.notify` ile söylenir.
+
 **Neden kodları** (`ui.state.reason`, OCR_KARAR §6; serbest metin `status` yalnız ayrıntıdır), öncelik sırasıyla:
-`maintenance` · `update_required` (eylem `update_launcher`) · `signed_out` (`login`) · `offline` (`retry`) ·
+`maintenance` · `update_required` (eylem `update_launcher`) · `signed_out` (`login`) · `offline` (`retry`) · `consent_required` (`consent`) ·
 `source_missing` (`open_source`) · `source_minimized` (`restore_source`) · `source_small` (`enlarge_source`) ·
-`black_frame` (`check_hdcp`) · `capture_failed` (`retry`) · `region_missing` (`pick_region`) · `game_missing` ·
+`black_frame` (`check_hdcp`) · `capture_failed` (`retry`) · `region_missing` (`pick_region`) · `game_missing` · `game_unidentified` ·
 `game_not_front` · `tv_offline` (`tv_search`) · `tv_bad_code` (`tv_pair`) · `quota` · `no_key` · `upstream`.
 `stream_stalled`, `stream_poor`, `hdr_washed` OCR hattının güven / kontrast ölçüleriyle gelecek. Çıktı TV iken kaynak
 kaybı, siyah görüntü, kota, bakım ve okumanın durması TV'ye `{"t":"note","code","text"}` olarak da gider (boş `text`
