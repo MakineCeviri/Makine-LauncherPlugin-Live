@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -55,6 +56,13 @@ public:
     /// idle | connecting | connected | bad_code | offline, and the TV's name
     std::pair<std::string, std::string> state() const;
     std::optional<TvInfo> tv() const;
+    /// G-TV-HOP: a TV that answers {"t":"drawn","id"} when it has drawn a line gives the one-way time as
+    /// half the round trip (PC and TV clocks differ). {p50, p95, samples} in ms over the last 100 lines.
+    struct Hop {
+        double p50 = 0, p95 = 0;
+        int samples = 0;
+    };
+    Hop hop() const;
     /// Called (on the link's thread, no lock held) when state() changes.
     void onChange(std::function<void()> fn);
 
@@ -72,7 +80,8 @@ private:
     std::string m_code;
     nlohmann::json m_line = nullptr, m_style = nullptr;
     nlohmann::json m_shown = nullptr, m_note = nullptr;
-    int m_noteVersion = 0;   // the line on screen: sent again when the TV (re)connects
+    int m_noteVersion = 0;
+    std::deque<double> m_hops;   // the line on screen: sent again when the TV (re)connects
     std::function<void()> m_onChange;
     int m_gen = 0;
     bool m_closed = false;

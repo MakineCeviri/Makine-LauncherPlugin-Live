@@ -377,6 +377,7 @@ json Engine::outputsStateLocked() const
         {"web", web},
         {"tv", {{"state", tvState.first}, {"detail", tvState.second}, {"paired", m_tvSaved},
                 {"found", m_tvFound}, {"searching", m_tvSearching},
+                {"hopP50", m_tv ? m_tv->hop().p50 : 0.0}, {"hopP95", m_tv ? m_tv->hop().p95 : 0.0},
                 {"firewallNote", "TV aramasında Windows \"makine-plugin-host.exe\" için güvenlik duvarı izni sorabilir: "
                                  "Özel ağlar'ı seçip İzin ver'e basın (TV'nin yanıtı bu izinle gelir). Makine Live kural eklemez."}}},
         {"tvInstall", tvInstall},

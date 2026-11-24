@@ -117,17 +117,22 @@ std::optional<json> readLine(SOCKET s, int timeoutMs)
     return msg;
 }
 
-bool peerClosed(SOCKET s)   // the TV says nothing after ok: readable means closed
+// What the TV sent since the last look, without waiting; false when it closed the connection.
+bool readAvailable(SOCKET s, std::string& in)
 {
-    fd_set r;
-    FD_ZERO(&r);
-    FD_SET(s, &r);
-    timeval zero{0, 0};
-    const int ready = select(0, &r, nullptr, nullptr, &zero);
-    if (ready < 0) return true;
-    if (ready == 0) return false;
-    char b[1024];
-    return recv(s, b, sizeof b, 0) <= 0;
+    for (;;) {
+        fd_set r;
+        FD_ZERO(&r);
+        FD_SET(s, &r);
+        timeval zero{0, 0};
+        const int ready = select(0, &r, nullptr, nullptr, &zero);
+        if (ready < 0) return false;
+        if (ready == 0) return true;
+        char b[1024];
+        const int n = recv(s, b, sizeof b, 0);
+        if (n <= 0) return false;
+        in.append(b, static_cast<size_t>(n));
+    }
 }
 
 } // namespace
@@ -271,6 +276,22 @@ void TvLink::sendNote(const std::string& code, const std::string& text)
     m_cv.notify_all();
 }
 
+TvLink::Hop TvLink::hop() const
+{
+    std::vector<double> v;
+    {
+        std::lock_guard lock(m_mutex);
+        v.assign(m_hops.begin(), m_hops.end());
+    }
+    Hop h;
+    h.samples = static_cast<int>(v.size());
+    if (v.empty()) return h;
+    std::sort(v.begin(), v.end());
+    h.p50 = v[v.size() / 2];
+    h.p95 = v[std::min(v.size() - 1, v.size() * 95 / 100)];
+    return h;
+}
+
 std::pair<std::string, std::string> TvLink::state() const
 {
     std::lock_guard lock(m_mutex);
@@ -368,8 +389,23 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
     if (!note.is_null()) first += encode(note);
     if (!first.empty() && !sendAll(s, first)) return finish();
     auto lastSend = Clock::now();
+    std::string in;
+    std::map<int, Clock::time_point> sentAt;   // line id → when it went out (G-TV-HOP)
     for (;;) {
-        if (peerClosed(s)) return finish();   // the TV app closed: reconnect at once
+        if (!readAvailable(s, in)) return finish();   // the TV app closed: reconnect at once
+        for (auto it = sentAt.begin(); it != sentAt.end();)   // a TV without the measurement build never answers
+            it = Clock::now() - it->second > std::chrono::seconds(1) ? sentAt.erase(it) : std::next(it);
+        for (size_t nl; (nl = in.find('\n')) != std::string::npos; in.erase(0, nl + 1)) {
+            const json msg = json::parse(in.substr(0, nl), nullptr, false);
+            if (!msg.is_object() || msg.value("t", std::string()) != "drawn" || !msg.contains("id")) continue;
+            const auto it = sentAt.find(msg["id"].is_number_integer() ? msg["id"].get<int>() : -1);
+            if (it == sentAt.end()) continue;
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - it->second).count() / 2;
+            sentAt.erase(it);
+            std::lock_guard lock(m_mutex);
+            m_hops.push_back(ms);
+            if (m_hops.size() > 100) m_hops.pop_front();
+        }
         std::string out;
         {
             std::unique_lock lock(m_mutex);
@@ -379,7 +415,8 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
             }
             if (m_line.is_null() && m_style == sentStyle && m_noteVersion == sentNote) {
                 const double since = std::chrono::duration<double>(Clock::now() - lastSend).count();
-                const double wait = std::min(1.0, std::max(0.0, kPingS - since));
+                // While a drawn{id} is due, look at the socket every 2 ms: the hop measures the TV, not this wait
+                const double wait = sentAt.empty() ? std::min(1.0, std::max(0.0, kPingS - since)) : 0.002;
                 m_cv.wait_for(lock, std::chrono::milliseconds(static_cast<int>(wait * 1000)));
             }
             if (m_gen != gen) {
@@ -391,6 +428,10 @@ std::string TvLink::session(int gen, const TvInfo& tv, const std::string& code)
                 out += encode(sentStyle);
             }
             if (!m_line.is_null()) {
+                if (m_line.value("t", std::string()) == "line" && m_line.contains("id")) {
+                    sentAt[m_line["id"].get<int>()] = Clock::now();
+                    if (sentAt.size() > 64) sentAt.erase(sentAt.begin());
+                }
                 out += encode(m_line);
                 m_line = nullptr;
             }

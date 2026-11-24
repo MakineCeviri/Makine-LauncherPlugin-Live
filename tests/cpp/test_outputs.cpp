@@ -320,6 +320,26 @@ void testTvLink()
                                                                                        : "{\"t\":\"bad_code\"}\n";
         send(c, reply.data(), static_cast<int>(reply.size()), 0);
         received = readUntil(c, "Kota doldu");
+        // G-TV-HOP: answer every line with drawn{id} at once, like the TV app's measurement build
+        std::string pending = received;
+        for (int lines = 0; lines < 40;) {
+            size_t nl;
+            while ((nl = pending.find('\n')) != std::string::npos) {
+                const json m = json::parse(pending.substr(0, nl), nullptr, false);
+                pending.erase(0, nl + 1);
+                if (m.is_object() && m.value("t", std::string()) == "line") {
+                    const std::string drawn = json({{"t", "drawn"}, {"id", m["id"]}}).dump() + "\n";
+                    send(c, drawn.data(), static_cast<int>(drawn.size()), 0);
+                    ++lines;
+                }
+            }
+            if (lines >= 40) break;
+            char chunk[4096];
+            const int n = recv(c, chunk, sizeof chunk, 0);
+            if (n <= 0) break;
+            pending.append(chunk, static_cast<size_t>(n));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
         closesocket(c);
     });
     const auto found = discoverTvs(1500, udpPort, {"127.0.0.1"});
@@ -333,7 +353,14 @@ void testTvLink()
     link->setStyle(30, "alt", 80);
     link->sendLine(1, "Merhaba", "api");
     link->sendNote("quota", "Kota doldu");
+    for (int i = 2; i <= 40; ++i) {   // a subtitle every 50 ms
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        link->sendLine(i, "Satır " + std::to_string(i), "api");
+    }
     tv.join();
+    const auto hop = link->hop();
+    std::printf("  G-TV-HOP (fake TV, loopback): p50 %.2f ms, p95 %.2f ms over %d lines\n", hop.p50, hop.p95, hop.samples);
+    check(hop.samples >= 30 && hop.p50 <= 40 && hop.p95 <= 100, "G-TV-HOP p50 <= 40 ms, p95 <= 100 ms (TCP_NODELAY)");
     check(received.find("\"t\":\"style\"") != std::string::npos && received.find("\"text\":\"Merhaba\"") != std::string::npos,
           "style and line arrive");
     check(received.find("\"t\":\"note\"") != std::string::npos && received.find("\"code\":\"quota\"") != std::string::npos,

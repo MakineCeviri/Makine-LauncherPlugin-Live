@@ -187,6 +187,10 @@ class OverlayService : Service(), LinkServer.Listener {
         }
     }
 
+    override fun onLook(relSize: Float?, safeArea: Float?, maxLines: Int?, textColor: String?, bandColor: String?) {
+        main.post { view?.applyLook(relSize, safeArea, maxLines, textColor, bandColor) }
+    }
+
     override fun onCodeChanged() {
         main.post { publish() }
     }

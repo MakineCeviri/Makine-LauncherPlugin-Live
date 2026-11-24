@@ -235,7 +235,8 @@ function serve(sock) {
             // PC'den oyuncuya not (kaynak kayboldu, okuma durdu, kota): satır gibi gösterilir, boşsa temizlenir
             emit(msg.text ? { event: 'line', text: String(msg.text), kind: 'note' } : { event: 'clear' });
         } else if (msg.t === 'style') {
-            emit({ event: 'style', size: msg.size, pos: msg.pos, opacity: msg.opacity });
+            emit({ event: 'style', size: msg.size, pos: msg.pos, opacity: msg.opacity, relSize: msg.relSize,
+                   safeArea: msg.safeArea, maxLines: msg.maxLines, text: msg.text, band: msg.band });
         }
         return true;
     }

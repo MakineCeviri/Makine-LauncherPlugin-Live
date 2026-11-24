@@ -29,6 +29,20 @@ class SubtitleView(context: Context) : View(context) {
     var opacity = 78
         set(v) { field = v; invalidate() }
 
+    // PC 0.4+ stili (yoksa eski kural): boyut ekran yüksekliğine oran, kenar güvenli alanı, en çok satır
+    private var relSize: Float? = null
+    private var safeArea: Float? = null
+    private var maxLines = 4
+
+    fun applyLook(relSize: Float?, safeArea: Float?, maxLines: Int?, textColor: String?, bandColor: String?) {
+        this.relSize = relSize
+        this.safeArea = safeArea
+        this.maxLines = maxLines ?: 4
+        fill.color = textColor?.let { runCatching { Color.parseColor(it) }.getOrNull() } ?: Color.WHITE
+        band.color = bandColor?.let { runCatching { Color.parseColor(it) }.getOrNull() } ?: BAND
+        relayout()
+    }
+
     /** Gidiş animasyonu bitip şerit tamamen kaybolunca. */
     var onHidden: (() -> Unit)? = null
 
@@ -96,7 +110,7 @@ class SubtitleView(context: Context) : View(context) {
             invalidate()
             return
         }
-        val base = height * SIZE_RATIO[sizeLevel.coerceIn(0, 2)]
+        val base = height * (relSize ?: SIZE_RATIO[sizeLevel.coerceIn(0, 2)])
         val maxW = (width * MAX_WIDTH_RATIO).toInt()
         var scale = 1f
         var l: StaticLayout
@@ -107,7 +121,7 @@ class SubtitleView(context: Context) : View(context) {
                 .setLineSpacing(0f, 1.08f)
                 .setIncludePad(false)
                 .build()
-            if (l.lineCount <= 4 || scale <= 0.74f) break
+            if (l.lineCount <= maxLines || scale <= 0.74f) break
             scale -= 0.06f
         }
         stroke.textSize = fill.textSize
@@ -131,7 +145,7 @@ class SubtitleView(context: Context) : View(context) {
         val bw = textW + 2 * padX
         val bh = l.height + 2 * padY
         val cx = width / 2f
-        val top = if (position == "ust") height * 0.06f else height * 0.92f - bh
+        val top = if (position == "ust") height * (safeArea ?: 0.06f) else height * (1f - (safeArea ?: 0.08f)) - bh
         rect.set(cx - bw / 2, top, cx + bw / 2, top + bh)
         val radius = fill.textSize * 0.38f
 

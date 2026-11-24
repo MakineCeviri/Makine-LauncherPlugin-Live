@@ -30,6 +30,8 @@ class LinkServer(private val prefs: Prefs, private val listener: Listener) {
         fun onLine(text: String, kind: String)
         fun onClear()
         fun onStyle(size: Int?, position: String?, opacity: Int?)
+        /** PC 0.4+: boyut ekran yüksekliğine oran, güvenli alan, en çok satır, renkler (yoksa null). */
+        fun onLook(relSize: Float?, safeArea: Float?, maxLines: Int?, textColor: String?, bandColor: String?) {}
         /** pc = bağlanan bilgisayarın adı; null = bağlantı yok */
         fun onPeer(pc: String?)
         /** Çok sayıda yanlış denemeden sonra kod yenilendi (ekrandaki kod güncellenmeli) */
@@ -159,7 +161,15 @@ class LinkServer(private val prefs: Prefs, private val listener: Listener) {
                         msg.optInt("size", -1).takeIf { it >= 0 },
                         msg.optString("pos").takeIf { it.isNotEmpty() },
                         msg.optInt("opacity", -1).takeIf { it > 0 },
-                    )
+                    ).also {
+                        listener.onLook(
+                            msg.optDouble("relSize", -1.0).takeIf { it in 0.01..0.2 }?.toFloat(),
+                            msg.optDouble("safeArea", -1.0).takeIf { it in 0.0..0.2 }?.toFloat(),
+                            msg.optInt("maxLines", -1).takeIf { it in 1..6 },
+                            msg.optString("text").takeIf { it.startsWith("#") },
+                            msg.optString("band").takeIf { it.startsWith("#") },
+                        )
+                    }
                 }
             }
         } catch (_: SocketTimeoutException) {
