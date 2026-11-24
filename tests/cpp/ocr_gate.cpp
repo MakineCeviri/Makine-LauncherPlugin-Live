@@ -7,7 +7,9 @@
 // G-SPLIT, G-KEY) hold for the plugin unchanged.
 //   live_ocr_gate <bench build dir> <ocr runtime dir> <threads>
 
+#include "garbage.h"
 #include "ocr_ort.h"
+#include "winutil.h"
 
 #include <windows.h>
 #include <wincodec.h>
@@ -16,6 +18,8 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -95,7 +99,11 @@ int main(int argc, char** argv)
         std::printf("FAIL no results/ort_v3ch_det.tsv in the bench dir\n");
         return 1;
     }
-    int frames = 0, same = 0;
+    int frames = 0, same = 0, dialogue = 0, grow = 0;
+    std::map<std::string, int> sides;
+    live::text::Garbage garbage;
+    const auto wordFile = argc > 4 ? live::win::readFile(widen(argv[4])) : std::nullopt;
+    const bool words = wordFile && garbage.setWords(*wordFile);
     std::vector<double> ms;
     for (std::string line; std::getline(tsv, line);) {
         if (line.empty() || line[0] == '#' || line.rfind("file\t", 0) == 0) continue;
@@ -119,11 +127,28 @@ int main(int argc, char** argv)
         std::string text;
         for (const auto& l : lines) text += (text.empty() ? "" : "\n") + l.text;
         ++frames;
+        if (words) {   // the region-edge rule on real frames: how often would a line read make the region grow?
+            std::vector<live::text::OcrBox> boxes;
+            for (const auto& l : lines) boxes.push_back({l.text, l.x0, l.y0, l.x1, l.y1});
+            if (!garbage.filterOcr(text).empty()) {
+                ++dialogue;
+                const auto v = garbage.edgeCheck(boxes, w, h);
+                if (!v.send) {
+                    ++grow;
+                    for (const auto& side : v.cut) ++sides[side];
+                }
+            }
+        }
         if (escapeField(text) == f[10]) ++same;
         else std::printf("FAIL %s\n  bench:  %s\n  plugin: %s\n", f[0].c_str(), f[10].c_str(), escapeField(text).c_str());
     }
     std::sort(ms.begin(), ms.end());
     std::printf("%d/%d frames read exactly as the bench, p50 %.1f ms (%s threads)\n", same, frames,
                 ms.empty() ? 0.0 : ms[ms.size() / 2], argv[3]);
+    if (words) {
+        std::string list;
+        for (const auto& [side, n] : sides) list += (list.empty() ? "" : ", ") + side + " " + std::to_string(n);
+        std::printf("edge rule: %d of %d dialogue frames would grow the region (%s)\n", grow, dialogue, list.c_str());
+    }
     return frames > 0 && same == frames ? 0 : 1;
 }

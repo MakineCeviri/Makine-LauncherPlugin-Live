@@ -21,9 +21,9 @@ static const char kPhoneHtml[] = R"PAGE(<!doctype html>
   .ok .dot { background:var(--verified); }
   main { flex:1; display:flex; flex-direction:column; justify-content:flex-end; gap:14px; padding:20px 0; overflow:hidden; }
   .old { color:var(--text3); font-size:calc(var(--fs) * .5); line-height:1.35; }
-  .old p { margin:0 0 8px; }
+  .old p { margin:0 0 8px; white-space:pre-line; }
   .cur { min-height:calc(var(--fs) * 2.6); display:flex; align-items:flex-end; }
-  .cur p { margin:0; min-width:0; overflow-wrap:anywhere; font-size:var(--fs); line-height:1.3; font-weight:600; padding-left:14px;
+  .cur p { margin:0; min-width:0; overflow-wrap:anywhere; white-space:pre-line; font-size:var(--fs); line-height:1.3; font-weight:600; padding-left:14px;
            border-left:3px solid transparent; transition:opacity .16s ease; }
   .cur p.verified { border-left-color:var(--verified); }
   .cur p.pending { border-left-color:var(--accent); }
@@ -107,7 +107,7 @@ static const char kObsHtml[] = R"PAGE(<!doctype html>
   .wrap.alt { bottom:8vh; }
   .wrap.ust { top:6vh; }
   @media (prefers-reduced-motion: reduce) { .band { transition:none; } }
-  .band { max-width:62vw; padding:.46em .85em; border-radius:10px; color:#fff; font-weight:600; line-height:1.3;
+  .band { max-width:62vw; white-space:pre-line; padding:.46em .85em; border-radius:10px; color:#fff; font-weight:600; line-height:1.3;
           text-align:center; border-left:3px solid transparent; opacity:0; transform:translateY(2px);
           transition:opacity .16s cubic-bezier(.2,.7,.2,1), transform .16s cubic-bezier(.2,.7,.2,1);
           text-shadow:-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;

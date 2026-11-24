@@ -612,6 +612,16 @@ void testLocalPool()
                             row(3, "Go to floor 3.", "3. kata çık."), json::array({4, "", "bozuk", "satır"})}),
                0);
     check(p.size() == 3, "broken row skipped");
+    {   // a labelled row as the server syncs it: key and translation without the label, source as read
+        GamePool gta("grand-theft-auto-vi", "Grand Theft Auto VI", "r1",
+                     json::array({json::array({9, text::compactPoolKey(std::string("What? You okay?")),
+                                               "Jason: What? You okay?", "Ne? İyi misin?"})}),
+                     0);
+        const text::ReadLine rl = garbage().readLine("Lucia: What? You okay?");
+        const auto hit = gta.lookup(rl.line);
+        check(hit && hit->exact && rl.prefix + hit->translation == "Lucia: Ne? İyi misin?",
+              "another speaker's line hits the bare key and shows its own label once");
+    }
     auto h = p.lookup("Is anybody there?Please help me");
     check(h && h->id == 1 && h->exact, "punctuation/space difference: exact key");
     h = p.lookup("Is anybody there? Plaese help me.");

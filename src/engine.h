@@ -113,7 +113,8 @@ private:
     // One speaker's line: source as read (label included), bare = what is keyed and sent. → {translation, kind}
     std::pair<std::string, std::string> translatePart(int line, const std::string& source, const std::string& bare,
                                                       const std::string& slug, const std::string& gameName,
-                                                      std::pair<uint64_t, uint64_t> ocrUs);
+                                                      std::pair<uint64_t, uint64_t> ocrUs, const std::string& prefix,
+                                                      bool& fresh);
     void traceLine(std::pair<uint64_t, uint64_t> ocrUs, uint64_t requestStartUs, uint64_t requestEndUs,
                    const std::string& kind);
     void signedOut(const std::string& message);

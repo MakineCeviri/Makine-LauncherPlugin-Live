@@ -603,8 +603,13 @@ Result Engine::invoke(std::string_view method, const json& params)
             const auto g = m_grow;
             if (m_mode == "pc" && m_pcRegion) {
                 console::Box& b = *m_pcRegion;
-                const int dx = static_cast<int>(b.w * g[0]), dy = static_cast<int>(b.h * g[2]);
-                b = {b.x - dx, b.y - dy, b.w + dx + static_cast<int>(b.w * g[1]), b.h + dy + static_cast<int>(b.h * g[3])};
+                const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                const int vr = vx + GetSystemMetrics(SM_CXVIRTUALSCREEN), vb = vy + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+                const int x0 = std::max(vx, b.x - static_cast<int>(b.w * g[0]));
+                const int y0 = std::max(vy, b.y - static_cast<int>(b.h * g[2]));
+                const int x1 = std::min(vr, b.x + b.w + static_cast<int>(b.w * g[1]));
+                const int y1 = std::min(vb, b.y + b.h + static_cast<int>(b.h * g[3]));
+                b = {x0, y0, x1 - x0, y1 - y0};
             } else if (m_mode == "console") {
                 console::Frac& f = m_consoleRegion;
                 const double x0 = std::max(0.0, f.x - f.w * g[0]), y0 = std::max(0.0, f.y - f.h * g[2]);
@@ -1514,9 +1519,10 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
     if (parts.empty()) parts.push_back(textUtf8);
     const auto rankOf = [](const std::string& k) { return k == "verified" ? 2 : k == "pending" ? 1 : 0; };
     std::string shown, kind;
+    bool fresh = false;   // a part came from the pool or the server, not the cache: counters changed
     for (const std::string& part : parts) {
         const text::ReadLine rl = m_garbage.readLine(part, kSourceLang);
-        const auto [translated, partKind] = translatePart(line, part, rl.line, slug, gameName, ocrUs);
+        const auto [translated, partKind] = translatePart(line, part, rl.line, slug, gameName, ocrUs, rl.prefix, fresh);
         if (translated.empty()) continue;
         shown += (shown.empty() ? "" : "\n") + rl.prefix + translated;
         if (kind.empty() || rankOf(partKind) < rankOf(kind)) kind = partKind;
@@ -1526,12 +1532,13 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
         m_results.push_back({line, shown, kind});
     }
     m_netCv.notify_all();   // a job waiting for the same line
-    publish();
+    if (fresh) publish();
 }
 
 std::pair<std::string, std::string> Engine::translatePart(int line, const std::string& textUtf8, const std::string& bare,
                                                           const std::string& slug, const std::string& gameName,
-                                                          std::pair<uint64_t, uint64_t> ocrUs)
+                                                          std::pair<uint64_t, uint64_t> ocrUs, const std::string& prefix,
+                                                          bool& fresh)
 {
     const std::u32string key = text::compactPoolKey(text::fromUtf8(bare));
     std::string poolSlug;
@@ -1547,9 +1554,10 @@ std::pair<std::string, std::string> Engine::translatePart(int line, const std::s
                 ++m_poolCount;
                 ++m_linesTotal;
                 ++m_sessionLines;
-                m_lastLine = {{"source", textUtf8}, {"text", hit->translation}, {"kind", "verified"}, {"origin", "local"}};
-                addHistoryLocked(textUtf8, hit->translation, "verified", "local");
+                m_lastLine = {{"source", textUtf8}, {"text", prefix + hit->translation}, {"kind", "verified"}, {"origin", "local"}};
+                addHistoryLocked(textUtf8, prefix + hit->translation, "verified", "local");
             }
+            fresh = true;
             return {hit->translation, "verified"};
         }
     }
@@ -1657,11 +1665,12 @@ std::pair<std::string, std::string> Engine::translatePart(int line, const std::s
             samples.push_back(requestMs);
             if (samples.size() > 50) samples.pop_front();
             ++(kind == "api" ? m_apiCount : m_poolCount);
-            m_lastLine = {{"source", textUtf8}, {"text", translated}, {"kind", kind},
+            m_lastLine = {{"source", textUtf8}, {"text", prefix + translated}, {"kind", kind},
                           {"origin", str(res.data, "origin", "deepl")}};
-            addHistoryLocked(textUtf8, translated, kind, str(res.data, "origin", "deepl"));
+            addHistoryLocked(textUtf8, prefix + translated, kind, str(res.data, "origin", "deepl"));
         }
     }
+    fresh = fresh || !notice.empty() || !translated.empty();
     if (!translated.empty()) traceLine(ocrUs, requestStartUs, wallUs(), kind);
     return {translated, kind};
 }
@@ -1990,7 +1999,8 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
     }
     routeLine(d);
     m_overlayShown = true;
-    m_shownKeys.push_back(text::compactPoolKey(d.text));
+    for (const json& l : lines)   // one key per speaker line, label off: a label never makes two lines look alike
+        m_shownKeys.push_back(text::compactPoolKey(text::fromUtf8(text::splitSpeaker(l["text"].get<std::string>()).text)));
     ++m_shownCount;
     while (m_shownKeys.size() > 12) m_shownKeys.erase(m_shownKeys.begin());
 }
@@ -2024,7 +2034,7 @@ std::string Engine::withoutOwnOverlay(const std::string& raw) const
             }
             return s;
         };
-        const std::u32string k = fold(text::compactPoolKey(text::fromUtf8(line)));
+        const std::u32string k = fold(text::compactPoolKey(text::fromUtf8(text::splitSpeaker(line).text)));
         bool own = false;
         for (const auto& shownRaw : m_shownKeys) {
             const std::u32string shown = fold(shownRaw);
