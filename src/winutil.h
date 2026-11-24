@@ -8,7 +8,12 @@
 // only accept ANSI (CP_ACP) paths, which break for user folders such as C:\Users\Çağrı when the
 // name is not representable in the active code page.
 
+#include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -99,6 +104,51 @@ inline std::wstring moduleDirectory()
     }
     auto sep = path.find_last_of(L"\\/");
     return sep == std::wstring::npos ? std::wstring{} : path.substr(0, sep);
+}
+
+inline std::optional<std::string> readFile(const std::wstring& path, uint64_t maxBytes = 64ull << 20)
+{
+    const HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return std::nullopt;
+    LARGE_INTEGER size{};
+    std::optional<std::string> out;
+    if (GetFileSizeEx(f, &size) && static_cast<uint64_t>(size.QuadPart) <= maxBytes) {
+        std::string data(static_cast<size_t>(size.QuadPart), '\0');
+        DWORD got = 0;
+        if (data.empty() || (ReadFile(f, data.data(), static_cast<DWORD>(data.size()), &got, nullptr) && got == data.size()))
+            out = std::move(data);
+    }
+    CloseHandle(f);
+    return out;
+}
+
+inline bool writeFile(const std::wstring& path, const void* data, size_t size)
+{
+    const HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD put = 0;
+    const bool ok = size == 0 || (WriteFile(f, data, static_cast<DWORD>(size), &put, nullptr) && put == size);
+    CloseHandle(f);
+    return ok;
+}
+
+// Writes next to `path` and renames over it, so a crash never leaves half a file.
+inline bool writeFileAtomic(const std::wstring& path, std::string_view data)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    const std::wstring tmp = path + L".tmp";
+    if (!writeFile(tmp, data.data(), data.size())) return false;
+    if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    DeleteFileW(tmp.c_str());
+    return false;
+}
+
+inline bool fileExists(const std::wstring& path)
+{
+    const DWORD attr = GetFileAttributesW(path.c_str());
+    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 inline std::string lastErrorString(DWORD code = GetLastError())

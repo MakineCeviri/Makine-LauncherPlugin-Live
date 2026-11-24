@@ -1,0 +1,253 @@
+{
+  "_note": "Scene memory rules shared with the app (src/live/scene.ts, docs/live-scene-context.md). The pool key is the line alone; these only decide the DeepL context hint, the listener and the variant signals. context_dependent: is the line before sent as a hint. scene: readScene of a request (age_ms freshness ≤ 8000, same scene_id). address: how a Turkish line addresses its listener.",
+  "context_dependent": [
+    {
+      "line": "Him?",
+      "expected": true
+    },
+    {
+      "line": "Yeah.",
+      "expected": true
+    },
+    {
+      "line": "Do it now.",
+      "expected": true
+    },
+    {
+      "line": "You did what?",
+      "expected": true
+    },
+    {
+      "line": "Wait, you did what?",
+      "expected": true
+    },
+    {
+      "line": "Me, you, him, her.",
+      "expected": true
+    },
+    {
+      "line": "You and me, them and us.",
+      "expected": false
+    },
+    {
+      "line": "Him and her, you and me?",
+      "expected": false
+    },
+    {
+      "line": "Where are you going now?",
+      "expected": false
+    },
+    {
+      "line": "We need to get out of this city before the sun comes up.",
+      "expected": false
+    },
+    {
+      "line": "Do you know why I pulled you over?",
+      "expected": false
+    }
+  ],
+  "address": [
+    {
+      "text": "Sizi neden durdurduğumu biliyor musunuz?",
+      "expected": "siz"
+    },
+    {
+      "text": "Seni neden kenara çektim, biliyor musun?",
+      "expected": "sen"
+    },
+    {
+      "text": "Neden durdurduğumu biliyor musun?",
+      "expected": "sen"
+    },
+    {
+      "text": "Bunu yapabilirsin.",
+      "expected": "sen"
+    },
+    {
+      "text": "Bunu yapabilirsiniz.",
+      "expected": "siz"
+    },
+    {
+      "text": "Dün ne yaptınız?",
+      "expected": "siz"
+    },
+    {
+      "text": "Sessiz ol, parasız kaldık.",
+      "expected": ""
+    },
+    {
+      "text": "Bırak gelsin.",
+      "expected": ""
+    },
+    {
+      "text": "Deniz kenarında bekliyor.",
+      "expected": ""
+    },
+    {
+      "text": "Evet.",
+      "expected": ""
+    },
+    {
+      "text": "Sen git, siz kalın.",
+      "expected": ""
+    }
+  ],
+  "scene": [
+    {
+      "inp": {
+        "context": [
+          {
+            "text": "Lucia: Did you see the guy with the red jacket?",
+            "age_ms": 1200
+          }
+        ]
+      },
+      "speaker": "Jason",
+      "note": "label on the line before",
+      "expected": {
+        "prev": {
+          "line": "Did you see the guy with the red jacket?",
+          "speaker": "Lucia"
+        },
+        "context_text": "Lucia: Did you see the guy with the red jacket?",
+        "listener": "Lucia",
+        "last_form": "",
+        "signals": [
+          "f:siz"
+        ]
+      }
+    },
+    {
+      "inp": {
+        "context": [
+          {
+            "text": "Where is Lucia?",
+            "speaker": "Cal",
+            "age_ms": 900
+          },
+          {
+            "text": "lIlIlI",
+            "age_ms": 300
+          }
+        ]
+      },
+      "speaker": "Jason",
+      "note": "a garbage reading is dropped: the last surviving line is the hint",
+      "expected": {
+        "prev": {
+          "line": "Where is Lucia?",
+          "speaker": "Cal"
+        },
+        "context_text": "Cal: Where is Lucia?",
+        "listener": "Cal",
+        "last_form": "",
+        "signals": [
+          "f:siz"
+        ]
+      }
+    },
+    {
+      "inp": {
+        "context": [
+          {
+            "text": "Did you see him?",
+            "speaker": "Lucia",
+            "age_ms": 9000
+          }
+        ]
+      },
+      "speaker": "Jason",
+      "note": "older than 8 s: no hint, no listener",
+      "expected": {
+        "prev": null,
+        "context_text": "",
+        "listener": "",
+        "last_form": "",
+        "signals": [
+          "f:siz"
+        ]
+      }
+    },
+    {
+      "inp": {
+        "context": [
+          {
+            "text": "Did you see him?",
+            "speaker": "Lucia"
+          }
+        ]
+      },
+      "speaker": "Jason",
+      "note": "no age: no hint",
+      "expected": {
+        "prev": null,
+        "context_text": "",
+        "listener": "",
+        "last_form": "",
+        "signals": [
+          "f:siz"
+        ]
+      }
+    },
+    {
+      "inp": {
+        "scene_id": "s2",
+        "context": [
+          {
+            "text": "Did you see him?",
+            "speaker": "Lucia",
+            "age_ms": 500,
+            "scene_id": "s1"
+          }
+        ]
+      },
+      "speaker": "Jason",
+      "note": "another scene: no hint",
+      "expected": {
+        "prev": null,
+        "context_text": "",
+        "listener": "",
+        "last_form": "",
+        "signals": [
+          "scene:s2",
+          "f:siz"
+        ]
+      }
+    },
+    {
+      "inp": {
+        "script_line_id": "GTA6_0412",
+        "scene_id": "s1",
+        "context": [
+          {
+            "text": "Will you help me?",
+            "speaker": "Jason",
+            "translated": "Bana yardım eder misiniz?",
+            "age_ms": 3000
+          },
+          {
+            "text": "Yes.",
+            "speaker": "Lucia",
+            "age_ms": 1000
+          }
+        ]
+      },
+      "speaker": "Jason",
+      "note": "stable ids and the speaker's last form",
+      "expected": {
+        "prev": {
+          "line": "Yes.",
+          "speaker": "Lucia"
+        },
+        "context_text": "Lucia: Yes.",
+        "listener": "Lucia",
+        "last_form": "siz",
+        "signals": [
+          "line:GTA6_0412",
+          "scene:s1",
+          "f:siz"
+        ]
+      }
+    }
+  ]
+}

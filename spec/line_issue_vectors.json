@@ -1,0 +1,91 @@
+[
+  {
+    "text": "ook what we have here!",
+    "issues": [
+      "clipped_left"
+    ]
+  },
+  {
+    "text": "engun or gone nically nsanely. ithr way, he needs to be put out of his misery.",
+    "issues": [
+      "clipped_left"
+    ]
+  },
+  {
+    "text": "n a coffee shop, my whole life was falling a par i",
+    "issues": [
+      "clipped_left",
+      "clipped_right"
+    ]
+  },
+  {
+    "text": "Hey... soon as we get off this bo",
+    "issues": [
+      "clipped_right"
+    ]
+  },
+  {
+    "text": "Shakin' they ass, get everybody throwing up money. I-I'll explain it to you later. Boobie: We gonna",
+    "issues": [
+      "multi_speaker"
+    ]
+  },
+  {
+    "text": "Cop: Stop right now! Cop: I want the engine off!",
+    "issues": [
+      "multi_speaker"
+    ],
+    "why": "lineIssues takes the text after the first label; a second label inside is two subtitles"
+  },
+  {
+    "text": "on plastic surgery for his dog's droopy fuckin' ears. Lucia",
+    "issues": [
+      "trailing_name"
+    ]
+  },
+  {
+    "text": "Will do. Thanks, Kenton. Kenton",
+    "issues": [
+      "trailing_name"
+    ]
+  },
+  {
+    "text": "Think he mean now? Search the shack for the cocaine",
+    "issues": [
+      "merged_tail"
+    ]
+  },
+  {
+    "text": "Look what we have here!",
+    "issues": []
+  },
+  {
+    "text": "'cause I got all my drops messed up.",
+    "issues": []
+  },
+  {
+    "text": "and I learnt everything I know from a guy called Ducky",
+    "issues": [],
+    "why": "a lowercase start that is a word is a wrapped second line, not clipping"
+  },
+  {
+    "text": "Get out. Now",
+    "issues": []
+  },
+  {
+    "text": "Yes. Jason?",
+    "issues": []
+  },
+  {
+    "text": "We still fuckin' doin' this?",
+    "issues": []
+  },
+  {
+    "text": "Pick up the cocaine",
+    "issues": []
+  },
+  {
+    "text": "I told you, man. Come on, bro",
+    "issues": []
+  }
+]

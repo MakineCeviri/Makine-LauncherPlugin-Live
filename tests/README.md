@@ -26,6 +26,8 @@ py tests/test_normalization.py
 | `test_webos_service.py` | LG servisi gerçek Node ile (sahte `webos-service`, `webos_mock/`): keşif, eşleşme, kod kilidi | Node.js |
 | `test_webos_install.py` | LG geliştirici modu kurulumu, sahte TV'ye: anahtar, parola, SSH, kurulum yanıtları | paramiko |
 | `text_fix_test.cpp` | C++ boşluk düzeltici (`SpacingFixer`) | `ctest --test-dir build` |
+| `cpp/test_fit.cpp` | uzun çeviri parçaları, altyazı bulucunun kanıtı, geçici büyüme | `ctest --test-dir build -R "fit|finder|temp_grow"` |
+| `cpp/finder_gate.cpp` | altyazı bulucu, tam ekran sahnelerde (kesinlik, duyarlılık, kilit süresi, örnek maliyeti) | `python tools/make_scene_frames.py --bench ../Makine-LauncherPlugin-Live-ocrbench` → `ctest -R finder_gate` |
 
 Diğerleri:
 

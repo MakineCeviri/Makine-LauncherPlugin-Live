@@ -1,151 +1,80 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Makine Çeviri. Commons Clause applies — see LICENSE.
 
-/**
- * Makine Live Plugin — Entry point + C ABI exports
- *
- * Exports:
- *   Base: get_info, initialize, shutdown, is_ready, get_last_error
- *   OCR:  capture_and_ocr, capture_ocr_translate, get_last_ocr_text
- *   Settings: get_setting, set_setting
- *
- * Threading: every export takes one plugin-wide lock, so calls from several launcher
- * threads are serialized (a capture_ocr_translate call can hold it for an API round-trip).
- *
- * String lifetime: returned `const char*` are UTF-8, owned by the plugin and valid until the
- * next call of the SAME function. Callers must copy them. C# callers must declare the return
- * type as IntPtr and use Marshal.PtrToStringUTF8 — declaring `string` makes the marshaller
- * free plugin-owned memory and crash.
- */
+// Makine Live as a Makine Launcher plugin (ABI 2, makine/plugin/sdk.hpp): reads the
+// subtitle region of a PC game or of a console mirrored on the PC, translates it through
+// the shared pool on makineceviri.org and shows it over the game through the launcher's
+// overlay. The launcher's Makine Live screen talks to it with invoke() and draws ui.state
+// (README "Launcher screen API").
+//
+// initialize only reads settings and starts the threads; the OCR runtime loads on the
+// first start / readOnce.
 
-#include <makine/plugin/plugin_api.h>
-#include <cstring>
-#include <mutex>
+#include "engine.h"
+#include "winutil.h"
+
+#include <makine/plugin/sdk.hpp>
+#include <nlohmann/json.hpp>
+
+#include <filesystem>
+#include <memory>
 #include <string>
+#include <string_view>
 
-namespace live {
-    bool init(const char* dataPath);
-    void shutdown();
-    bool ready();
-    const char* lastError();
-    std::string captureAndRecognize(void* windowHandle, int x, int y, int w, int h);
-    std::string captureOcrAndTranslate(void* windowHandle, int x, int y, int w, int h);
-    const char* getSetting(const char* key);
-    void setSetting(const char* key, const char* value);
-    const char* getLastOcrText();
-}
+using json = nlohmann::json;
+using makine::plugin::Result;
 
-static std::mutex s_mutex;
-static bool s_initialized = false;
-static std::string s_error;
+namespace {
 
-static void setError(const char* message)
-{
-    s_error = message ? message : "";
-}
-
-// -- Required Plugin Exports --
-
-extern "C" __declspec(dllexport)
-MakinePluginInfo makine_get_info(void)
-{
-    return {
-        "com.makineceviri.live",
-        "Makine Live",
-        "0.3.2",
-        MAKINE_PLUGIN_API_VERSION
-    };
-}
-
-extern "C" __declspec(dllexport)
-MakineError makine_initialize(const char* dataPath)
-{
-    std::lock_guard lock(s_mutex);
-    if (s_initialized) return MAKINE_OK;
-    if (!dataPath || !*dataPath) {
-        setError("dataPath is null");
-        return MAKINE_ERR_INVALID_PARAM;
+class LivePlugin : public makine::plugin::Plugin {
+public:
+    MakineStatus initialize(std::string_view initJson) override
+    {
+        const json init = json::parse(initJson, nullptr, false);
+        const auto str = [&](const char* key) {
+            return init.is_object() && init.contains(key) && init[key].is_string() ? init[key].get<std::string>()
+                                                                                   : std::string();
+        };
+        live::EngineInit e;
+        e.dataDir = live::win::withoutTrailingSlash(live::win::utf8ToWide(str("dataDir")));
+        e.pluginDir = live::win::withoutTrailingSlash(live::win::utf8ToWide(str("pluginDir")));
+        e.version = str("version").empty() ? MAKINE_LIVE_VERSION : str("version");
+        e.launcherVersion = str("launcherVersion").empty() ? "unknown" : str("launcherVersion");
+        if (init.is_object() && init.contains("settings")) e.settings = init["settings"];
+        if (e.dataDir.empty() || e.pluginDir.empty()) {
+            host().error("init: dataDir ya da pluginDir yok");
+            return MAKINE_E_INVALID_ARGUMENT;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(e.dataDir, ec);   // never pluginDir: read-only under MSIX
+        m_engine = std::make_shared<live::Engine>(host(), std::move(e));
+        m_engine->launch();
+        host().info(std::string("Makine Live ") + MAKINE_LIVE_VERSION + " hazır");
+        return MAKINE_OK;
     }
-    if (!live::init(dataPath)) {
-        setError(live::lastError());
-        return MAKINE_ERR_INIT_FAILED;
+
+    void shutdown() override
+    {
+        if (!m_engine) return;
+        m_engine->shutdown();
+        m_engine.reset();
     }
-    setError("");
-    s_initialized = true;
-    return MAKINE_OK;
-}
 
-extern "C" __declspec(dllexport)
-void makine_shutdown(void)
-{
-    std::lock_guard lock(s_mutex);
-    if (s_initialized) { live::shutdown(); s_initialized = false; }
-}
+    Result invoke(std::string_view method, std::string_view paramsJson) override
+    {
+        if (!m_engine) return Result::error(MAKINE_E_FAILED, "not initialized");
+        return m_engine->invoke(method, json::parse(paramsJson, nullptr, false));
+    }
 
-extern "C" __declspec(dllexport)
-bool makine_is_ready(void)
-{
-    std::lock_guard lock(s_mutex);
-    return s_initialized && live::ready();
-}
+    void onEvent(std::string_view event, std::string_view payloadJson) override
+    {
+        if (m_engine) m_engine->onEvent(event, json::parse(payloadJson, nullptr, false));
+    }
 
-extern "C" __declspec(dllexport)
-const char* makine_get_last_error(void)
-{
-    std::lock_guard lock(s_mutex);
-    if (s_initialized) setError(live::lastError());
-    return s_error.c_str();
-}
+private:
+    std::shared_ptr<live::Engine> m_engine;
+};
 
-// -- OCR Exports --
-// Return "" on failure; makine_get_last_error() says why.
+} // namespace
 
-static std::string s_lastOcr;
-static std::string s_lastTranslation;
-
-extern "C" __declspec(dllexport)
-const char* makine_capture_and_ocr(void* windowHandle, int x, int y, int w, int h)
-{
-    std::lock_guard lock(s_mutex);
-    if (!s_initialized) return "";
-    s_lastOcr = live::captureAndRecognize(windowHandle, x, y, w, h);
-    return s_lastOcr.c_str();
-}
-
-extern "C" __declspec(dllexport)
-const char* makine_capture_ocr_translate(void* windowHandle, int x, int y, int w, int h)
-{
-    std::lock_guard lock(s_mutex);
-    if (!s_initialized) return "";
-    s_lastTranslation = live::captureOcrAndTranslate(windowHandle, x, y, w, h);
-    return s_lastTranslation.c_str();
-}
-
-// -- Settings Exports --
-
-extern "C" __declspec(dllexport)
-const char* makine_get_setting(const char* key)
-{
-    std::lock_guard lock(s_mutex);
-    if (!s_initialized) return "";
-    return live::getSetting(key);
-}
-
-extern "C" __declspec(dllexport)
-void makine_set_setting(const char* key, const char* value)
-{
-    std::lock_guard lock(s_mutex);
-    if (!s_initialized) return;
-    live::setSetting(key, value);
-}
-
-// -- Dual-Phase Display Export --
-// Returns raw OCR text from the last capture (before translation)
-
-extern "C" __declspec(dllexport)
-const char* makine_get_last_ocr_text(void)
-{
-    std::lock_guard lock(s_mutex);
-    if (!s_initialized) return "";
-    return live::getLastOcrText();
-}
+MAKINE_PLUGIN(LivePlugin)

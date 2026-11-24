@@ -6,7 +6,7 @@ Makine Live — tek komutla sürüm: (isteğe bağlı) sürüm numarası → DLL
     py tools/build.py 0.3.1          sürümü her yerde 0.3.1 yap, sonra derle
     py tools/build.py --hizli        testleri atla (yalnızca DLL + exe + selftest)
 
-Sürüm şu dosyalarda birlikte değişir: manifest.json, CMakeLists.txt, src/plugin.cpp, tv-webos/app/appinfo.json,
+Sürüm şu dosyalarda birlikte değişir: manifest.json (CMake ve DLL oradan okur), tv-webos/app/appinfo.json,
 tv-webos/service/package.json (Makine TV Android sürümü manifest'ten okunur). Yeni sürüm son sürümden büyük olmalı;
 sunucu küçük ya da aynı numarayı kabul etmez.
 
@@ -36,8 +36,6 @@ NODE_TESTS = ["test_webos_service"]
 # Sürümün yazılı olduğu yerler: (dosya, desen; 1. grup sürüm)
 VERSION_SPOTS = [
     ("manifest.json", r'"version":\s*"([0-9.]+)"'),
-    ("CMakeLists.txt", r"project\(makine-live VERSION ([0-9.]+)"),
-    ("src/plugin.cpp", r'"Makine Live",\s*"([0-9.]+)"'),
     ("tv-webos/app/appinfo.json", r'"version":\s*"([0-9.]+)"'),
     ("tv-webos/service/package.json", r'"version":\s*"([0-9.]+)"'),
 ]

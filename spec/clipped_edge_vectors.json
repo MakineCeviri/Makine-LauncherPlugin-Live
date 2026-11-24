@@ -1,0 +1,30 @@
+{
+  "note": "App side only (Makine-LauncherPlugin-Live spec/): a line whose OCR box touches the capture region's edge was cut by the region. margin = max(2, round(0.01 * region width)) px; a box touches the left edge when x0 <= margin, the right when x1 >= width - margin, the top when y0 <= margin, the bottom when y1 >= height - margin. The text test is the server's (src/live/text.ts lineIssues / isEnglishWord): a touching line is cut only when its edge word is not a word (left) or it has no closing punctuation and the last word is not a word (right). Top/bottom contact = a wrapped subtitle's other line is outside the region. A cut line is not sent; the region grows on that side (widen: 10% of its width/height, within the screen) and the next frame is read again.",
+  "cases": [
+    { "name": "left cut", "region": { "width": 1000, "height": 120 },
+      "boxes": [{ "x0": 0, "y0": 40, "x1": 420, "y1": 80, "text": "ook what we have here!" }],
+      "expect": { "send": false, "cut": ["left"], "widen": ["left"] } },
+    { "name": "left contact, whole word", "region": { "width": 1000, "height": 120 },
+      "boxes": [{ "x0": 1, "y0": 40, "x1": 430, "y1": 80, "text": "Look what we have here!" }],
+      "expect": { "send": true, "cut": [], "widen": [] } },
+    { "name": "right cut", "region": { "width": 1000, "height": 120 },
+      "boxes": [{ "x0": 300, "y0": 40, "x1": 999, "y1": 80, "text": "soon as we get off this bo" }],
+      "expect": { "send": false, "cut": ["right"], "widen": ["right"] } },
+    { "name": "right contact, closed sentence", "region": { "width": 1000, "height": 120 },
+      "boxes": [{ "x0": 300, "y0": 40, "x1": 998, "y1": 80, "text": "soon as we get off this boat." }],
+      "expect": { "send": true, "cut": [], "widen": [] } },
+    { "name": "inside the region, odd first word: the text rule alone (server quarantines it)", "region": { "width": 1000, "height": 120 },
+      "boxes": [{ "x0": 120, "y0": 40, "x1": 520, "y1": 80, "text": "fonna fillet this sucker" }],
+      "expect": { "send": true, "cut": [], "widen": [] } },
+    { "name": "bottom contact: the wrapped second line is below the region", "region": { "width": 1000, "height": 120 },
+      "boxes": [{ "x0": 200, "y0": 70, "x1": 800, "y1": 119, "text": "Lucia: I mean, you said it enough times. Older models," }],
+      "expect": { "send": false, "cut": ["bottom"], "widen": ["bottom"] } },
+    { "name": "two speakers in one block: sent as two lines", "region": { "width": 1000, "height": 160 },
+      "boxes": [{ "x0": 150, "y0": 30, "x1": 850, "y1": 70, "text": "Jason: Ready up." },
+                { "x0": 150, "y0": 80, "x1": 850, "y1": 120, "text": "Lucia: We goin' in or what?" }],
+      "expect": { "send": true, "cut": [], "widen": [], "lines": ["Jason: Ready up.", "Lucia: We goin' in or what?"] } },
+    { "name": "two speakers read as one OCR line: split at the second label", "region": { "width": 1000, "height": 120 },
+      "boxes": [{ "x0": 60, "y0": 40, "x1": 940, "y1": 80, "text": "Cop: Stop right now, or I'll stop you! Cop: I want the engine off!" }],
+      "expect": { "send": true, "cut": [], "widen": [], "lines": ["Cop: Stop right now, or I'll stop you!", "Cop: I want the engine off!"] } }
+  ]
+}

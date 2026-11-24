@@ -1,0 +1,114 @@
+[
+  {
+    "input": "Jason: What? You okay?",
+    "speaker": "Jason",
+    "note": "",
+    "text": "What? You okay?"
+  },
+  {
+    "input": "Dre'Quan: Shakin' they ass.",
+    "speaker": "Dre'Quan",
+    "note": "",
+    "text": "Shakin' they ass."
+  },
+  {
+    "input": "Staff Member: Please! Stop being a psycho!",
+    "speaker": "Staff Member",
+    "note": "",
+    "text": "Please! Stop being a psycho!"
+  },
+  {
+    "input": "GAETANO: Andiamo!",
+    "speaker": "GAETANO",
+    "note": "",
+    "text": "Andiamo!"
+  },
+  {
+    "input": "Russian Soldier 2: Free labor.",
+    "speaker": "Russian Soldier 2",
+    "note": "",
+    "text": "Free labor."
+  },
+  {
+    "input": "In Spanish: Piece of shit.",
+    "speaker": "",
+    "note": "İspanyolca",
+    "text": "Piece of shit."
+  },
+  {
+    "input": "Mia: In Spanish: Oh, shit! Oh shit, shit!",
+    "speaker": "Mia",
+    "note": "İspanyolca",
+    "text": "Oh, shit! Oh shit, shit!"
+  },
+  {
+    "input": "Unknown Language: You know, it's his little bitch boy.",
+    "speaker": "",
+    "note": "Bilinmeyen dil",
+    "text": "You know, it's his little bitch boy."
+  },
+  {
+    "input": "(In Italian) Mattia, are you crazy?",
+    "speaker": "",
+    "note": "İtalyanca",
+    "text": "Mattia, are you crazy?"
+  },
+  {
+    "input": "[gro ans] Ugh, bad enough.",
+    "speaker": "",
+    "note": "",
+    "text": "Ugh, bad enough."
+  },
+  {
+    "input": "[Ethan] Shaun?!",
+    "speaker": "Ethan",
+    "note": "",
+    "text": "Shaun?!"
+  },
+  {
+    "input": "(Sighs) Alright",
+    "speaker": "",
+    "note": "",
+    "text": "(Sighs) Alright",
+    "why": "parenthesised sound stays in the line"
+  },
+  {
+    "input": "Listen: I need you to stay calm.",
+    "speaker": "",
+    "note": "",
+    "text": "Listen: I need you to stay calm.",
+    "why": "speech, not a label"
+  },
+  {
+    "input": "Objective: Reach the docks",
+    "speaker": "",
+    "note": "",
+    "text": "Objective: Reach the docks",
+    "why": "UI label: translated whole"
+  },
+  {
+    "input": "He said: go home.",
+    "speaker": "",
+    "note": "",
+    "text": "He said: go home."
+  },
+  {
+    "input": "Meet me at 10:30 tonight.",
+    "speaker": "",
+    "note": "",
+    "text": "Meet me at 10:30 tonight."
+  },
+  {
+    "input": "https://example.com",
+    "speaker": "",
+    "note": "",
+    "text": "https://example.com"
+  },
+  {
+    "input": "The Man In Black Who Lives Here: hi there",
+    "speaker": "",
+    "note": "",
+    "text": "The Man In Black Who Lives Here: hi there",
+    "why": "more than three words"
+  }
+]

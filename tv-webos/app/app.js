@@ -90,25 +90,37 @@
 
     // ── Altyazı ──
 
+    // PC 0.4+ stili (yoksa eski kural): boyut ekran yüksekliğine oran, kenar güvenli alanı, en çok satır, renkler
+    var look = { relSize: 0, safeArea: -1, maxLines: 4, text: '', band: '' };
+
+    function rgb(hex) {
+        var m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+        return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
+    }
+
     function applyLook() {
         var band = document.querySelector('.band');
-        band.style.backgroundColor = 'rgba(15, 16, 18, ' + (prefs.opacity / 100) + ')';   // CSS değişkeni yok (Chromium 38)
+        var c = rgb(look.band) || [15, 16, 18];
+        band.style.backgroundColor = 'rgba(' + c.join(', ') + ', ' + (prefs.opacity / 100) + ')';   // CSS değişkeni yok (Chromium 38)
+        band.style.color = rgb(look.text) ? look.text : '';
         var sub = $('sub');
         sub.classList.toggle('ust', prefs.pos === 'ust');
         sub.classList.toggle('alt', prefs.pos !== 'ust');
+        sub.style.top = look.safeArea >= 0 && prefs.pos === 'ust' ? (look.safeArea * 100) + '%' : '';
+        sub.style.bottom = look.safeArea >= 0 && prefs.pos !== 'ust' ? (look.safeArea * 100) + '%' : '';
         fitText();
     }
 
     function fitText() {
         // En fazla 4 satır: sığmazsa yazı %74'e kadar küçülür (PC ve Android ile aynı kural)
         var band = document.querySelector('.band');
-        var base = SIZE_PX[prefs.size];
+        var base = look.relSize > 0 ? Math.round(window.innerHeight * look.relSize) : SIZE_PX[prefs.size];
         var scale = 1;
         band.style.fontSize = base + 'px';
         while (scale > 0.74) {
             var lineH = base * scale * 1.24;
             var textH = band.querySelector('.text').offsetHeight;
-            if (textH <= lineH * 4 + 2) break;
+            if (textH <= lineH * look.maxLines + 2) break;
             scale -= 0.06;
             band.style.fontSize = Math.round(base * scale) + 'px';
         }
@@ -245,12 +257,23 @@
         } else if (e.event === 'line') {
             clearTimeout(hideTimer);
             showSub(e.text, e.kind);
+            if (e.id >= 0) {   // after the next paint: the PC measures the hop from this
+                var id = e.id;
+                window.requestAnimationFrame(function () {
+                    window.requestAnimationFrame(function () { call('drawn', SVC + 'drawn', { id: id }); });
+                });
+            }
         } else if (e.event === 'clear') {
             hideSub();
         } else if (e.event === 'style') {
             if (e.size >= 0 && e.size <= 2) prefs.size = e.size;
             if (e.pos === 'alt' || e.pos === 'ust') prefs.pos = e.pos;
             if (e.opacity >= 40 && e.opacity <= 100) prefs.opacity = e.opacity;
+            if (e.relSize > 0.01 && e.relSize < 0.2) look.relSize = e.relSize;
+            if (e.safeArea >= 0 && e.safeArea < 0.2) look.safeArea = e.safeArea;
+            if (e.maxLines >= 1 && e.maxLines <= 6) look.maxLines = e.maxLines;
+            if (rgb(e.text)) look.text = e.text;
+            if (rgb(e.band)) look.band = e.band;
             savePrefs();
             applyLook();
             render();

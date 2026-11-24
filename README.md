@@ -106,18 +106,21 @@ kadar ayrıntılı rehber: [docs/GTA6_MAKINE_LIVE_REHBERI.md](docs/GTA6_MAKINE_L
 
 ### OCR çalışma dosyaları
 
-Boyutları nedeniyle depoda değiller. [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) sürümünden
-`RapidOcrOnnx.dll` ve `onnxruntime.dll`'i, PaddleOCR ONNX modellerini şu düzenle yerleştirin:
+Boyutları nedeniyle depoda değiller. `python tools/fetch_ocr.py` hepsini adresi ve SHA-256'sı sabitlenmiş olarak
+`.cache/ocr/` altına indirir (ikinci çalıştırmada yalnızca doğrular): nuget.org'daki resmî Microsoft.ML.OnnxRuntime
+1.24.3 paketinden `onnxruntime.dll` ve C API başlığı, PP-OCRv3 modelleri; onnxruntime'ın istediği VC++ çalışma
+dosyaları yerel Visual Studio redist klasöründen kopyalanır. Her DLL'in Microsoft Authenticode imzası denetlenir.
+CMake bunları `build/package/` altına kopyalar.
 
 ```
-third_party/rapidocr/
-├── RapidOcrOnnx.dll
-├── onnxruntime.dll
-└── models/
-    ├── ch_PP-OCRv3_det_infer.onnx
-    ├── ch_ppocr_mobile_v2.0_cls_infer.onnx
-    ├── ch_PP-OCRv3_rec_infer.onnx
-    └── ppocr_keys_v1.txt
+.cache/ocr/
+├── bin/onnxruntime.dll, msvcp140.dll, msvcp140_1.dll, vcruntime140.dll, vcruntime140_1.dll
+├── include/onnxruntime_c_api.h     (yalnız derleme)
+├── models/
+│   ├── ch_PP-OCRv3_det_infer.onnx
+│   ├── ch_PP-OCRv3_rec_infer.onnx
+│   └── ppocr_keys_v1.txt
+└── licenses/
 ```
 
 ### Derleme ve paketleme
@@ -138,20 +141,23 @@ ayarlara dokunmaz; `test.cmd --exe` derlenmiş exe'yi, `test.cmd --temiz` ilk a�
 Adım adım:
 
 ```powershell
+python tools/fetch_ocr.py        # OCR çalışma dosyaları (bir kez)
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build              # → build/release/makine-live.dll (+ OCR dosyaları, modeller, ikon)
-
-py tools/pack.py                 # → makine-live.makine (Launcher eklenti paketi)
-py tools/build_exe.py            # → dist/MakineLive.exe (tek dosyalık uygulama)
-py -m makine_live                # uygulamayı derlemeden çalıştırma (geliştirme)
+cmake --build build              # → build/package/ (Makine'nin paketlediği eklenti)
+cmake --build build --target pack   # → build/org.makineceviri.live-<sürüm>.mkplugin
+py -m makine_live                # test koşucusunu derlemeden çalıştırma (geliştirme)
 ```
+
+`build/package/`: `manifest.json`, `bin/makine-live.dll` (girdi), `bin/onnxruntime.dll` + VC++ çalışma dosyaları, `models/`,
+`resources/en_words.txt`, `licenses/`. Makine bu klasörü `plugins/org.makineceviri.live/` olarak paketine koyar.
 
 ### Testler
 
 ```powershell
 py tests/test_plugin.py          # DLL ABI, ayarlar ve DPAPI, gerçek OCR
 py tests/test_normalization.py   # ortak normalizasyon vektörleri
-ctest --test-dir build           # C++ boşluk düzeltici
+ctest --test-dir build           # C++: spec vektörleri (normalizasyon, çöp), OCR süzgeci, altyazı zamanlaması,
+                                 # konsol geometrisi, yerel havuz, boşluk düzeltici (tests/cpp/test_logic.cpp)
 ```
 
 Bütün testlerin listesi ve gereksinimleri: [tests/README.md](tests/README.md).
@@ -160,6 +166,191 @@ Bütün testlerin listesi ve gereksinimleri: [tests/README.md](tests/README.md).
 
 Uygulama varsayılan olarak `https://makineceviri.org` ile konuşur. Yerel bir sunucuya bağlamak için
 `MAKINE_LIVE_SERVER` ortam değişkenini ayarlayın.
+
+### Makine olmadan çalıştırma
+
+Eklentiyi Makine'nin gerçek eklenti süreciyle (`makine-plugin-host.exe`) ama Makine'yi açmadan çalıştırmak için:
+
+```powershell
+python tools/plugin_dev.py build/package --host <Makine klasörü>/makine-plugin-host.exe --invoke state --invoke readOnce
+```
+
+`--region X,Y,W,H` bölge seçimini yanıtlar; `--invoke login.start` giriş kodunu ister (kod `ui.state` olayında görünür).
+
+## Makine Launcher eklentisi (ABI 2)
+
+Makine Live, Makine'nin içinde gelen (bundled) bir eklentidir: `org.makineceviri.live`, eklenti ABI 2
+(`include/makine/plugin/abi.h`, `sdk.hpp`; Makine-Launcher `core/include/makine/plugin/` ile birebir aynı).
+Makine onu kendi `makine-plugin-host.exe` sürecinde çalıştırır; ekranını Makine çizer, eklenti yalnızca durum
+yayınlar. Python ya da `MakineLive.exe` gerekmez, eklenti hiçbir şey indirip çalıştırmaz.
+
+- `initialize` yalnız ayarları okur ve iş parçacıklarını başlatır (< 1 sn). OCR çalışma dosyaları ve modeller ilk
+  `start` / `readOnce`'ta yüklenir. Her şey `dataDir`'e yazılır (`settings.cfg`, `device_id`, `pool/`, `ocr/`);
+  `pluginDir` salt okunurdur (MSIX).
+- Oturum jetonu `settings.cfg`'de Windows DPAPI ile şifreli durur. Cihaz kimliği eklentiye özgü, `dataDir\device_id`.
+- İstekler `pool_client.py` ile aynı başlıkları taşır (`X-Makine-Device`, `X-Makine-Version`, `User-Agent:
+  MakineLive/<sürüm>`) ve `X-Makine-Client: launcher/<Makine sürümü>`. Sunucunun güncelleme yanıtındaki indirme
+  kullanılmaz (eklentiyi Makine günceller); bakım ve zorunlu güncelleme `ui.state` → `server` ile gösterilir.
+- Çöp / HUD süzgeci, normalizasyon ve havuz anahtarı, satır takibi ve altyazı zamanlaması Python koşucusunun birebir
+  C++ karşılığıdır (`src/garbage.cpp`, `src/subtitle_timing.cpp`, `src/unitext.cpp`); `ctest` aynı vektörlerle sınar.
+- OCR (F1, OCR_KARAR): onnxruntime C API'siyle PP-OCRv3 algılama + Çince tanıma, yakalanan kare bellekten okunur (kare başına dosya yazılmaz), satırlar soldan sağa birleştirilir. `bin/onnxruntime.dll` Microsoft imzalı (1.24.3), eklenti klasöründen tam yolla yüklenir; yanında VC++ çalışma dosyaları. RapidOcrOnnx, açı sınıflandırıcısı ve ABI 1 dışa aktarımları (Python koşucusunun `build/release`'i) kaldırıldı. Kapı: `live_ocr_gate` ocrbench karelerini kıyas aracının ORT yoluyla birebir aynı okumalı (`ctest -R ocr_gate`).
+
+### Launcher screen API
+
+Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile çağırır. Her yanıt JSON'dur; hata
+`{"message"}` ile döner. Uzun işler (giriş, bölge seçimi) hemen döner, sonucu `ui.state` getirir.
+
+| Yöntem | Parametre → yanıt |
+|---|---|
+| `state` | → tam durum (aşağıda) |
+| `login.start` | → `{message}`; kod ve bağlantı `ui.state.login`'de, tarayıcı `ui.openUrl` ile açılır |
+| `login.team` | `{username, password}`: ekip hesabı (yönetici, çevirmen, test) şifreyle (`auth?action=app_login`); şifre saklanmaz, günlüğe yazılmaz; jeton cihaz girişindeki gibi DPAPI ile kalır. Sonuç `ui.state.login` (`role`) |
+| `login.cancel` | giriş beklemesini bırakır |
+| `logout` | oturumu kapatır (sunucuda da) |
+| `mode.set` | `{mode: "pc" \| "console"}` |
+| `console.sources` | `{all?: bool}` → `{sources: [{id, key, label, console, exe, title, pid}]}`; `all` başka büyük pencereleri de listeler |
+| `console.select` | `{sourceId}` (`console.sources`'tan); listede olmayan bir pencere seçilirse exe'si kaynak olarak hatırlanır |
+| `region.pick` | PC'de ekrandan, konsolda kaynağın 16:9 video alanı içinden (`overlay.pickRegion {within}`) bölge seçtirir |
+| `start` / `stop` | okumayı başlatır / durdurur (giriş ve PC'de bölge gerekir) |
+| `box.move` | `{on?}` (yoksa tersine çevirir): altyazı kutusunu sürüklenebilir yapar / kilitler. Makine'nin isteğe bağlı `overlay.setMovable {on}` yöntemini çağırır; `on:false` yanıtı `{x, y}` (kutu merkezi, ekrana oran) getirirse `style.boxX/boxY` olarak saklanır. Makine bu yöntemi bilmiyorsa `E_UNSUPPORTED` ve `boxMove.supported: false`. Sürüklemeden sonra Makine `overlay.moved {x, y, width, height}` (fiziksel px) olayını da gönderir; aynı yere çevrilip saklanır (manifestte bildirilmez: Makine bu olayı yalnız taşıyan eklentiye yollar) |
+| `readOnce` | → `{text, filtered, region, window}`: bölgeyi bir kez okur, çevirmez |
+| `autoStart.set` / `usageReport.set` | `{enabled}` → Makine'nin ayar deposuna `settings.set` ile yazılır (manifest ayarları; Makine `autoStart`'ı eklenti kapalıyken de okur) |
+| `style.set` | `{preset, font, sizePx, …}` (Makine'nin `overlay.show.style` anahtarları; `null` siler) → `{style}`. `minShowMs` (600–3000, varsayılan 1200; 0.3.2'deki "En kısa gösterim"): bir satırın en az ekranda kalma süresi, her çıktıda (kutu, TV, telefon / OBS) |
+| `output.set` | `{output: "pc" \| "tv" \| "phone"}`: konsol modunda altyazı nerede (Remote Play penceresinin üstü / Makine TV / telefon-tablet sayfası) |
+| `obs.set` | `{enabled}` → `{obsUrl}`: OBS tarayıcı kaynağı (`http://127.0.0.1:47712/obs`, yalnız bu bilgisayar) |
+| `tv.discover` | ev ağında Makine TV arar (~1,6 sn); sonuç `ui.state.tv.found` |
+| `tv.pair` | `{id, code}` (`tv.found`'dan) ya da `{host, port?, code}` (adresle bağlan); konsol modunda çıktıyı `tv` yapar |
+| `tv.unpair` | eşleşmeyi siler |
+| `tv.install.scan` | `{platform: "android" \| "lg"}`: ev ağında ADB (5555) / LG geliştirici modu (9922) açık cihazlar → `tvInstall.hosts` |
+| `tv.install` | `{platform: "android", host, port?}`: Android TV / Google TV / Fire TV'ye ADB ile kurar; ilerleme `tvInstall.step`, sonuç `tvInstall.state` (`running` · `done` · `error`) ve `message`. `lg` → `E_UNSUPPORTED` (elle kurulum: `tvInstall.guide.lg`) |
+| `tv.install.saveFile` | `{platform: "android" \| "lg"}` → `{path}`: `makine-tv.apk` / `.ipk` İndirilenler klasörüne (USB bellek ya da elle kurulum) |
+| `consoleConsent.set` | `{granted}` ya da `{enabled}`: konsol modunda her satırın GTA VI havuzuna gittiğine oyuncunun onayı; onaysız `start` konsolda `E_DENIED` "consent_required: …" döner |
+| `announcement.read` | `{id}` (sayı ya da rakamlardan oluşan metin): duyuruyu kapatır (sunucuya `ann_read`) |
+| `status.refresh` | bakım / sürüm / duyuruları hemen yeniden sorar (bakım sürerken kendiliğinden 30 sn'de bir, yoksa 300 sn) |
+| `sample` | örnek bir replik (`resources/sample_quotes.json`) açık her çıktıya (kutu, TV, telefon / OBS) 4 sn gider |
+| `region.keepGrown` | kesik satır yüzünden bu oturumda büyüyen bölgeyi (`regionGrow`) kalıcı kaydeder (bulunan bantta da) |
+| `autoRegion.accept` | önerilen altyazı bandını (`autoRegion.state: found`) bu oyun için kilitler ve saklar |
+| `autoRegion.reset` | bandı ve oyuncunun kendi bölgesini unutur, altyazıyı yeniden arar |
+| `support.dismiss` | "kayıt gönderildi" kartını kapatır |
+| `donate` / `donate.dismiss` | bağış sayfasını (`makineceviri.org/destek`) `ui.openUrl` ile açar / ilk açılış kartını kapatır |
+
+`ui.state` (her değişiklikte `emitEvent`):
+
+```json
+{
+  "login": {"state": "signedOut|checking|starting|waiting|signedIn|offline", "code", "url", "user", "role", "message"},
+  "history": [{"source", "text", "kind": "verified|pending|api", "origin", "at"}],   // bu oturum, en yeni önde, en çok 50
+  "hotkeys": {"armed", "keys": {"start|region|move": {"key": "F9|…|off", "active", "error"}}},
+  "boxMove": {"on", "supported"},
+  "regionGrow": {"left", "right", "top", "bottom"},   // bu oturumda kesik satır yüzünden büyüme (bölge boyunun payı, en çok 0.3)
+  "mode": "pc|console",
+  "sources": [ ... ], "selectedSource": {"key", "pid"} | null,
+  "region": {"pc": {"x", "y", "width", "height"} | null, "console": {"x", "y", "width", "height"} (video alanına oran)},
+  "picking": false, "running": false, "status": "…",
+  "lastLine": {"source", "text", "kind", "origin"} | null,
+  "counters": {"lines", "poolHits", "hitPct" | null, "avgMs" | null (son 30 çeviri isteği), "startedAt" | null (unix sn, okuma sürerken)},
+  "server": {"maintenance", "message"}, "notice": "…",
+  "style": { ... }, "game": {"name", "slug"}
+  "autoStart": false, "usageReport": true, "consoleConsent": false, "everStarted": false,
+  "reason": {"code", "text", "action"} | null,   // en engelleyici tek neden (aşağıda)
+  "autoRegion": {"state": "off|searching|found|locked|manual", "rect": {"x", "y", "width", "height"} | null, "confidence",
+                 "screenRect": {"x", "y", "width", "height"} | null},   // rect: oyun penceresine / konsol video alanına oran;
+                 // screenRect: aynı bölge fiziksel ekran pikselinde (bölge seçici için; PC'de elle bölge = region.pc),
+                 // oyunun penceresi / video alanı bilinmezken null. Okuma yokken de: elle bölge manual, saklı bant locked
+  "output": "pc|tv|phone", "obs": false,
+  "web": {"running", "lan", "port", "clients", "obsUrl", "phoneUrl", "error", "firewallNote", "firewallHeadsUp"},
+  "tv": {"state": "idle|connecting|connected|bad_code|offline", "detail", "paired": {...} | null, "found": [{"id", "name", "host", "port"}], "searching", "hopP50", "hopP95"},
+  "tvInstall": {"platform", "state", "step", "message", "hosts": [...], "scanning", "apkAvailable", "ipkAvailable",
+                "guide": {"android": [...], "firetv": [...], "lg": [...]}},
+  "discord": {"connected"},
+  "announcements": [{"id", "kind", "kindLabel", "title", "body", "author", "createdAt"}],
+  "support": {"time", "sizeKb"} | null,
+  "donate": {"url", "seen"}
+}
+```
+
+**Altyazıyı kendi bulur** (`subtitle_finder.*`): bölge seçilmemişse (PC) ya da konsolda oyuncu kendi bölgesini çizmemişse okuma başlar başlamaz 2 sn'de bir oyunun penceresi (konsolda video alanı; dışı asla okunmaz) 640 px'e küçültülüp yalnız dedektörden geçer; ortalı, alt üçte birde ya da üstte, açık dolgu + koyu konturlu, kelime olan ve diyalogla gelip giden, metni değişen, tabanı sabit satırlar kanıt biriktirir (HUD yazısı hep durur ya da hiç değişmez). ~8 sn'de `found` (bant okunur), ~18 sn yüksek güvenle ya da `autoRegion.accept` ile `locked`: oyun başına saklanır, dedektör durur. Ararken pencerenin alt ortası okunur. Bulucunun okuduğu metin havuza gitmez; bant değişince yarım satır gönderilmez. Kenara dayanan uzun satır bölgeyi o yöne geçici büyütür (adım %15, yan başına en çok %30, oyun penceresi içinde), 4 sn o kenarda yazı yoksa geri küçülür. Kapı: `tools/make_scene_frames.py` + `live_finder_gate`.
+
+**Uzun çeviri** (`fit.*`): `overlay.show` isteğe bağlı `fit: {maxLines, minFontScale: 0.8, maxWidthFrac: 0.9, chunk, chunks}` taşır. Çizen taraf satırı `maxLines`'a sarar, yazıyı en çok `minFontScale`'e küçültür, bandı karenin `maxWidthFrac`'ına genişletir; bu üçüyle de sığmayacak satırı eklenti cümle / yan cümle / kelime sınırından parçalara böler ve sırayla gönderir (`text` / `lines` o parçayı taşır, `chunk` 0'dan sayar; her parça okuma süresince, ~17 harf/sn, en az `minShowMs`). TV ve telefon / OBS satırları da `fit: {chunk, chunks}` alır (yalnız birden çok parçada). Eski Makine'ler parçayı düz satır gibi gösterir.
+
+Çeviri `overlay.show` ile gider: `text` (eski Makine'ler için), `lines: [{text, sourceText?}]` (konuşmacı başına bir satır), bölge (`x, y, width,
+height`; konsolda video alanındaki bölgenin ekran karşılığı) ve kayıtlı `style`; konsolda "Bu ekranda" çıktısında `frame: {x, y, width, height}` (fiziksel px), yayın penceresindeki
+16:9 video alanıdır (Alt / Üst onun içinde hesaplanır). PC oyununda oyun Makine'nin
+`game.started` / `game.stopped` olaylarından ve `games.running`'den gelir; konsol modu her zaman GTA VI havuzudur.
+PC modunda okuma yalnızca oyun öndeyken yapılır (test koşucusunun hedef kilidi): Makine `game.started` /
+`games.running` içinde isteğe bağlı `pid` gönderirse öndeki pencerenin süreci o olmalı; göndermezse öndeki pencere
+Makine olmamalı ve bölgenin ortasını kapsamalı. Ekrandan okunan ve gösterdiğimiz çeviriye benzeyen OCR kutuları
+cümle birleştirilmeden önce atılır; yine de Makine'nin kaplama penceresinin `SetWindowDisplayAffinity(
+WDA_EXCLUDEFROMCAPTURE)` ile yakalamadan gizlenmesi gerekir. Yerel havuz, oyun Makine'nin kütüphanesinden
+geldiği için sormadan indirilir. Katalog dışı oyunlar `{gameId: "exe:<exe>", name, pid, exe, catalog: false}` ile gelir: havuz adı `name`dan (yol ya da exe adıysa yalnız dosya adının gövdesi) türer, harf yoksa oyun okunmaz (`game_unidentified`); Remote Play gibi konsol yayın uygulamaları bu yoldan da GTA VI sayılır, ayrı bir PC oyunu olmaz.
+
+**Havuz kalitesi** (sunucunun `src/live/text.ts` kuralları, `garbage.cpp`'de `<regex>` olmadan; sunucunun vektörleri
+`spec/speaker_vectors.json`, `line_issue_vectors.json`, `clipped_edge_vectors.json` ctest'te): konuşmacı etiketi ve dil
+notu satırdan ayrılır ("Jason: What?" → anahtar ve `/translate` yalnız "What?"); ekranda etiket çevirinin önünde,
+çevrilmeden durur ("Jason: Ne?", "Mia: (İspanyolca) …"). Tek blokta okunan iki konuşmacı her `[.!?…] Ad:` sınırında
+ayrı satır olur. OCR her satırın kutusunu verir: kutu bölgenin kenarına değiyor ve kenardaki kelime gerçek değilse
+(ya da sarılmış altyazının öbür satırı üstte / altta kalmışsa) satır gönderilmez, bölge o yöne %10 büyür (bu oturum,
+yan başına en çok 3 kez) ve sonraki kare yeniden okunur; oyuncu `region.keepGrown` ile kalıcı yapar.
+
+**Kısayollar** (0.3.2 exe'deki gibi: F9 başlat/durdur, F10 bölge seç, F8 kutuyu taşı/kilitle): manifest ayarları
+`hotkeyStart` / `hotkeyRegion` / `hotkeyMove` (F1–F12 ya da `off`). Eklentinin kendi iş parçacığında, yalnız mesaj
+alan bir pencereye `RegisterHotKey` (klavye kancası yok). Windows tuşu kaydedenden başka programlara vermez; bu
+yüzden tuşlar yalnız giriş yapılmışken ve bir oyun açıkken (ya da konsol modunda) alınır (`hotkeys.armed`). Başka
+programın tuttuğu tuş `keys.<eylem>.error`'da yazar; sonraki eşitlemede yeniden denenir. Kısayolun hatası oyuncu
+oyundayken `ui.notify` ile söylenir.
+
+**Neden kodları** (`ui.state.reason`, OCR_KARAR §6; serbest metin `status` yalnız ayrıntıdır), öncelik sırasıyla.
+`action` ekranın olduğu gibi çağırdığı bir invoke yöntemidir ya da ekranın kendi işi (`launcher.update`, `tv.pairForm`);
+yoksa düğme yoktur, metin yeter: `maintenance` · `update_required` (`launcher.update`) · `signed_out` (`login.start`) ·
+`offline` (`status.refresh`) · `consent_required` (ekran onayı kendisi sorar) · `game_unidentified` ·
+`source_missing` / `source_minimized` (`console.sources`) · `source_small` · `black_frame` · `capture_failed`
+(`status.refresh`) · `region_missing` (`region.pick`) · `game_missing` · `game_not_front` · `tv_offline` (`tv.discover`) ·
+`tv_bad_code` (`tv.pairForm`) · `quota` · `no_key` · `upstream` · `stopped` (`start`).
+`stream_stalled`, `stream_poor`, `hdr_washed` OCR hattının güven / kontrast ölçüleriyle gelecek. Çıktı TV iken kaynak
+kaybı, siyah görüntü, kota, bakım ve okumanın durması TV'ye `{"t":"note","code","text"}` olarak da gider (boş `text`
+notu kaldırır). TV stili isteğe bağlı `relSize` (ekran yüksekliğine oran, 0.046), `safeArea` (0.05), `maxLines` (2),
+`text`, `band` alanlarını da taşır; varsayılan koyu şerit, beyaz yazı, opaklık 86. **TV uygulaması:** `note` Android
+(`LinkServer.kt`) ve webOS servisinde satır olarak gösterilir; yeni stil alanlarını TV uygulamaları henüz uygulamıyor.
+
+**Konsol okuma hızı (F2).** K3: konsol modunda OCR yalnız altyazı maskesi (koyu konturlu açık dolgu, eşikler karenin
+kendi aralığına göre, 8×8 piksel hücre) son OCR'dakinden farklıysa ve en geç 2,5 sn'de bir çalışır; kapı D-C'de G-MISS = 0
+(`tools/make_dc_frames.py`, `ctest -R mask_gate`). K12: yerel havuzda tam anahtarı olan satır ilk okumada gösterilir (iki
+okuma kuralı aynen sürer). K13: yeni satır belirince 15 sn'dir boşta duran bağlantı `ping` ile açılır. TV, çizdiği satıra
+`{"t":"drawn","id"}` yanıtını Makine TV (Android ve LG) satırı ekrana çizince verir; `tv.hopP50/hopP95` gidiş-dönüşün yarısıdır.
+
+**Çıktılar.** Çeviri, PC modunda ve konsol modunda `output: "pc"` iken Makine'nin kaplamasıyla gösterilir; `tv` iken
+Makine TV'ye (UDP 47710 keşif, TCP satır-JSON, TV'deki 4 haneli kod; `src/tv_link.cpp`), `phone` iken telefon / tablet
+sayfasına (`http://<PC>:47712`, SSE) gider. OBS kaynağı (`/obs`) her modda açılabilir. Sayfalar Python koşucusunun
+sayfalarıyla aynıdır (`tools/gen_web_pages.py` → `src/web_pages.inc`), dışarıdan bir şey yüklemez (CSP). Sunucu
+telefon açık değilken yalnız 127.0.0.1'i dinler; telefon açılınca ev ağını dinler ve Windows bir kez güvenlik duvarı
+izni sorar (`web.firewallNote`). Eklenti güvenlik duvarına kural eklemez.
+
+**Discord** (`src/discord.cpp`): okuma açıkken profilde "… · Türkçe oynuyor", oturum süresi ve çevrilen diyalog;
+GTA VI'da Makine × GTA VI görseli. Discord'un yerel IPC kanalı kullanılır, ağa çıkılmaz. Makine'de her zaman açık.
+
+**TV'ye kur.** Android TV, Google TV ve Fire TV: eklenti ADB protokolünü kendisi konuşur (`src/adb.cpp`; adb.exe yok):
+RSA-2048 anahtarı Windows CNG ile üretilir, DPAPI ile `dataDir\adbkey.bin`'de durur; TV bir kez "bu bilgisayara izin
+verilsin mi" diye sorar. APK `sync:` ile yüklenir, `pm install` ile kurulur, altyazı katmanı izni verilir, uygulama
+açılır. LG webOS: SSH istemcisi gerektirdiği için şimdilik elle kurulum (`tvInstall.guide.lg`, `tv.install.saveFile`).
+Paketler: `resources/makine-tv.apk` (`tv\gradlew.bat assembleRelease`; imzalı sürüm için `MAKINE_TV_KEYSTORE`) ve
+`resources/makine-tv.ipk` (`tools/build_webos.py`, derlemede kendiliğinden).
+
+**Duyurular, destek, bağış.** Sunucunun duyuruları `announcements`'ta; ekip bir oturumun kaydını isterse
+(`beat` → `log_request`) eklentinin kendi kayıt satırları (bellekte son 512 KB) gzip ile gider ve `support` kartı çıkar.
+Bağış bağlantısı `https://makineceviri.org/destek` (site bağış sayfasına yönlendirir), `ui.openUrl` ile açılır.
+
+**Konsol / yakalama kaynakları** (öncelik: GTA VI, PlayStation ve Xbox): PS Remote Play, chiaki / chiaki-ng, Asobi,
+PXPlay (PS5); Xbox uygulaması (bulut ve uzaktan oynatma dahil), Greenlight (Xbox); Elgato 4K Capture Utility, Elgato
+Studio, AVerMedia RECentral, AVerMedia Streaming Center, OBS projektörü, Windows Kamera (yakalama kartı). Hepsi aynı
+16:9 bölge mantığıyla okunur.
+
+**Ayarlar** (manifest `contributes.settings`, Makine saklar): `autoStart` (oyun başlayınca kendiliğinden aç; giriş
+doğrulanırken gelen `game.started` bekletilir) ve `usageReport` (varsayılan açık). Kullanım bildirimi 0.3.2'deki
+`net/telemetry.py` ile aynıdır: girişten 2 sn sonra ve sunucunun söylediği `beat_s` aralığında `POST /api/live/app?action=beat`
+(oyun, mod, okuma süresi, çevrilen satır, sistem ve hız bilgisi; ekran görüntüsü ya da okunan metin gitmez), çıkışta ve
+kapanışta `bye`. `usageReport` kapalıysa hiç gönderilmez. Yanıttaki `log_request` yanıtlanır: eklentinin bellekteki son kayıt
+satırları gönderilir (yukarıda, `support` kartı). Konsol görüntüsünü getiren uygulamalar (PS Remote Play, Asobi,
+chiaki, Xbox uygulaması, Greenlight) PC modunda da GTA VI sayılır.
 
 ## Proje yapısı
 
@@ -202,6 +393,6 @@ Kod katkısında:
 
 [AGPL-3.0](LICENSE) + Commons Clause: kaynak kodu açıktır, değiştirilip paylaşılabilir; yazılımın kendisi ücretli olarak
 satılamaz. Üçüncü taraf bileşenler: `resources/en_words.txt` ([wordninja](https://github.com/keredson/wordninja), MIT),
-çalışma zamanında [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) ve [ONNX Runtime](https://onnxruntime.ai) (depoda değil).
+çalışma zamanında [ONNX Runtime](https://onnxruntime.ai) (depoda değil).
 
 <sub>Makine Live, [Makine Çeviri](https://makineceviri.org) topluluğu tarafından geliştirilir.</sub>

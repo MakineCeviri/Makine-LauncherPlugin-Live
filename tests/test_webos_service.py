@@ -93,6 +93,19 @@ class WebosServiceTest(unittest.TestCase):
         link.pair(None)                                  # PC ayrılınca TV altyazıyı temizler
         self.wait_event(lambda e: e.get("event") == "state" and e.get("pc") is None)
 
+    def test_drawn_ack(self):
+        # The app reports a drawn line through the "drawn" method; the PC gets drawn{id} on its link
+        s = socket.create_connection(("127.0.0.1", self.state["port"]), timeout=5)
+        self.addCleanup(s.close)
+        r = s.makefile("rb")
+        s.sendall((json.dumps({"t": "hello", "v": 1, "code": self.state["code"], "pc": "TEST"}) + "\n").encode())
+        self.assertEqual(json.loads(r.readline())["t"], "ok")
+        s.sendall((json.dumps({"t": "line", "id": 7, "text": "Seni bulacağım.", "kind": "api"}) + "\n").encode())
+        self.assertEqual(self.wait_event(lambda e: e.get("event") == "line")["id"], 7)
+        self.proc.stdin.write('drawn {"id": 7}\n')
+        self.proc.stdin.flush()
+        self.assertEqual(json.loads(r.readline()), {"t": "drawn", "id": 7})
+
     def test_lockout(self):
         code = self.state["code"]
         self.assertEqual(self.hello(code), "ok")

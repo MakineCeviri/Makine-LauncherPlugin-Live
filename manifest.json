@@ -1,82 +1,37 @@
 {
-    "id": "com.makineceviri.live",
-    "name": "Makine Live",
-    "version": "0.3.2",
-    "channel": "beta",
-    "apiVersion": 1,
-    "category": "translation",
-    "description": "Real-time screen OCR and translation overlay with DXGI capture and multi-engine translation",
-    "author": "Makine Team",
-    "license": "AGPL-3.0-only WITH Commons-Clause",
-    "homepage": "https://github.com/MakineCeviri/Makine-LauncherPlugin-Live",
-    "entry": "makine-live.dll",
-    "icon": "icon.png",
-    "dependencies": [],
-    "capabilities": ["network", "screen_capture", "overlay"],
-    "features": [
-        "Screen capture (DXGI Desktop Duplication / GDI fallback)",
-        "OCR text recognition (RapidOCR)",
-        "Shared translation pool on makineceviri.org (approved lines, one machine translation per line)",
-        "Developer translation engines (Google, DeepL, ChatGPT)",
-        "Transparent overlay window",
-        "Frame change detection for efficient OCR"
-    ],
-    "platforms": ["win64"],
-    "minLauncherVersion": "0.2.0",
+  "schema": 2,
+  "id": "org.makineceviri.live",
+  "name": "Makine Live",
+  "version": "0.4.0",
+  "description": "Oyundaki İngilizce altyazıyı okur, Makine Çeviri'nin ortak çeviri havuzundan Türkçesini getirir ve oyunun üstünde gösterir. PC oyunları ve PS5 / Xbox (Remote Play, Xbox uygulaması, yakalama kartı).",
+  "publisher": "Makine Çeviri",
+  "license": "AGPL-3.0-only WITH Commons-Clause",
+  "homepage": "https://github.com/MakineCeviri/Makine-LauncherPlugin-Live",
+  "abi": 2,
+  "minLauncher": "0.2.0",
+  "entry": "bin/makine-live.dll",
+  "capabilities": [
+    { "id": "screen-capture", "reason": "Seçtiğin altyazı bölgesini (ya da konsol görüntüsünün penceresini) okur. Görüntü bilgisayarından çıkmaz; yalnız içinden okunan metin kullanılır." },
+    { "id": "network", "reason": "Okunan altyazı satırını Makine Çeviri hesabınla makineceviri.org'daki ortak çeviri havuzuna gönderir ve Türkçesini alır." },
+    { "id": "overlay", "reason": "Çeviriyi oyunun üstünde altyazı olarak gösterir ve okunacak bölgeyi seçtirir." }
+  ],
+  "contributes": {
+    "screen": { "title": "Makine Live", "icon": "messageSquareText" },
     "settings": [
-        {
-            "key": "ocrEnabled",
-            "type": "toggle",
-            "label": "OCR Aktif",
-            "default": "false"
-        },
-        {
-            "key": "sourceLang",
-            "type": "select",
-            "label": "Kaynak Dil",
-            "options": ["en", "ja", "ko", "zh", "de", "fr", "es", "ru"],
-            "default": "en"
-        },
-        {
-            "key": "targetLang",
-            "type": "select",
-            "label": "Hedef Dil",
-            "options": ["tr", "en", "de", "fr", "es", "ru"],
-            "default": "tr"
-        },
-        {
-            "key": "translatorEngine",
-            "type": "select",
-            "label": "Ceviri Motoru",
-            "options": ["makine", "gpt", "deepl", "google"],
-            "default": "makine"
-        },
-        {
-            "key": "apiKey",
-            "type": "text",
-            "label": "API Anahtari",
-            "default": ""
-        },
-        {
-            "key": "gptModel",
-            "type": "select",
-            "label": "GPT Model",
-            "options": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"],
-            "default": "gpt-4o-mini"
-        },
-        {
-            "key": "captureMethod",
-            "type": "select",
-            "label": "Yakalama Yontemi",
-            "options": ["auto", "dxgi", "gdi"],
-            "default": "auto"
-        },
-        {
-            "key": "ocrInterval",
-            "type": "select",
-            "label": "OCR Araligi (ms)",
-            "options": ["500", "1000", "2000", "3000", "5000"],
-            "default": "2000"
-        }
-    ]
+      { "key": "autoStart", "type": "toggle", "label": "Oyun başlayınca kendiliğinden aç",
+        "description": "Giriş yaptıysan ve bölge seçtiysen, oyun açılınca okumaya başlar.", "default": false },
+      { "key": "usageReport", "type": "toggle", "label": "Kullanım bildirimini gönder",
+        "description": "Beş dakikada bir oyun, mod, çevrilen satır sayısı ve sistem bilgisi Makine Live ekibine gider. Ekran görüntüsü ve okunan metin gitmez.",
+        "default": true },
+      { "key": "hotkeyStart", "type": "select", "label": "Başlat / durdur kısayolu",
+        "description": "Oyundan çıkmadan okumayı başlatır ya da durdurur. Seçtiğin tuş oyun açıkken başka programlara gitmez.",
+        "options": [ "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", { "value": "off", "label": "Kapalı" } ], "default": "F9" },
+      { "key": "hotkeyRegion", "type": "select", "label": "Bölge seçme kısayolu",
+        "options": [ "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", { "value": "off", "label": "Kapalı" } ], "default": "F10" },
+      { "key": "hotkeyMove", "type": "select", "label": "Altyazı kutusunu taşıma kısayolu",
+        "description": "Bir basışta kutu sürüklenebilir olur, ikinci basışta yerine kilitlenir.",
+        "options": [ "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", { "value": "off", "label": "Kapalı" } ], "default": "F8" }
+    ],
+    "events": [ "game.started", "game.stopped", "settings.changed" ]
+  }
 }

@@ -1,0 +1,34 @@
+Makine Live — third-party components
+====================================
+
+Makine Live (bin/makine-live.dll) is licensed under AGPL-3.0-only with the
+Commons Clause condition; see Makine-Live-LICENSE.txt. It ships with:
+
+bin/onnxruntime.dll
+    ONNX Runtime 1.24.3 (Microsoft.ML.OnnxRuntime, signed by Microsoft),
+    https://github.com/microsoft/onnxruntime
+    MIT License — onnxruntime-LICENSE.txt, onnxruntime-ThirdPartyNotices.txt
+
+bin/msvcp140.dll, bin/msvcp140_1.dll, bin/vcruntime140.dll, bin/vcruntime140_1.dll
+    Microsoft Visual C++ runtime, redistributed under the Visual Studio
+    redistributable code terms (app-local deployment, signed by Microsoft)
+
+models/ch_PP-OCRv3_det_infer.onnx
+models/ch_ppocr_mobile_v2.0_cls_infer.onnx
+models/ch_PP-OCRv3_rec_infer.onnx
+models/ppocr_keys_v1.txt
+    PaddleOCR models, https://github.com/PaddlePaddle/PaddleOCR
+    Apache License 2.0 — PaddleOCR-LICENSE.txt
+    ONNX conversions published by RapidOCR / RapidOcrOnnx, https://github.com/RapidAI/RapidOCR
+    Apache License 2.0 — RapidOCR-LICENSE.txt
+
+resources/en_words.txt
+    English word frequency list from wordninja, https://github.com/keredson/wordninja
+    MIT License
+
+bin/makine-live.dll includes:
+    nlohmann/json 3.12.0, https://github.com/nlohmann/json
+    MIT License — nlohmann-json-LICENSE.txt
+
+None of these files are modified. tools/fetch_ocr.py in the source repository
+lists the exact download URLs and SHA-256 hashes.
