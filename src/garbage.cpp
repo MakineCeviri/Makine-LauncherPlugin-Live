@@ -12,7 +12,10 @@
 #include <algorithm>
 #include <cctype>
 #include <functional>
+#include <cmath>
+#include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -440,9 +443,12 @@ std::string gameSlug(std::string_view name)
 bool Garbage::setWords(std::string_view content)
 {
     m_rank.clear();
+    m_all.clear();
     const auto words = split(fromUtf8(content));
-    for (size_t i = 0; i < words.size(); ++i)
+    for (size_t i = 0; i < words.size(); ++i) {
         if (i < 30000 || words[i].find(U'\'') != U::npos) m_rank.emplace(words[i], static_cast<int>(i));
+        m_all.insert(words[i]);
+    }
     return loaded();
 }
 
@@ -624,6 +630,446 @@ std::string Garbage::filterOcr(std::string_view raw, std::string_view sourceLang
     const U text = join(lines, U" ");
     if (text.empty() || isHud(text) || !isValidDialogue(text) || !reasonOf(text, {}, sourceLang).empty()) return {};
     return toUtf8(text);
+}
+
+
+// ── subtitle shape: speaker label, annotation, clipped and merged readings ─────────────────────
+// Port of the server's src/live/text.ts (languageNote, isSpeakerLabel, splitSpeaker, linePrefix,
+// lineIssues, readLine, isEnglishWord); spec/speaker_vectors.json, line_issue_vectors.json and
+// clipped_edge_vectors.json are the server's vectors. Each regular expression is spelled out in
+// steps next to the original.
+
+namespace {
+
+bool isApos(char32_t c) { return c == U'\'' || c == U'’'; }
+bool isSentenceEnd(char32_t c) { return c == U'.' || c == U'!' || c == U'?' || c == U'…'; }
+bool isCloseQuote(char32_t c) { return c == U'"' || c == U'”' || c == U'\'' || c == U'’'; }
+bool isAsciiLowerWord(UV s)   // ^[a-z'’]+$
+{
+    return !s.empty() && std::all_of(s.begin(), s.end(), [](char32_t c) { return (c >= U'a' && c <= U'z') || isApos(c); });
+}
+// a label token: \p{Lu}[\p{L}'’.\-]*
+bool labelTokenChar(char32_t c) { return isAlpha(c) || isApos(c) || c == U'.' || c == U'-'; }
+
+const std::map<U, std::string>& langTr()
+{
+    static const std::map<U, std::string> m{
+        {U"spanish", "İspanyolca"}, {U"italian", "İtalyanca"}, {U"french", "Fransızca"}, {U"portuguese", "Portekizce"},
+        {U"german", "Almanca"}, {U"russian", "Rusça"}, {U"chinese", "Çince"}, {U"mandarin", "Mandarin"},
+        {U"cantonese", "Kantonca"}, {U"japanese", "Japonca"}, {U"korean", "Korece"}, {U"creole", "Kreolce"},
+        {U"haitian creole", "Haiti Kreolcesi"}, {U"arabic", "Arapça"}, {U"hebrew", "İbranice"}, {U"vietnamese", "Vietnamca"},
+        {U"polish", "Lehçe"}, {U"dutch", "Felemenkçe"}, {U"greek", "Yunanca"}, {U"turkish", "Türkçe"},
+        {U"english", "İngilizce"}, {U"unknown language", "Bilinmeyen dil"}};
+    return m;
+}
+
+const std::unordered_set<U>& labelStop()
+{
+    static const std::unordered_set<U> s{
+        U"listen", U"look", U"wait", U"okay", U"ok", U"well", U"so", U"yes", U"no", U"now", U"here", U"there", U"remember",
+        U"note", U"hey", U"oh", U"fine", U"rule", U"step", U"tip", U"hint", U"warning", U"objective", U"objectives",
+        U"reward", U"rewards", U"time", U"answer", U"question", U"problem", U"thing", U"truth", U"fact", U"plan", U"deal",
+        U"news", U"reminder", U"update", U"location", U"mission", U"goal", U"bonus", U"total", U"score", U"level",
+        U"round", U"ps", U"also", U"but", U"and", U"or", U"because", U"first", U"second", U"third", U"finally", U"then",
+        U"again", U"see", U"sure", U"right", U"alright", U"honestly", U"seriously", U"basically", U"anyway", U"nope",
+        U"yeah", U"yep", U"please", U"sorry", U"thanks", U"hello", U"hi", U"bye", U"dear", U"the", U"a", U"an", U"my",
+        U"your", U"his", U"her", U"our", U"their", U"this", U"that", U"it", U"i", U"you", U"we", U"they", U"he", U"she",
+        U"what", U"who", U"why", U"how", U"when", U"where", U"press", U"hold", U"tap", U"use", U"new", U"status",
+        U"cost", U"price", U"distance", U"speed", U"wanted", U"cash", U"bank", U"health", U"armor", U"ammo", U"weapon",
+        U"vehicle", U"from", U"to", U"subject", U"re", U"via", U"chapter", U"part", U"day", U"episode"};
+    return s;
+}
+
+const std::unordered_set<U>& notAName()
+{
+    static const std::unordered_set<U> s{
+        U"bro", U"dude", U"man", U"sir", U"babe", U"baby", U"buddy", U"boss", U"guys", U"everyone", U"everybody",
+        U"please", U"now", U"go", U"come", U"okay", U"ok", U"yes", U"no", U"yeah", U"yep", U"nope", U"fine", U"thanks",
+        U"sorry", U"hello", U"hey", U"wait", U"look", U"listen", U"stop", U"run", U"help", U"shit", U"fuck", U"damn",
+        U"jesus", U"god", U"christ", U"again", U"together", U"forever", U"tonight", U"today", U"tomorrow", U"homie",
+        U"dawg", U"dog", U"mom", U"dad", U"mama", U"papa", U"son", U"kid", U"girl", U"boy", U"honey", U"sweetheart",
+        U"darling", U"brother", U"sister", U"cuz", U"fam", U"officer"};
+    return s;
+}
+
+bool ieqAt(UV s, size_t at, UV lowerWord)
+{
+    if (at + lowerWord.size() > s.size()) return false;
+    for (size_t i = 0; i < lowerWord.size(); ++i) {
+        char32_t c = s[at + i];
+        if (c >= U'A' && c <= U'Z') c = c - U'A' + U'a';
+        if (c != lowerWord[i]) return false;
+    }
+    return true;
+}
+
+U languageNoteU(UV label)
+{
+    // ^[([]?\s*(?:(?:in|speaking)\s+)?([a-z]+(?: [a-z]+)?)\s*[)\]]?$   (i)
+    const U s = strip(label);
+    size_t i = 0;
+    if (i < s.size() && (s[i] == U'(' || s[i] == U'[')) ++i;
+    while (i < s.size() && isSpace(s[i])) ++i;
+    const auto restOk = [&](size_t e) {
+        while (e < s.size() && isSpace(s[e])) ++e;
+        if (e < s.size() && (s[e] == U')' || s[e] == U']')) ++e;
+        return e == s.size();
+    };
+    const auto langFrom = [&](size_t k, U& lang) {
+        const size_t a = k;
+        while (k < s.size() && isAsciiLetter(s[k])) ++k;
+        if (k == a) return false;
+        const size_t one = k;
+        if (k + 1 < s.size() && s[k] == U' ' && isAsciiLetter(s[k + 1])) {
+            ++k;
+            while (k < s.size() && isAsciiLetter(s[k])) ++k;
+            if (restOk(k)) {
+                lang = asciiLower(UV(s).substr(a, k - a));
+                return true;
+            }
+        }
+        if (!restOk(one)) return false;
+        lang = asciiLower(UV(s).substr(a, one - a));
+        return true;
+    };
+    // ^[([]?\s*(in|speaking)\s
+    size_t k = i;
+    bool prefixed = false;
+    for (UV word : {UV(U"in"), UV(U"speaking")}) {
+        if (ieqAt(s, i, word) && i + word.size() < s.size() && isSpace(s[i + word.size()])) {
+            prefixed = true;
+            k = i + word.size();
+            while (k < s.size() && isSpace(s[k])) ++k;
+        }
+    }
+    U lang;
+    if (!(prefixed && langFrom(k, lang)) && !langFrom(i, lang)) return {};
+    const auto it = langTr().find(lang);
+    if (it == langTr().end() || (!prefixed && lang != U"unknown language")) return {};
+    return fromUtf8(it->second);
+}
+
+bool isSpeakerLabelU(UV label)
+{
+    const U s = strip(label);
+    if (s.size() < 2 || s.size() > 28) return false;
+    const std::vector<U> toks = split(s);
+    if (toks.empty() || toks.size() > 3) return false;
+    U first = lower(toks[0]);
+    while (!first.empty() && (first.back() == U'.' || isApos(first.back()))) first.pop_back();
+    if (labelStop().count(first)) return false;
+    for (size_t i = 0; i < toks.size(); ++i) {
+        const U& t = toks[i];
+        const bool word = isUpper(t[0]) && std::all_of(t.begin() + 1, t.end(), labelTokenChar);
+        const bool number = i > 0 && t.size() <= 2
+                            && std::all_of(t.begin(), t.end(), [](char32_t c) { return c >= U'0' && c <= U'9'; });
+        if (!word && !number) return false;
+    }
+    return true;
+}
+
+// "^[a-z][a-z' ]{1,30}$": an SDH sound tag ("groans", OCR "gro ans")
+bool isSoundTag(UV s)
+{
+    if (s.size() < 2 || s.size() > 31 || s[0] < U'a' || s[0] > U'z') return false;
+    return std::all_of(s.begin() + 1, s.end(), [](char32_t c) { return (c >= U'a' && c <= U'z') || c == U'\'' || c == U' '; });
+}
+
+struct PartsU {
+    U speaker, note, text;
+};
+
+PartsU splitSpeakerU(UV source)
+{
+    U rest = strip(source);
+    U speaker;
+    std::vector<U> notes;
+    for (int round = 0; round < 4; ++round) {
+        // ^([[(][^\])\n]{1,40}[\])])\s*
+        if (!rest.empty() && (rest[0] == U'[' || rest[0] == U'(')) {
+            size_t k = 1;
+            while (k < rest.size() && rest[k] != U']' && rest[k] != U')' && rest[k] != U'\n') ++k;
+            if (k < rest.size() && rest[k] != U'\n' && k - 1 >= 1 && k - 1 <= 40) {
+                size_t full = k + 1;
+                while (full < rest.size() && isSpace(rest[full])) ++full;
+                if (full < rest.size()) {
+                    const U bracket = rest.substr(0, k + 1);
+                    const U inner = strip(UV(rest).substr(1, k - 1));
+                    const U lang = languageNoteU(bracket);
+                    if (!lang.empty()) {
+                        notes.push_back(lang);
+                        rest.erase(0, full);
+                        continue;
+                    }
+                    if (bracket[0] == U'[' && isSoundTag(inner)) {
+                        rest.erase(0, full);
+                        continue;
+                    }
+                    if (bracket[0] == U'[' && speaker.empty() && notes.empty() && isSpeakerLabelU(inner)) {
+                        speaker = inner;
+                        rest.erase(0, full);
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        // ^([^:\n]{1,32}?)\s*:\s+(?=\S)
+        const size_t colon = rest.find(U':');
+        const size_t nl = rest.find(U'\n');
+        if (colon == U::npos || (nl != U::npos && nl < colon)) break;
+        size_t labelEnd = colon;
+        while (labelEnd > 0 && isSpace(rest[labelEnd - 1])) --labelEnd;
+        if (labelEnd == 0 || labelEnd > 32) break;
+        size_t k = colon + 1;
+        while (k < rest.size() && isSpace(rest[k])) ++k;
+        if (k == colon + 1 || k >= rest.size()) break;
+        const U label = strip(UV(rest).substr(0, labelEnd));
+        const U lang = languageNoteU(label);
+        if (!lang.empty()) {
+            notes.push_back(lang);
+            rest.erase(0, k);
+            continue;
+        }
+        if (speaker.empty() && notes.empty() && isSpeakerLabelU(label)) {
+            speaker = label;
+            rest.erase(0, k);
+            continue;
+        }
+        break;
+    }
+    return {speaker, join(notes, U", "), rest};
+}
+
+// [.!?…]["”'’]?\s+(Name with up to three words)\s*:\s+\S starting at the sentence end `p`: where the name
+// starts and ends, or nothing
+std::optional<std::pair<size_t, size_t>> labelAfter(UV t, size_t p)
+{
+    if (!isSentenceEnd(t[p])) return std::nullopt;
+    size_t k = p + 1;
+    if (k < t.size() && isCloseQuote(t[k])) ++k;
+    const size_t ws = k;
+    while (k < t.size() && isSpace(t[k])) ++k;
+    if (k == ws || k >= t.size() || !isUpper(t[k])) return std::nullopt;
+    const size_t start = k;
+    size_t end = k;
+    for (int n = 0; n < 3; ++n) {
+        if (k >= t.size() || !isUpper(t[k])) break;
+        ++k;
+        while (k < t.size() && labelTokenChar(t[k])) ++k;
+        end = k;
+        size_t next = k;
+        while (next < t.size() && isSpace(t[next])) ++next;
+        if (next == k || next >= t.size() || !isUpper(t[next])) break;
+        if (n < 2) k = next;
+    }
+    size_t c = end;
+    while (c < t.size() && isSpace(t[c])) ++c;
+    if (c >= t.size() || t[c] != U':') return std::nullopt;
+    size_t after = c + 1;
+    const size_t w = after;
+    while (after < t.size() && isSpace(t[after])) ++after;
+    if (after == w || after >= t.size()) return std::nullopt;
+    return std::make_pair(start, end);
+}
+
+} // namespace
+
+std::string languageNote(std::string_view label)
+{
+    return toUtf8(languageNoteU(fromUtf8(label)));
+}
+
+bool isSpeakerLabel(std::string_view label)
+{
+    return isSpeakerLabelU(fromUtf8(label));
+}
+
+LineParts splitSpeaker(std::string_view source)
+{
+    const PartsU p = splitSpeakerU(fromUtf8(source));
+    return {toUtf8(p.speaker), toUtf8(p.note), toUtf8(p.text)};
+}
+
+std::string linePrefix(const std::string& speaker, const std::string& note)
+{
+    return (speaker.empty() ? std::string() : speaker + ": ") + (note.empty() ? std::string() : "(" + note + ") ");
+}
+
+bool Garbage::isWordToken(std::u32string_view token) const
+{
+    U lc = lower(token);
+    while (!lc.empty() && isApos(lc.back())) lc.pop_back();
+    if (lc.size() == 1) return lc == U"a";
+    if (lc.size() == 2) return realShort().count(lc) > 0 || isInterjection(lc);
+    const size_t apos = lc.find_first_of(U"'’");
+    const U base = apos == U::npos ? lc : lc.substr(0, apos);
+    const auto has = [this](const U& w) { return m_all.count(w) > 0; };
+    return has(lc) || has(base) || isInterjection(base)
+           || (base.size() >= 2 && base.compare(base.size() - 2, 2, U"in") == 0 && has(base + U"g")) || splitsIntoWords(base);
+}
+
+bool Garbage::isEnglishWord(std::string_view token) const
+{
+    return isWordToken(fromUtf8(token));
+}
+
+std::vector<std::string> Garbage::lineIssues(std::string_view text) const
+{
+    const U t = strip(fromUtf8(text));
+    std::vector<std::string> out;
+    // first: ^[^\p{L}]*(\p{L}[\p{L}'’]*)
+    U first;
+    size_t i = 0;
+    while (i < t.size() && !isAlpha(t[i])) ++i;
+    if (i < t.size()) {
+        size_t j = i + 1;
+        while (j < t.size() && (isAlpha(t[j]) || isApos(t[j]))) ++j;
+        first = t.substr(i, j - i);
+    }
+    if (!first.empty() && isLower(first[0]) && isAsciiLowerWord(first) && !isWordToken(first)) out.push_back("clipped_left");
+    // no closing punctuation: [.!?…"”'’)\]*~♪-]$
+    static constexpr UV kClosing = U".!?…\"”'’)]*~♪-";
+    if (t.empty() || kClosing.find(t.back()) == UV::npos) {
+        // last: (\p{L}[\p{L}'’]*)[^\p{L}]*$
+        size_t e = t.size();
+        while (e > 0 && !isAlpha(t[e - 1])) --e;
+        if (e > 0) {
+            size_t end = e;
+            while (end < t.size() && isApos(t[end])) ++end;
+            size_t start = e - 1;
+            while (start > 0 && (isAlpha(t[start - 1]) || isApos(t[start - 1]))) --start;
+            while (!isAlpha(t[start])) ++start;
+            const U last = t.substr(start, end - start);
+            if (isAsciiLowerWord(last) && last != first && !isWordToken(last)) out.push_back("clipped_right");
+        }
+    }
+    // multi_speaker: [.!?…]["”'’]?\s+(Name)\s*:\s+\S where Name is a speaker label
+    bool multi = false;
+    for (size_t p = 0; p < t.size() && !multi; ++p) {
+        const auto at = labelAfter(t, p);
+        multi = at && isSpeakerLabelU(UV(t).substr(at->first, at->second - at->first));
+    }
+    if (multi) out.push_back("multi_speaker");
+    // trailing_name: [.!?…]["”'’]?\s+(W(?:\s+W)?)$ with W = \p{Lu}[\p{L}'’\-]+
+    const auto wordEnd = [&](size_t k) {   // W from k: its end, or npos
+        if (k >= t.size() || !isUpper(t[k])) return U::npos;
+        size_t e = k + 1;
+        while (e < t.size() && (isAlpha(t[e]) || isApos(t[e]) || t[e] == U'-')) ++e;
+        return e - k >= 2 ? e : U::npos;
+    };
+    std::vector<U> tail;
+    for (size_t p = 0; p < t.size() && tail.empty(); ++p) {
+        if (!isSentenceEnd(t[p])) continue;
+        size_t k = p + 1;
+        if (k < t.size() && isCloseQuote(t[k])) ++k;
+        const size_t ws = k;
+        while (k < t.size() && isSpace(t[k])) ++k;
+        if (k == ws) continue;
+        const size_t e1 = wordEnd(k);
+        if (e1 == U::npos) continue;
+        if (e1 == t.size()) {
+            tail = {t.substr(k, e1 - k)};
+            break;
+        }
+        size_t k2 = e1;
+        while (k2 < t.size() && isSpace(t[k2])) ++k2;
+        if (k2 == e1) continue;
+        const size_t e2 = wordEnd(k2);
+        if (e2 == t.size()) tail = {t.substr(k, e1 - k), t.substr(k2, e2 - k2)};
+    }
+    const bool name = !tail.empty() && std::all_of(tail.begin(), tail.end(), [&](const U& w) {
+        const U lc = lower(w);
+        return !notAName().count(lc) && rank(lc) >= 1500;
+    });
+    if (name) {
+        out.push_back("trailing_name");
+    } else if (!multi) {
+        // merged_tail: [.!?…]["”'’]?\s+\p{Lu}[^.!?…,\s]*\s+[^.!?…,]*\p{L}$
+        static constexpr UV kStops = U".!?…,";
+        for (size_t p = 0; p < t.size(); ++p) {
+            if (!isSentenceEnd(t[p])) continue;
+            size_t k = p + 1;
+            if (k < t.size() && isCloseQuote(t[k])) ++k;
+            const size_t ws = k;
+            while (k < t.size() && isSpace(t[k])) ++k;
+            if (k == ws || k >= t.size() || !isUpper(t[k])) continue;
+            ++k;
+            while (k < t.size() && kStops.find(t[k]) == UV::npos && !isSpace(t[k])) ++k;
+            const UV rest = UV(t).substr(k);
+            if (rest.size() >= 2 && isSpace(rest[0]) && isAlpha(t.back())
+                && std::none_of(rest.begin(), rest.end(), [](char32_t c) { return kStops.find(c) != UV::npos; })) {
+                out.push_back("merged_tail");
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+ReadLine Garbage::readLine(std::string_view text, std::string_view sourceLang) const
+{
+    const U src = strip(fromUtf8(text));
+    const PartsU parts = splitSpeakerU(src);
+    const bool split = parts.text != src && reasonOf(parts.text, {}, sourceLang).empty();
+    ReadLine r;
+    r.line = toUtf8(split ? parts.text : src);
+    if (split) {
+        r.speaker = toUtf8(parts.speaker);
+        r.note = toUtf8(parts.note);
+        r.prefix = linePrefix(r.speaker, r.note);
+    }
+    r.issues = lineIssues(r.line);
+    r.hard = std::any_of(r.issues.begin(), r.issues.end(), [](const std::string& f) {
+        return f == "clipped_left" || f == "clipped_right" || f == "multi_speaker";
+    });
+    return r;
+}
+
+std::vector<std::string> Garbage::speakerLines(std::string_view text) const
+{
+    const U t = strip(fromUtf8(text));
+    std::vector<std::string> out;
+    size_t from = 0;
+    for (size_t p = 0; p < t.size(); ++p) {
+        const auto at = labelAfter(t, p);
+        if (!at || !isSpeakerLabelU(UV(t).substr(at->first, at->second - at->first))) continue;
+        const U part = strip(UV(t).substr(from, at->first - from));
+        if (!part.empty()) out.push_back(toUtf8(part));
+        from = at->first;
+        p = at->second;
+    }
+    const U last = strip(UV(t).substr(std::min(from, t.size())));
+    if (!last.empty()) out.push_back(toUtf8(last));
+    return out;
+}
+
+EdgeVerdict Garbage::edgeCheck(const std::vector<OcrBox>& boxes, int width, int height) const
+{
+    EdgeVerdict v;
+    const int margin = std::max(2, static_cast<int>(std::lround(0.01 * width)));
+    bool cut[4] = {};   // left right top bottom
+    std::string all;
+    for (const OcrBox& b : boxes) {
+        if (b.text.empty()) continue;
+        all += (all.empty() ? "" : " ") + b.text;
+        if (!reasonOf(fromUtf8(b.text), {}, "en").empty()) continue;   // HUD and noise do not grow the region
+        const auto issues = lineIssues(splitSpeaker(b.text).text);
+        const auto has = [&](const char* f) { return std::find(issues.begin(), issues.end(), f) != issues.end(); };
+        if (b.x0 <= margin && has("clipped_left")) cut[0] = true;
+        if (b.x1 >= width - margin && has("clipped_right")) cut[1] = true;
+        if (b.y0 <= margin) cut[2] = true;    // a wrapped subtitle's other line is above the region
+        if (b.y1 >= height - margin) cut[3] = true;
+    }
+    static const char* const kSides[4] = {"left", "right", "top", "bottom"};
+    for (int s = 0; s < 4; ++s)
+        if (cut[s]) {
+            v.cut.push_back(kSides[s]);
+            v.widen.push_back(kSides[s]);
+        }
+    v.send = v.cut.empty();
+    v.lines = speakerLines(all);
+    return v;
 }
 
 } // namespace live::text

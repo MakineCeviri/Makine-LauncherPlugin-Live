@@ -102,6 +102,55 @@ void testGarbage()
     }
 }
 
+// ── subtitle shape: the server's vectors (Makine-WEB tests/fixtures/live, copied to spec/) ──
+
+void testSpeaker()
+{
+    for (const json& v : loadJson(L"\\spec\\speaker_vectors.json")) {
+        const text::LineParts p = text::splitSpeaker(v["input"].get<std::string>());
+        check(p.speaker == v["speaker"].get<std::string>() && p.note == v["note"].get<std::string>()
+                  && p.text == v["text"].get<std::string>(),
+              v["input"].dump() + " -> " + json({p.speaker, p.note, p.text}).dump());
+    }
+    // every speaker reads one line, one key; a label whose line alone is too short stays whole
+    check(text::compactPoolKey(garbage().readLine("Jason: What? You okay?").line)
+              == text::compactPoolKey(garbage().readLine("Lucia: What? You okay?").line),
+          "one key for every speaker");
+    check(garbage().readLine("Jason: No.").line == "Jason: No.", "a too short line keeps its label");
+    check(garbage().readLine("Mia: In Spanish: Oh, shit!").prefix == "Mia: (İspanyolca) ", "label and note prefix");
+    const auto lines = garbage().speakerLines("Cop: Stop right now, or I'll stop you! Cop: I want the engine off!");
+    check(lines == std::vector<std::string>{"Cop: Stop right now, or I'll stop you!", "Cop: I want the engine off!"},
+          "a two-speaker block splits at the second label");
+}
+
+void testLineIssues()
+{
+    for (const json& v : loadJson(L"\\spec\\line_issue_vectors.json")) {
+        const auto got = garbage().lineIssues(text::splitSpeaker(v["text"].get<std::string>()).text);
+        check(json(got) == v["issues"], v["text"].dump() + " -> " + json(got).dump());
+    }
+    check(garbage().readLine("ook what we have here!").hard, "a clipped line is hard");
+    check(!garbage().readLine("Will do. Thanks, Kenton. Kenton").hard, "a trailing name is not");
+    check(garbage().isEnglishWord("fuckin'") && !garbage().isEnglishWord("ook"), "isEnglishWord");
+}
+
+void testClippedEdge()
+{
+    const json doc = loadJson(L"\\spec\\clipped_edge_vectors.json");
+    for (const json& c : doc["cases"]) {
+        std::vector<text::OcrBox> boxes;
+        for (const json& b : c["boxes"])
+            boxes.push_back({b["text"].get<std::string>(), b["x0"].get<int>(), b["y0"].get<int>(), b["x1"].get<int>(),
+                             b["y1"].get<int>()});
+        const auto v = garbage().edgeCheck(boxes, c["region"]["width"].get<int>(), c["region"]["height"].get<int>());
+        const json& e = c["expect"];
+        bool ok = v.send == e["send"].get<bool>() && json(v.cut) == e["cut"] && json(v.widen) == e["widen"];
+        if (e.contains("lines")) ok = ok && json(v.lines) == e["lines"];
+        check(ok, c["name"].get<std::string>() + " -> send " + std::to_string(v.send) + " cut " + json(v.cut).dump()
+                      + " lines " + json(v.lines).dump());
+    }
+}
+
 // ── tests/test_garbage.py OcrFilter ─────────────────────────────────────────
 
 void testOcrFilter()
@@ -629,6 +678,7 @@ int main(int argc, char** argv)
     const std::map<std::string, std::function<void()>> cases{
         {"normalization", testNormalization}, {"garbage", testGarbage},   {"ocr_filter", testOcrFilter},
         {"subtitle", testSubtitle},           {"console", testConsole},   {"local_pool", testLocalPool},
+        {"speaker", testSpeaker},             {"line_issues", testLineIssues}, {"clipped_edge", testClippedEdge},
     };
     const auto it = cases.find(name);
     if (it == cases.end()) {
