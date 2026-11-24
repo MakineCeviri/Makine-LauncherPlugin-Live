@@ -321,7 +321,7 @@ struct OcrOrt::Impl {
         return text;
     }
 
-    std::vector<std::string> run(const View& img)
+    std::vector<OcrLine> run(const View& img)
     {
         std::vector<Rect> boxes = detect(img);
         // Line grouping (OCR_MIMARI G1/K4a): boxes whose vertical centre falls inside a line's first box
@@ -333,16 +333,23 @@ struct OcrOrt::Impl {
             if (!rows.empty() && cy >= rows.back()[0].y0 && cy <= rows.back()[0].y1) rows.back().push_back(r);
             else rows.push_back({r});
         }
-        std::vector<std::string> lines;
+        std::vector<OcrLine> lines;
         for (auto& row : rows) {
             std::sort(row.begin(), row.end(), [](const Rect& a, const Rect& b) { return a.x0 < b.x0; });
-            std::string text;
+            OcrLine line;
+            Rect box{1e9f, 1e9f, -1e9f, -1e9f};
             for (const Rect& r : row) {
                 const std::string s = recognize(img, r);
                 if (s.empty()) continue;
-                text += (text.empty() ? "" : " ") + s;
+                line.text += (line.text.empty() ? "" : " ") + s;
+                box = {std::min(box.x0, r.x0), std::min(box.y0, r.y0), std::max(box.x1, r.x1), std::max(box.y1, r.y1)};
             }
-            if (!text.empty()) lines.push_back(std::move(text));
+            if (line.text.empty()) continue;
+            line.x0 = static_cast<int>(box.x0);
+            line.y0 = static_cast<int>(box.y0);
+            line.x1 = static_cast<int>(box.x1);
+            line.y1 = static_cast<int>(box.y1);
+            lines.push_back(std::move(line));
         }
         return lines;
     }
@@ -396,7 +403,7 @@ bool OcrOrt::load(const OcrOrtConfig& cfg, std::string& error)
     return true;
 }
 
-std::vector<std::string> OcrOrt::run(const uint8_t* bgra, int width, int height, std::string& error)
+std::vector<OcrLine> OcrOrt::run(const uint8_t* bgra, int width, int height, std::string& error)
 {
     if (!d->det.session || !d->rec.session || !bgra || width <= 0 || height <= 0) return {};
     try {

@@ -25,6 +25,11 @@ struct OcrOrtConfig {
     int threads = 1;          // intra-op threads: 1 in PC mode, 2 in console mode (K8); spinning off
 };
 
+struct OcrLine {
+    std::string text;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // the line's boxes together, in frame px
+};
+
 class OcrOrt {
 public:
     OcrOrt();
@@ -34,8 +39,9 @@ public:
 
     /// Loads the runtime and both models and runs one warm-up inference of each.
     bool load(const OcrOrtConfig& cfg, std::string& error);
-    /// Text lines of a top-down BGRA frame, top to bottom; boxes on one line are read left to right.
-    std::vector<std::string> run(const uint8_t* bgra, int width, int height, std::string& error);
+    /// Text lines of a top-down BGRA frame, top to bottom, with their boxes; boxes on one line are read
+    /// left to right.
+    std::vector<OcrLine> run(const uint8_t* bgra, int width, int height, std::string& error);
 
     int threads() const;
     std::string describe() const;   // runtime version, the DLL actually loaded, classes

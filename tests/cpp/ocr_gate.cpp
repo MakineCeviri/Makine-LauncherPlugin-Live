@@ -117,7 +117,7 @@ int main(int argc, char** argv)
         const auto lines = ocr.run(px.data(), w, h, error);
         ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         std::string text;
-        for (const auto& l : lines) text += (text.empty() ? "" : "\n") + l;
+        for (const auto& l : lines) text += (text.empty() ? "" : "\n") + l.text;
         ++frames;
         if (escapeField(text) == f[10]) ++same;
         else std::printf("FAIL %s\n  bench:  %s\n  plugin: %s\n", f[0].c_str(), f[10].c_str(), escapeField(text).c_str());

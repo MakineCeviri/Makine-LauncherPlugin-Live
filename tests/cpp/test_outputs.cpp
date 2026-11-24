@@ -311,8 +311,13 @@ void testHotkeys()
     // WM_HOTKEY as Windows sends it for binding 1 (no real key press: the test must not type into the desktop)
     // (both instances have a window; the other one's action does nothing)
     int windows = 0;
-    for (HWND w = nullptr; (w = FindWindowExW(HWND_MESSAGE, w, L"MakineLiveHotkeys", nullptr)) != nullptr; ++windows)
+    for (HWND w = nullptr; (w = FindWindowExW(HWND_MESSAGE, w, L"MakineLiveHotkeys", nullptr)) != nullptr;) {
+        DWORD pid = 0;   // a running launcher's Live has one too: only ours
+        GetWindowThreadProcessId(w, &pid);
+        if (pid != GetCurrentProcessId()) continue;
         PostMessageW(w, WM_HOTKEY, 1, 0);
+        ++windows;
+    }
     check(windows == 2, "message-only windows");
     for (int i = 0; i < 50; ++i) {
         {

@@ -32,6 +32,7 @@
 #include <makine/plugin/sdk.hpp>
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -101,6 +102,7 @@ private:
     void statusLoop();
     void syncPool(bool force);
     void syncHotkeys();                       // never under m_mutex
+    bool growForCutLine(bool screen);          // capture thread
     nlohmann::json countersLocked() const;
     void onHotkey(const std::string& action);
     void addHistoryLocked(const std::string& source, const std::string& text, const std::string& kind,
@@ -108,6 +110,10 @@ private:
     // ocrUs: wall-clock start/end (µs) of the OCR run that read the line, for a sampled span; {0, 0} when unknown.
     void translateJob(int line, std::string text, int seq, std::string slug, std::string gameName,
                       std::pair<uint64_t, uint64_t> ocrUs = {});
+    // One speaker's line: source as read (label included), bare = what is keyed and sent. → {translation, kind}
+    std::pair<std::string, std::string> translatePart(int line, const std::string& source, const std::string& bare,
+                                                      const std::string& slug, const std::string& gameName,
+                                                      std::pair<uint64_t, uint64_t> ocrUs);
     void traceLine(std::pair<uint64_t, uint64_t> ocrUs, uint64_t requestStartUs, uint64_t requestEndUs,
                    const std::string& kind);
     void signedOut(const std::string& message);
@@ -262,6 +268,9 @@ private:
     SubtitleScheduler m_scheduler;
     bool m_active = false, m_overlayShown = false;
     bool m_sampleOnScreen = false;             // capture thread
+    std::vector<text::OcrBox> m_lastBoxes;     // capture thread: the last OCR's lines and their boxes
+    // This session only: how far the region grew past a cut line (left, right, top, bottom; share of its size)
+    std::array<double, 4> m_grow{};
     std::optional<console::Box> m_videoFrame;  // capture thread: the console video rect (overlay.show frame)
     std::optional<Display> m_shown;
     std::map<int, std::string> m_lineSource;   // line id -> the text sent for translation

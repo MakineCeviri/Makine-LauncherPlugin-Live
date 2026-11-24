@@ -170,6 +170,7 @@ unsigned long parentPid()   // the launcher that started this plugin host
 }
 
 constexpr size_t kHistoryLines = 50;
+constexpr double kGrowStep = 0.10, kMaxGrow = 0.30;   // a cut line grows the region 10 % at a time, at most 30 %
 
 bool consentGiven(const json& params)   // the screen sends {granted} or {enabled}
 {
@@ -332,6 +333,7 @@ json Engine::stateLocked() const
                    {"role", m_role}, {"message", m_loginMessage}}},
         {"history", json(m_history)},
         {"boxMove", {{"on", m_boxMovable}, {"supported", m_boxMoveSupported}}},
+        {"regionGrow", {{"left", m_grow[0]}, {"right", m_grow[1]}, {"top", m_grow[2]}, {"bottom", m_grow[3]}}},
         {"mode", m_mode},
         {"sources", m_sources},
         {"selectedSource", selected},
@@ -594,6 +596,27 @@ Result Engine::invoke(std::string_view method, const json& params)
         return okMessage("Yenileniyor…");
     }
     if (method == "sample") return showSample();
+    if (method == "region.keepGrown") {   // the player keeps the region the cut lines grew
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_grow == std::array<double, 4>{}) return okMessage("Bölge büyümedi.");
+            const auto g = m_grow;
+            if (m_mode == "pc" && m_pcRegion) {
+                console::Box& b = *m_pcRegion;
+                const int dx = static_cast<int>(b.w * g[0]), dy = static_cast<int>(b.h * g[2]);
+                b = {b.x - dx, b.y - dy, b.w + dx + static_cast<int>(b.w * g[1]), b.h + dy + static_cast<int>(b.h * g[3])};
+            } else if (m_mode == "console") {
+                console::Frac& f = m_consoleRegion;
+                const double x0 = std::max(0.0, f.x - f.w * g[0]), y0 = std::max(0.0, f.y - f.h * g[2]);
+                const double x1 = std::min(1.0, f.x + f.w * (1 + g[1])), y1 = std::min(1.0, f.y + f.h * (1 + g[3]));
+                f = {x0, y0, x1 - x0, y1 - y0};
+            }
+            m_grow = {};
+            saveSettings();
+        }
+        publish();
+        return okMessage("Büyüyen bölge kaydedildi.");
+    }
     if (method == "box.move") {
         bool on = false;
         {
@@ -853,6 +876,34 @@ Result Engine::showSample()
     }
     m_captureCv.notify_all();
     return okMessage("Örnek gösteriliyor.");
+}
+
+// A line the region cut (its edge word half outside, a wrapped subtitle's other line outside): it is not
+// sent; the region grows 10 % that way, for this session only, and the next frame is read again
+// (spec/clipped_edge_vectors.json). Each side grows at most three times.
+bool Engine::growForCutLine(bool screen)
+{
+    std::vector<text::OcrBox> boxes;
+    for (const text::OcrBox& b : m_lastBoxes)   // our own subtitle read back off the screen is never a cut line
+        if (!screen || !withoutOwnOverlay(b.text).empty()) boxes.push_back(b);
+    const text::EdgeVerdict v = m_garbage.edgeCheck(boxes, m_frame.width, m_frame.height);
+    if (v.send) return false;
+    static const char* const kSides[4] = {"left", "right", "top", "bottom"};
+    std::string grew;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const std::string& side : v.widen)
+            for (int s = 0; s < 4; ++s)
+                if (side == kSides[s] && m_grow[s] < kMaxGrow - 1e-9) {
+                    m_grow[s] += kGrowStep;
+                    grew += (grew.empty() ? "" : ", ") + side;
+                }
+    }
+    if (grew.empty()) return false;   // already grown as far as it goes: read what is there
+    logLine(MAKINE_LOG_INFO, "Bölge satırı kesiyordu; bu oturumda büyüdü: " + grew);
+    m_lastHash = 0;
+    publish();
+    return true;
 }
 
 void Engine::addHistoryLocked(const std::string& source, const std::string& text, const std::string& kind,
@@ -1300,6 +1351,7 @@ Result Engine::selectSource(const json& params)
         std::lock_guard lock(m_mutex);
         m_sourcePid = chosen.value("pid", 0ul);
         m_sourceKey = chosen.value("key", std::string());
+        m_grow = {};
         if (m_sourceKey == "window") {   // a window the user picked: its exe becomes a custom source
             const std::string exe = text::toUtf8(text::lower(text::fromUtf8(chosen.value("exe", std::string()))));
             if (std::find(m_customExes.begin(), m_customExes.end(), exe) == m_customExes.end())
@@ -1351,6 +1403,7 @@ Result Engine::pickRegion()
         {
             std::lock_guard lock(m_mutex);
             m_picking = false;
+            if (box) m_grow = {};
             if (box && mode == "pc") m_pcRegion = box;
             if (box && video) {
                 const console::Frac f = console::screenToRegion(*video, *box);
@@ -1446,10 +1499,6 @@ void Engine::runNet()
 void Engine::translateJob(int line, std::string textUtf8, int seq, std::string slug, std::string gameName,
                           std::pair<uint64_t, uint64_t> ocrUs)
 {
-    const auto finish = [&](std::string translated, std::string kind) {
-        std::lock_guard lock(m_mutex);
-        m_results.push_back({line, std::move(translated), std::move(kind)});
-    };
     {
         std::lock_guard lock(m_mutex);
         if (m_dispatchSeq[line] != seq) return;   // a newer reading of this line is queued
@@ -1459,14 +1508,39 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
             return;
         }
     }
-    const std::u32string key = text::compactPoolKey(text::fromUtf8(textUtf8));
+    // Two speakers read as one block are two lines ("…you! Cop: I want…"); each is keyed and translated
+    // without its label (one key whoever says it) and shown with the label in front, untranslated
+    std::vector<std::string> parts = m_garbage.speakerLines(textUtf8);
+    if (parts.empty()) parts.push_back(textUtf8);
+    const auto rankOf = [](const std::string& k) { return k == "verified" ? 2 : k == "pending" ? 1 : 0; };
+    std::string shown, kind;
+    for (const std::string& part : parts) {
+        const text::ReadLine rl = m_garbage.readLine(part, kSourceLang);
+        const auto [translated, partKind] = translatePart(line, part, rl.line, slug, gameName, ocrUs);
+        if (translated.empty()) continue;
+        shown += (shown.empty() ? "" : "\n") + rl.prefix + translated;
+        if (kind.empty() || rankOf(partKind) < rankOf(kind)) kind = partKind;
+    }
+    {
+        std::lock_guard lock(m_mutex);
+        m_results.push_back({line, shown, kind});
+    }
+    m_netCv.notify_all();   // a job waiting for the same line
+    publish();
+}
+
+std::pair<std::string, std::string> Engine::translatePart(int line, const std::string& textUtf8, const std::string& bare,
+                                                          const std::string& slug, const std::string& gameName,
+                                                          std::pair<uint64_t, uint64_t> ocrUs)
+{
+    const std::u32string key = text::compactPoolKey(text::fromUtf8(bare));
     std::string poolSlug;
     {
         std::lock_guard lock(m_mutex);
         poolSlug = m_poolSlug;
     }
     if (!slug.empty() && slug == poolSlug) {
-        if (const auto hit = m_pool.lookup(slug, textUtf8)) {
+        if (const auto hit = m_pool.lookup(slug, bare)) {
             {
                 std::lock_guard lock(m_mutex);
                 ++m_poolHits;
@@ -1476,23 +1550,17 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
                 m_lastLine = {{"source", textUtf8}, {"text", hit->translation}, {"kind", "verified"}, {"origin", "local"}};
                 addHistoryLocked(textUtf8, hit->translation, "verified", "local");
             }
-            finish(hit->translation, "verified");
-            return publish();
+            return {hit->translation, "verified"};
         }
     }
     bool owner = false;
     {
         std::unique_lock lock(m_mutex);
-        if (m_skipKeys.count(key)) {
-            m_results.push_back({line, {}, {}});
-            return;
-        }
+        if (m_skipKeys.count(key)) return {};
         for (int attempt = 0; attempt < 2 && !owner; ++attempt) {
             const auto c = m_cache.find(key);
-            if (c != m_cache.end() && (c->second.kind == "verified" || now() - c->second.at <= kCacheTtlS)) {
-                m_results.push_back({line, c->second.text, c->second.kind});
-                return;
-            }
+            if (c != m_cache.end() && (c->second.kind == "verified" || now() - c->second.at <= kCacheTtlS))
+                return {c->second.text, c->second.kind};
             if (!m_inflight.count(key)) {
                 m_inflight.insert(key);
                 owner = true;
@@ -1500,10 +1568,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
                 m_netCv.wait_for(lock, std::chrono::seconds(12), [&] { return m_quit || !m_inflight.count(key); });
             }
         }
-        if (!owner) {
-            m_results.push_back({line, {}, {}});
-            return;
-        }
+        if (!owner) return {};
     }
     struct InflightGuard {   // whatever happens below, the key leaves m_inflight and waiters wake
         Engine* e;
@@ -1524,7 +1589,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
     const uint64_t requestStartUs = wallUs();
     for (int attempt = 1; attempt <= 2; ++attempt) {
         const auto sent = Clock::now();
-        res = m_server.translate(slug, gameName, textUtf8, kSourceLang, kTargetLang);
+        res = m_server.translate(slug, gameName, bare, kSourceLang, kTargetLang);   // the line without its label
         requestMs = std::chrono::duration<double, std::milli>(Clock::now() - sent).count();
         bool retry = false;
         if (res.ok()) break;
@@ -1539,7 +1604,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
         } else if (res.status == 422) {
             std::lock_guard lock(m_mutex);
             m_skipKeys.insert(key);
-            logLine(MAKINE_LOG_DEBUG, "Sunucu çöp saydı (" + str(res.data, "reason") + "): " + textUtf8);
+            logLine(MAKINE_LOG_DEBUG, "Sunucu çöp saydı (" + str(res.data, "reason") + "): " + bare);
             break;
         } else if (res.status == 429) {
             notice = "Günlük çeviri sınırı doldu — havuzdaki çeviriler gelmeye devam ediyor";
@@ -1596,11 +1661,9 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
                           {"origin", str(res.data, "origin", "deepl")}};
             addHistoryLocked(textUtf8, translated, kind, str(res.data, "origin", "deepl"));
         }
-        m_results.push_back({line, translated, kind});
     }
-    m_netCv.notify_all();   // a job waiting for the same line
     if (!translated.empty()) traceLine(ocrUs, requestStartUs, wallUs(), kind);
-    publish();
+    return {translated, kind};
 }
 
 // A sampled line as a Sentry transaction: ocr → translate.pool|api. Tokens only, no text of the line.
@@ -1717,9 +1780,11 @@ bool Engine::readRegion(void* hwnd, const CaptureRegion& region, std::string& te
         m_ocrMs.push_back(ocrMs);
         if (m_ocrMs.size() > 50) m_ocrMs.pop_front();
     }
+    m_lastBoxes.clear();
     for (const auto& line : lines) {
         if (!text.empty()) text += "\n";
-        text += line;
+        text += line.text;
+        m_lastBoxes.push_back({m_spacing.fix(dropForeignScriptTokens(line.text)), line.x0, line.y0, line.x1, line.y1});
     }
     text = dropForeignScriptTokens(text);   // Latin-script source: CJK tokens are model noise
     text = m_spacing.fix(text);             // "Iwas goingto" → "I was going to"
@@ -1733,6 +1798,7 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
 {
     std::string mode, key, gameName;
     bool gameUnknown = false;
+    std::array<double, 4> grow{};
     unsigned long pid = 0;
     std::vector<std::string> exes;
     std::optional<console::Box> pc;
@@ -1747,6 +1813,7 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         frac = m_consoleRegion;
         gameName = m_gameName;
         gameUnknown = m_gameUnknown;
+        grow = m_grow;
     }
     hwnd = nullptr;
     m_videoFrame.reset();
@@ -1760,6 +1827,12 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         if (code) *code = console::blockCode(m_source ? &*m_source : nullptr);
         if (!reason.empty()) return reason;
         hwnd = m_source->hwnd;
+        if (grow != std::array<double, 4>{}) {   // grown past a cut line, inside the video
+            const double w = frac.w, h = frac.h;
+            const double x0 = std::max(0.0, frac.x - w * grow[0]), y0 = std::max(0.0, frac.y - h * grow[2]);
+            const double x1 = std::min(1.0, frac.x + w * (1 + grow[1])), y1 = std::min(1.0, frac.y + h * (1 + grow[3]));
+            frac = {x0, y0, x1 - x0, y1 - y0};
+        }
         const console::Box b = console::clientRegion(hwnd, frac);
         region = {b.x, b.y, b.w, b.h};
         const console::Rect video = console::videoRect(console::clientRect(hwnd));
@@ -1818,8 +1891,18 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
             return "Oyun önde değil · oyuna dönünce okuma sürer.";
         }
     }
-    region = {pc->x, pc->y, pc->w, pc->h};
-    overlay = *pc;
+    console::Box box = *pc;
+    if (grow != std::array<double, 4>{}) {   // grown past a cut line, on the screen
+        const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        const int vr = vx + GetSystemMetrics(SM_CXVIRTUALSCREEN), vb = vy + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        const int x0 = std::max(vx, pc->x - static_cast<int>(pc->w * grow[0]));
+        const int y0 = std::max(vy, pc->y - static_cast<int>(pc->h * grow[2]));
+        const int x1 = std::min(vr, pc->x + pc->w + static_cast<int>(pc->w * grow[1]));
+        const int y1 = std::min(vb, pc->y + pc->h + static_cast<int>(pc->h * grow[3]));
+        box = {x0, y0, x1 - x0, y1 - y0};
+    }
+    region = {box.x, box.y, box.w, box.h};
+    overlay = box;
     return {};
 }
 
@@ -1838,9 +1921,14 @@ void Engine::handleEvents(const std::vector<LineEvent>& events, const std::u32st
             }
             // K12: an approved line found by its exact key on the very first reading shows at once;
             // the dispatch after the two-read rule still runs (and counts the hit) as before
-            if (!slug.empty() && !reading.empty())
-                if (const auto hit = m_pool.lookupExact(slug, text::toUtf8(reading)))
-                    m_scheduler.translationReady(e.id, text::fromUtf8(hit->translation), "verified", e.t);
+            if (!slug.empty() && !reading.empty()) {
+                const std::string readingUtf8 = text::toUtf8(reading);
+                if (m_garbage.speakerLines(readingUtf8).size() <= 1) {   // one speaker: keyed without the label
+                    const text::ReadLine rl = m_garbage.readLine(readingUtf8, kSourceLang);
+                    if (const auto hit = m_pool.lookupExact(slug, rl.line))
+                        m_scheduler.translationReady(e.id, text::fromUtf8(rl.prefix + hit->translation), "verified", e.t);
+                }
+            }
             // K13: the line settles in ~200 ms; open the connection now if it went idle
             if (warm && m_server.idleSeconds() > 15) post([this] { m_server.ping(); });
         } else if (e.kind == LineEvent::Gone) {
@@ -1875,13 +1963,18 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
         style = m_style;
     }
     const std::string text = text::toUtf8(d.text);
-    json line = {{"text", text}};
+    json lines = json::array();   // one entry per speaker ("Jason: …", "Lucia: …")
+    for (size_t b = 0; b <= text.size();) {
+        const size_t e = std::min(text.find('\n', b), text.size());
+        if (e > b) lines.push_back({{"text", text.substr(b, e - b)}});
+        b = e + 1;
+    }
     const bool showSource = style.contains("showSource") && style["showSource"].is_boolean() && style["showSource"].get<bool>();
     // The source is not added to m_shownKeys: it is the game's own line, which OCR also reads under the
     // overlay (the launcher excludes the overlay from capture); filtering it would end the line early
     // and never read a repeat of it. Read off our overlay instead, it is the same line, so no new line.
-    if (showSource && m_lineSource.count(d.id)) line["sourceText"] = m_lineSource[d.id];
-    json payload = {{"text", text}, {"lines", json::array({line})}, {"x", rect.x}, {"y", rect.y},
+    if (showSource && m_lineSource.count(d.id) && !lines.empty()) lines.back()["sourceText"] = m_lineSource[d.id];
+    json payload = {{"text", text}, {"lines", lines}, {"x", rect.x}, {"y", rect.y},
                     {"width", rect.w}, {"height", rect.h}, {"kind", d.kind}};
     if (!style.empty()) payload["style"] = style;
     // Console on this screen: the 16:9 video inside the stream window (physical px), so Alt / Üst sit in the picture
@@ -2040,7 +2133,7 @@ void Engine::runCapture()
                     std::string code;
                     const std::string reason = resolveTarget(hwnd, region, overlay, true, &code);
                     std::string filtered;
-                    bool read = false;
+                    bool read = false, regrow = false;
                     if (!reason.empty()) {
                         setStatus(reason);
                         wait = kBlockedPollS;
@@ -2070,6 +2163,7 @@ void Engine::runCapture()
                                 m_lastFiltered = m_garbage.filterOcr(hwnd ? raw : withoutOwnOverlay(raw), kSourceLang);
                             }
                             filtered = m_lastFiltered;
+                            if (!filtered.empty() && growForCutLine(hwnd == nullptr)) regrow = true;
                             setStatus(mode == "console" && m_source ? "Okunuyor · " + m_source->app.label
                                                                     : std::string("Okunuyor"));
                         } else {
@@ -2087,7 +2181,8 @@ void Engine::runCapture()
                     if (codeChanged) publish();
                     const double t = now();
                     const std::u32string reading = text::fromUtf8(filtered);
-                    handleEvents(read ? m_tracker.update(reading, t) : m_tracker.reset(), reading);
+                    if (regrow) wait = 0;   // read the grown region at once; the cut reading is not a line
+                    else handleEvents(read ? m_tracker.update(reading, t) : m_tracker.reset(), reading);
 
                     std::deque<Translated> results;
                     {
