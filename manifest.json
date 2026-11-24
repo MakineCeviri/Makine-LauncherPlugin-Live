@@ -13,7 +13,8 @@
   "capabilities": [
     { "id": "screen-capture", "reason": "Seçtiğin altyazı bölgesini (ya da konsol görüntüsünün penceresini) okur. Görüntü bilgisayarından çıkmaz; yalnız içinden okunan metin kullanılır." },
     { "id": "network", "reason": "Okunan altyazı satırını Makine Çeviri hesabınla makineceviri.org'daki ortak çeviri havuzuna gönderir ve Türkçesini alır." },
-    { "id": "overlay", "reason": "Çeviriyi oyunun üstünde altyazı olarak gösterir ve okunacak bölgeyi seçtirir." }
+    { "id": "overlay", "reason": "Çeviriyi oyunun üstünde altyazı olarak gösterir ve okunacak bölgeyi seçtirir." },
+    { "id": "game-files-read", "reason": "Yalnızca kütüphanendeki oyunların adlarını okur; her oyunun Türkçe çeviri havuzunu listelemek için. Oyun dosyalarını açmaz, değiştirmez." }
   ],
   "contributes": {
     "screen": { "title": "Makine Live", "icon": "messageSquareText" },

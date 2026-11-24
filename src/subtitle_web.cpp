@@ -251,7 +251,7 @@ void SubtitleWeb::stream(uintptr_t sock, uint64_t generation)
             seen = m_version;
             data = sse(snapshotLocked());
         } else if (std::chrono::steady_clock::now() - last >= kHeartbeat) {
-            data = ": ping\n\n";
+            data = "event: ping\ndata: 1\n\n";   // a named event: the page sees it (an SSE comment it would not)
         }
     }
     --m_clients;

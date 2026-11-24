@@ -25,7 +25,10 @@ py tests/test_normalization.py
 | `test_app_update.py` | Kendi kendini güncelleme: .old'a çevirme, yerine koyma, yazılamazsa geri alma (komut dosyası yok) | — |
 | `test_webos_service.py` | LG servisi gerçek Node ile (sahte `webos-service`, `webos_mock/`): keşif, eşleşme, kod kilidi | Node.js |
 | `test_webos_install.py` | LG geliştirici modu kurulumu, sahte TV'ye: anahtar, parola, SSH, kurulum yanıtları | paramiko |
+| `test_webos_install_cpp.py` | Aynı sahte TV'ye eklentinin C++ kurulumu (`src/webos_install.cpp`, libssh2): AES/3DES PEM, ssh-rsa'lı eski ve rsa-sha2'li yeni SSH, SFTP'li/SFTP'siz yükleme, sessiz akış, ret | paramiko + `live_webos_test.exe` (`ctest -R webos`) |
 | `text_fix_test.cpp` | C++ boşluk düzeltici (`SpacingFixer`) | `ctest --test-dir build` |
+| `cpp/test_logic.cpp` `pool_list` | oyun havuzları listesi: durum (missing / outdated / current / empty / error), sıra, 200 sınırı; `local_pool`: havuz özeti (`games.json`) | `ctest --test-dir build -R pool` |
+| `pools_e2e.py` | Eklenti gerçek `makine-plugin-host.exe`'de, sahte sunucuya: `pools` (kütüphane, yoklama, indirme, yeni onayların kendiliğinden inmesi), bakımda durup bitince yeniden başlama, `log_sent` reddedilince günlüğün yüklenmesi | `build/package` + host (`MAKINE_PLUGIN_HOST`) |
 | `cpp/test_fit.cpp` | uzun çeviri parçaları, altyazı bulucunun kanıtı, geçici büyüme | `ctest --test-dir build -R "fit|finder|temp_grow"` |
 | `cpp/finder_gate.cpp` | altyazı bulucu, tam ekran sahnelerde (kesinlik, duyarlılık, kilit süresi, örnek maliyeti) | `python tools/make_scene_frames.py --bench ../Makine-LauncherPlugin-Live-ocrbench` → `ctest -R finder_gate` |
 

@@ -45,6 +45,8 @@ constexpr double kMaskMaxSkipS = 2.5;      // K3: at most this long on the mask'
 constexpr double kStaleJobS = 2.0;        // a line whose source left this long ago is not translated any more
 constexpr double kCacheTtlS = 900;        // unapproved translations are reused this long in a session
 constexpr double kPoolSyncS = 180;        // local pool vs server while reading
+constexpr int64_t kPoolsAutoS = 6 * 3600; // game pools: an automatic check at most this often (settings poolsCheckedAt)
+constexpr double kPoolsPublishS = 0.3;    // head-sync results reach the screen at most this often
 constexpr double kMaintenancePollS = 30;   // while maintenance is on: back as soon as it ends
 constexpr double kStatusPollS = 300;      // maintenance / version check
 constexpr double kOfflineRetryS = 30;
@@ -290,6 +292,7 @@ Engine::Engine(makine::plugin::Host host, EngineInit init)
     m_consoleConsent = m_settings.get("consoleConsent") == "true";
     m_everStarted = m_settings.get("everStarted") == "true";
     m_lanOnce = m_settings.get("lanOnce") == "true";
+    if (const int64_t at = std::atoll(m_settings.get("poolsCheckedAt").c_str()); at > 0) m_poolsUpdatedAt = at;
     m_tvSaved = json::parse(m_settings.get("tv", "null"), nullptr, false);
     if (m_tvSaved.is_discarded()) m_tvSaved = nullptr;
     m_tvCode = m_settings.get("tvCode");
@@ -308,7 +311,11 @@ void Engine::launch()
         if (const auto self = weak.lock()) self->onHotkey(action);
     });
     if (m_loginState == "checking") post([this] { validateSession(); });
-    post([this] { statusLoop(); });
+    post([this] { statusLoop(0); });
+    post([this] {   // the pool list: the launcher's library and the pools on this PC, before any server answer
+        loadPoolCandidates();
+        publish();
+    });
     post([this] {   // the game the launcher already sees running
         const Result r = m_host.call("games.running");
         const json g = json::parse(r.json, nullptr, false);
@@ -381,6 +388,9 @@ json Engine::stateLocked() const
                                  {"height", m_consoleRegion.h}}}}},
         {"picking", m_picking},
         {"running", m_running},
+        // Work the launcher must not cut by restarting the host for an update (pluginupdate.h canReplaceNow):
+        // a TV install, a pool download, a region pick
+        {"busy", m_picking || m_poolDownloadRunning || m_tvInstall.value("state", std::string()) == "running"},
         {"status", m_status},
         {"lastLine", m_lastLine},
         {"counters", countersLocked()},
@@ -396,6 +406,7 @@ json Engine::stateLocked() const
     };
     state["reason"] = reasonLocked();
     state["autoRegion"] = autoRegionLocked();
+    state["pools"] = poolsStateLocked();
     {
         const json registered = m_hotkeys ? m_hotkeys->state() : json::object();
         json keys = json::object();
@@ -422,6 +433,101 @@ void Engine::publish()
     m_host.emitEvent("ui.state", payload);
     updateDiscord();
     updateTvNote();
+    bool queue = false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_promptSupported && !m_promptQueued && wantedPromptLocked() != m_prompt) queue = m_promptQueued = true;
+    }
+    if (queue) post([this] { syncPrompt(); });   // a host call: never on the capture thread
+}
+
+std::string Engine::wantedPromptLocked() const
+{
+    if (!m_promptSupported || m_quit) return {};
+    if (m_boxMovable && !m_boxPromptDismissed) return "lockBox";   // the box takes the game's clicks while it moves
+    // A band the finder proposed and nobody accepted yet, while reading on this screen
+    if (m_running && (m_mode != "console" || m_output == "pc") && m_finder.state() == finder::State::Found
+        && !m_regionPromptDismissed)
+        return "lockRegion";
+    return {};
+}
+
+std::string Engine::lockKeyLocked() const
+{
+    for (const char* key : {"F7", "F6", "F11"}) {
+        bool used = false;
+        for (const auto& [action, k] : m_hotkeyKeys) used = used || k == key;
+        if (!used) return key;
+    }
+    return {};
+}
+
+void Engine::syncPrompt()
+{
+    std::string want, shown, lockKey, moveKey;
+    json nearRect;
+    {
+        std::lock_guard lock(m_mutex);
+        m_promptQueued = false;
+        want = wantedPromptLocked();
+        shown = m_prompt;
+        lockKey = lockKeyLocked();
+        moveKey = m_hotkeyKeys.count("move") && m_hotkeyKeys.at("move") != "off" ? m_hotkeyKeys.at("move") : std::string();
+        if (m_bandArea)
+            nearRect = {{"x", m_bandArea->l}, {"y", m_bandArea->t}, {"width", m_bandArea->r - m_bandArea->l},
+                    {"height", m_bandArea->b - m_bandArea->t}};
+    }
+    if (want == shown) return;
+    Result r = Result::ok();
+    if (want.empty()) {
+        r = m_host.call("overlay.promptHide", dump({{"id", shown}}));
+    } else {
+        json p = want == "lockBox"
+            ? json{{"id", want}, {"title", "Altyazı kutusu taşınabilir"},
+                   {"text", "Kutu şu an fareyle sürüklenebiliyor ve üstündeki tıklamaları oyuna geçirmiyor. Yerine kilitlensin mi?"},
+                   {"actions", json::array({{{"id", "lock"}, {"label", "Kilitle"}, {"key", moveKey}}})}}
+            : json{{"id", want}, {"title", "Altyazı alanı bulundu"},
+                   {"text", "Makine Live altyazıyı bu alanda okuyor. Bu oyun için kilitlensin mi? Kilitlenen alan saklanır, "
+                            "bir dahaki sefere yeniden aranmaz."},
+                   {"actions", json::array({{{"id", "lock"}, {"label", "Kilitle"}, {"key", lockKey}},
+                                            {{"id", "later"}, {"label", "Şimdi değil"}}})}};
+        if (!nearRect.is_null()) p["near"] = nearRect;
+        r = m_host.call("overlay.prompt", dump(p));
+    }
+    if (r.status == MAKINE_E_NOT_FOUND || r.status == MAKINE_E_UNSUPPORTED) {   // a launcher without overlay.prompt
+        std::lock_guard lock(m_mutex);
+        m_promptSupported = false;
+        m_prompt.clear();
+        return;
+    }
+    if (!r.succeeded() && !want.empty()) return;   // busy (another plugin's question): the next publish tries again
+    {
+        std::lock_guard lock(m_mutex);
+        m_prompt = want;
+    }
+    syncHotkeys();   // the lock key is taken from the game only while the question is up
+    publish();       // the wish may have changed while the launcher answered
+}
+
+void Engine::answerPrompt(const std::string& id, const std::string& action)
+{
+    {
+        std::lock_guard lock(m_mutex);
+        if (id != m_prompt) return;
+        m_prompt.clear();   // the launcher closed it already (a hotkey answer closes it below)
+        if (action != "lock") {
+            if (id == "lockRegion") m_regionPromptDismissed = true;
+            if (id == "lockBox") m_boxPromptDismissed = true;
+        }
+    }
+    if (action == "lock") {
+        const Result r = id == "lockBox" ? setBoxMovable(false) : invoke("autoRegion.accept", json::object());
+        if (r.succeeded()) logLine(MAKINE_LOG_INFO, id == "lockBox" ? "Altyazı kutusu kilitlendi (oyun içinden)."
+                                                                     : "Altyazı alanı kilitlendi (oyun içinden).");
+    }
+    m_host.call("overlay.promptHide", dump({{"id", id}}));
+    syncHotkeys();
+    publish();
 }
 
 void Engine::setStatus(const std::string& text)
@@ -484,6 +590,7 @@ void Engine::saveSettings()   // under m_mutex
     m_settings.set("consoleConsent", m_consoleConsent ? "true" : "false");
     m_settings.set("everStarted", m_everStarted ? "true" : "false");
     m_settings.set("lanOnce", m_lanOnce ? "true" : "false");
+    m_settings.set("poolsCheckedAt", m_poolsUpdatedAt ? std::to_string(*m_poolsUpdatedAt) : std::string());
     m_settings.set("consoleRegionManual", m_consoleManual ? "true" : "false");
     m_settings.set("tv", dump(m_tvSaved));
     m_settings.set("tvCode", m_tvCode);
@@ -812,6 +919,7 @@ Result Engine::invoke(std::string_view method, const json& params)
         std::lock_guard lock(m_mutex);
         return Result::ok(dump({{"style", m_style}}));
     }
+    if (auto r = invokePools(method, params)) return *r;
     if (auto r = invokeOutputs(method, params)) return *r;
     return Result::notFound(method);
 }
@@ -847,6 +955,9 @@ void Engine::onEvent(std::string_view event, const json& payload)
         publish();
         post([this] { syncPool(true); });
         maybeAutoStart();
+        maybeAutoRefreshPools();
+    } else if (event == "overlay.promptAnswered") {
+        post([this, id = str(payload, "id"), action = str(payload, "action")] { answerPrompt(id, action); });
     } else if (event == "overlay.moved") {
         // The launcher's word on where the player left the box ({x, y, width, height}, physical px): kept as the
         // box centre in fractions of its monitor, like overlay.setMovable's answer
@@ -1048,6 +1159,8 @@ void Engine::syncHotkeys()
         m_hotkeysArmed = m_loginState == "signedIn" && (m_mode == "console" || !m_gameName.empty()) && !m_quit;
         if (m_hotkeysArmed)
             for (const auto& [action, key] : m_hotkeyKeys) bindings.push_back({action, key});
+        if (m_hotkeysArmed && m_prompt == "lockRegion")
+            if (const std::string key = lockKeyLocked(); !key.empty()) bindings.push_back({"lock", key});
     }
     m_hotkeys->configure(bindings);
 }
@@ -1065,6 +1178,9 @@ void Engine::onHotkey(const std::string& action)
             r = invoke(running ? "stop" : "start", json::object());
         } else if (action == "region") {
             r = pickRegion();
+        } else if (action == "lock") {
+            answerPrompt("lockRegion", "lock");
+            return;
         } else if (action == "move") {
             bool on = false;
             {
@@ -1101,6 +1217,7 @@ Result Engine::setBoxMovable(bool on)
         std::lock_guard lock(m_mutex);
         m_boxMovable = on;
         m_boxMoveSupported = true;
+        if (on) m_boxPromptDismissed = false;   // moving again: offer the lock again
         const double x = num(where, "x", -1), y = num(where, "y", -1);
         if (!on && x >= 0 && x <= 1 && y >= 0 && y <= 1) {
             m_style["boxX"] = x;
@@ -1270,6 +1387,7 @@ void Engine::signedIn(const json& profile)
     }
     post([this, gen] { beatLoop(gen); }, 2);   // usage report 2 s after sign-in
     post([this] { refreshStatus(); });          // announcements need the session
+    maybeAutoRefreshPools();
     if (start) maybeAutoStart();
 }
 
@@ -1287,6 +1405,11 @@ void Engine::signedOut(const std::string& message)
         m_role.clear();
         ++m_beatGen;
         m_running = false;
+        m_resumeAfterMaintenance = false;
+        ++m_poolsGen;   // a pool refresh or download in progress stops
+        m_poolsRefreshing = false;
+        m_poolHeadQueue.clear();
+        m_poolDownloadQueue.clear();
         saveSettings();
     }
     m_captureCv.notify_all();
@@ -1324,23 +1447,46 @@ void Engine::refreshStatus()
         const json m = r.data.value("maintenance", json::object());
         const json upd = r.data.value("update", json::object());
         const bool maintenance = flag(m, "on") && !flag(m, "bypass");
-        const bool mandatory = flag(upd, "mandatory") && !str(upd, "latest").empty();
+        // update.latest is the release object (null when there is none); app.py: mandatory and latest
+        const json latest = upd.is_object() ? upd.value("latest", json()) : json();
+        const bool mandatory = flag(upd, "mandatory")
+                               && (latest.is_object() || (latest.is_string() && !latest.get<std::string>().empty()));
+        bool resume = false;
+        int gen = 0;
         {
             std::lock_guard lock(m_mutex);
+            if (maintenance && !m_maintenance) gen = ++m_statusGen;   // from now on every 30 s: back as soon as it ends
             m_maintenance = maintenance;
             m_blocked = maintenance || mandatory;
             m_serverMessage = maintenance ? str(m, "message", "Makine Live şu an bakımda.")
                               : mandatory ? "Makine Live'ın bu sürümü artık desteklenmiyor. Makine'yi güncelleyin."
                                           : "";
-            if (m_blocked) m_running = false;
+            if (m_blocked) {
+                // reason "maintenance" promises that reading goes on by itself once it ends
+                if (m_running && maintenance && !mandatory) m_resumeAfterMaintenance = true;
+                if (mandatory) m_resumeAfterMaintenance = false;
+                m_running = false;
+            } else {
+                resume = std::exchange(m_resumeAfterMaintenance, false);
+            }
         }
         m_captureCv.notify_all();
         publish();
+        if (gen) post([this, gen] { statusLoop(gen); }, kMaintenancePollS);
+        if (resume) {
+            logLine(MAKINE_LOG_INFO, "Bakım bitti: okuma yeniden başlıyor");
+            const Result s = startReading();
+            if (!s.succeeded()) logLine(MAKINE_LOG_INFO, "Bakımdan sonra başlatılamadı: " + s.json);
+        }
     }
 }
 
-void Engine::statusLoop()
+void Engine::statusLoop(int gen)
 {
+    {
+        std::lock_guard lock(m_mutex);
+        if (gen != m_statusGen) return;   // maintenance started another chain
+    }
     try {
         refreshStatus();
     } catch (const std::exception& e) {
@@ -1349,9 +1495,11 @@ void Engine::statusLoop()
     bool maintenance = false;
     {
         std::lock_guard lock(m_mutex);
+        if (gen != m_statusGen) return;
         maintenance = m_maintenance;
     }
-    post([this] { statusLoop(); }, maintenance ? kMaintenancePollS : kStatusPollS);
+    maybeSyncPool();   // reading with no new line for a while: the pool is still kept fresh
+    post([this, gen] { statusLoop(gen); }, maintenance ? kMaintenancePollS : kStatusPollS);
 }
 
 void Engine::syncPool(bool force)
@@ -1359,6 +1507,7 @@ void Engine::syncPool(bool force)
     std::string slug, name;
     {
         std::lock_guard lock(m_mutex);
+        m_poolSyncPosted = false;
         slug = currentSlug();
         name = m_mode == "console" ? std::string(console::kGameName) : m_gameName;
         if (slug.empty() || m_loginState != "signedIn") return;
@@ -1368,6 +1517,25 @@ void Engine::syncPool(bool force)
     }
     // The game comes from the launcher's library (or is GTA VI in console mode), not from a guess:
     // its approved lines are downloaded without asking, unlike the harness.
+    std::string error;
+    if (fetchPool(slug, name, error)) publish();   // the pool list's numbers
+}
+
+void Engine::maybeSyncPool()
+{
+    bool go = false;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_running && !m_poolSyncPosted && m_loginState == "signedIn" && now() - m_poolSyncedAt >= kPoolSyncS)
+            go = m_poolSyncPosted = true;
+    }
+    if (go) post([this] { syncPool(false); });
+}
+
+// ── game pools (ui.state pools) ─────────────────────────────────────────────
+
+bool Engine::fetchPool(const std::string& slug, const std::string& name, std::string& error)
+{
     if (!m_pool.isConfirmed(slug)) m_pool.confirm(slug, name);
     const auto hits = m_pool.takeHits(slug);
     if (!hits.empty()) {
@@ -1376,12 +1544,318 @@ void Engine::syncPool(bool force)
         if (!m_server.poolHits(slug, h).ok()) m_pool.returnHits(slug, hits);
     }
     const ApiResult r = m_server.poolSync(slug, m_pool.rev(slug), false);
-    if (r.status == 401 || r.code() == "banned") return handleAuthFailure(r);
-    if (!r.ok()) return;
+    if (r.status == 401 || r.code() == "banned") {
+        handleAuthFailure(r);
+        error = r.error.empty() ? "Oturum kapandı; yeniden giriş yap." : r.error;
+        return false;
+    }
+    if (!r.ok()) {
+        error = r.error.empty() ? "Havuz indirilemedi." : r.error;
+        return false;
+    }
     const SyncStats st = m_pool.applySync(slug, r.data);
     if (!st.unchanged)
         logLine(MAKINE_LOG_INFO, "Yerel havuz " + slug + ": +" + std::to_string(st.added) + " ~" + std::to_string(st.changed) + " −"
                     + std::to_string(st.removed) + " (" + std::to_string(st.total) + " onaylı satır)");
+    reloadPoolSummaries();
+    std::lock_guard lock(m_mutex);
+    PoolRow& row = m_poolRows[slug];
+    if (row.name.empty()) row.name = !name.empty() ? name : str(r.data, "name");
+    const auto count = r.data.find("count");
+    row.remote = count != r.data.end() && count->is_number() ? count->get<int>() : st.total;
+    row.remoteRev = str(r.data, "rev");
+    row.error.clear();
+    return true;
+}
+
+void Engine::reloadPoolSummaries()
+{
+    std::map<std::string, PoolSummary> local;
+    for (PoolSummary& s : m_pool.summaries()) {
+        const std::string slug = s.slug;
+        local[slug] = std::move(s);
+    }
+    std::lock_guard lock(m_mutex);
+    m_poolLocal = std::move(local);
+}
+
+// The games a pool is listed for: the launcher's library (games.list, capability game-files-read), the pools already
+// on this PC and GTA VI. Named as game.started names them, so the slug is the one reading would use.
+void Engine::loadPoolCandidates()
+{
+    std::vector<std::pair<std::string, std::string>> library;   // slug, name
+    const Result r = m_host.call("games.list");
+    if (r.succeeded()) {
+        const json list = json::parse(r.json, nullptr, false);
+        if (list.is_array())
+            for (const json& g : list) {
+                const std::string name = gameDisplayName(str(g, "name"));
+                if (!pools::hasLetters(name)) continue;
+                if (std::string slug = text::gameSlug(name); !slug.empty()) library.emplace_back(std::move(slug), name);
+            }
+    } else if (r.status != MAKINE_E_DENIED && r.status != MAKINE_E_NOT_FOUND) {
+        // denied or unknown (an older launcher): the list is the pools on this PC and GTA VI
+        logLine(MAKINE_LOG_WARN, "Oyun kütüphanesi okunamadı: " + r.json);
+    }
+    reloadPoolSummaries();
+    std::lock_guard lock(m_mutex);
+    std::map<std::string, PoolRow> rows;
+    const auto keep = [&](const std::string& slug, const std::string& name) {
+        auto [it, fresh] = rows.try_emplace(slug);
+        if (fresh)
+            if (const auto old = m_poolRows.find(slug); old != m_poolRows.end()) it->second = old->second;
+        if (!name.empty() && (fresh || it->second.name.empty())) it->second.name = name;
+    };
+    for (const auto& [slug, name] : library) keep(slug, name);
+    for (const auto& [slug, s] : m_poolLocal) keep(slug, s.name);
+    keep(console::kGameSlug, console::kGameName);
+    if (!m_gameSlug.empty()) keep(m_gameSlug, m_gameName);
+    m_poolRows = std::move(rows);
+}
+
+bool Engine::startPoolsRefresh(bool automatic)
+{
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_poolsRefreshing) return false;
+        m_poolsRefreshing = true;
+    }
+    publish();
+    post([this, automatic] { refreshPools(automatic); });
+    return true;
+}
+
+// Head syncs ({rev, count}, no lines), one request per job so translations queued meanwhile are not held up: one
+// chain while reading (the other net thread stays free for them), two otherwise. The automatic check asks only for
+// the pools this PC has, GTA VI and the game being played; the whole library only when the player asks (a head
+// sync costs a few D1 reads, times every player, every 6 h).
+void Engine::refreshPools(bool automatic)
+{
+    loadPoolCandidates();
+    int gen = 0, chains = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_loginState != "signedIn" || m_maintenance) {
+            m_poolsRefreshing = false;
+        } else {
+            gen = ++m_poolsGen;
+            std::vector<pools::Entry> entries = poolEntriesLocked();
+            pools::sort(entries);
+            m_poolHeadQueue.clear();
+            for (const pools::Entry& e : entries)
+                if (!automatic || e.playing || e.slug == console::kGameSlug || m_poolLocal.count(e.slug))
+                    m_poolHeadQueue.push_back(e.slug);
+            m_poolHeadsOk = 0;
+            chains = m_poolChains = m_running ? 1 : 2;
+        }
+    }
+    publish();
+    for (int i = 0; i < chains; ++i) post([this, gen] { poolHeadStep(gen); });
+}
+
+void Engine::poolHeadStep(int gen)
+{
+    std::string slug;
+    {
+        std::lock_guard lock(m_mutex);
+        if (gen != m_poolsGen) return;
+        if (m_loginState != "signedIn" || m_quit) m_poolHeadQueue.clear();
+        if (m_poolHeadQueue.empty()) {
+            if (--m_poolChains > 0) return;
+        } else {
+            slug = m_poolHeadQueue.front();
+            m_poolHeadQueue.pop_front();
+        }
+    }
+    if (slug.empty()) return finishPoolsRefresh();
+    const ApiResult r = m_server.poolSync(slug, "", true);
+    if (r.status == 401 || r.code() == "banned") return handleAuthFailure(r);   // signedOut stops the refresh
+    {
+        std::lock_guard lock(m_mutex);
+        if (gen != m_poolsGen) return;
+        PoolRow& row = m_poolRows[slug];
+        if (r.ok()) {
+            row.remote = static_cast<int>(num(r.data, "count", 0));
+            row.remoteRev = str(r.data, "rev");
+            row.error.clear();
+            if (row.name.empty()) row.name = str(r.data, "name");
+            ++m_poolHeadsOk;
+        } else {
+            row.error = r.error.empty() ? "Sunucu yanıt vermedi." : r.error;
+            // no connection, maintenance, a server in trouble: the rest would fail the same way
+            if (r.network() || r.code() == "maintenance" || r.status == 429 || r.status >= 500) m_poolHeadQueue.clear();
+        }
+    }
+    publishPoolsThrottled();
+    post([this, gen] { poolHeadStep(gen); });
+}
+
+void Engine::finishPoolsRefresh()
+{
+    // A pool this PC already has that got new approvals is downloaded without asking; one never chosen is not
+    std::vector<std::string> updates;
+    {
+        std::lock_guard lock(m_mutex);
+        m_poolsRefreshing = false;
+        if (m_poolHeadsOk > 0) {
+            m_poolsUpdatedAt = static_cast<int64_t>(std::time(nullptr));
+            saveSettings();
+        }
+        for (const pools::Entry& e : poolEntriesLocked())
+            if (e.local > 0 && pools::state(e) == "outdated") updates.push_back(e.slug);
+    }
+    if (!updates.empty()) {
+        logLine(MAKINE_LOG_INFO, "Yeni onaylar: " + std::to_string(updates.size()) + " havuz güncelleniyor");
+        queuePoolDownloads(updates);
+    }
+    publish();
+}
+
+void Engine::queuePoolDownloads(const std::vector<std::string>& slugs)
+{
+    bool start = false;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const std::string& slug : slugs)
+            if (slug != m_poolDownloading
+                && std::find(m_poolDownloadQueue.begin(), m_poolDownloadQueue.end(), slug) == m_poolDownloadQueue.end())
+                m_poolDownloadQueue.push_back(slug);
+        if (!m_poolDownloadRunning && !m_poolDownloadQueue.empty()) start = m_poolDownloadRunning = true;
+    }
+    if (start) post([this] { poolDownloadStep(); });
+    publish();
+}
+
+void Engine::poolDownloadStep()
+{
+    std::string slug, name;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_loginState != "signedIn" || m_quit) m_poolDownloadQueue.clear();
+        if (m_poolDownloadQueue.empty()) {
+            m_poolDownloadRunning = false;
+            m_poolDownloading.clear();
+        } else {
+            slug = m_poolDownloadQueue.front();
+            m_poolDownloadQueue.pop_front();
+            m_poolDownloading = slug;
+            if (const auto row = m_poolRows.find(slug); row != m_poolRows.end()) name = row->second.name;
+            if (const auto loc = m_poolLocal.find(slug); name.empty() && loc != m_poolLocal.end()) name = loc->second.name;
+        }
+    }
+    publish();
+    if (slug.empty()) return;
+    std::string error;
+    const bool ok = fetchPool(slug, name, error);
+    {
+        std::lock_guard lock(m_mutex);
+        m_poolDownloading.clear();
+        if (!ok) m_poolRows[slug].error = error;
+    }
+    if (!ok) logLine(MAKINE_LOG_WARN, "Havuz indirilemedi (" + slug + "): " + error);
+    post([this] { poolDownloadStep(); });
+}
+
+void Engine::maybeAutoRefreshPools()
+{
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_loginState != "signedIn" || m_maintenance || m_poolsRefreshing) return;
+        const auto t = static_cast<int64_t>(std::time(nullptr));
+        if (m_poolsUpdatedAt && t >= *m_poolsUpdatedAt && t - *m_poolsUpdatedAt < kPoolsAutoS) return;
+    }
+    startPoolsRefresh(true);
+}
+
+void Engine::publishPoolsThrottled()
+{
+    {
+        std::lock_guard lock(m_mutex);
+        if (now() - m_poolsPublishedAt < kPoolsPublishS) return;
+        m_poolsPublishedAt = now();
+    }
+    publish();
+}
+
+std::vector<pools::Entry> Engine::poolEntriesLocked() const
+{
+    const std::string current = currentSlug();
+    std::set<std::string> slugs{console::kGameSlug};
+    for (const auto& [slug, row] : m_poolRows) slugs.insert(slug);
+    for (const auto& [slug, s] : m_poolLocal) slugs.insert(slug);
+    if (!current.empty()) slugs.insert(current);
+    std::vector<pools::Entry> out;
+    out.reserve(slugs.size());
+    for (const std::string& slug : slugs) {
+        pools::Entry e;
+        e.slug = slug;
+        if (const auto row = m_poolRows.find(slug); row != m_poolRows.end()) {
+            e.name = row->second.name;
+            e.remote = row->second.remote;
+            e.remoteRev = row->second.remoteRev;
+            e.error = row->second.error;
+        }
+        if (const auto loc = m_poolLocal.find(slug); loc != m_poolLocal.end()) {
+            if (e.name.empty()) e.name = loc->second.name;
+            e.local = loc->second.local;
+            e.localRev = loc->second.rev;
+            e.syncedCount = loc->second.serverCount;
+        }
+        if (e.name.empty())
+            e.name = slug == console::kGameSlug ? std::string(console::kGameName) : slug == m_gameSlug ? m_gameName : std::string();
+        e.downloading = slug == m_poolDownloading;
+        e.playing = slug == current;
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
+json Engine::poolsStateLocked() const
+{
+    return {{"refreshing", m_poolsRefreshing},
+            {"updatedAt", m_poolsUpdatedAt ? json(*m_poolsUpdatedAt) : json(nullptr)},
+            {"items", pools::listJson(poolEntriesLocked())}};
+}
+
+std::optional<Result> Engine::invokePools(std::string_view method, const json& params)
+{
+    if (method != "pools.refresh" && method != "pools.download" && method != "pools.downloadAll") return std::nullopt;
+    const auto queued = [this](const std::string& slug) {   // under m_mutex
+        return slug == m_poolDownloading
+               || std::find(m_poolDownloadQueue.begin(), m_poolDownloadQueue.end(), slug) != m_poolDownloadQueue.end();
+    };
+    std::vector<std::string> slugs;
+    std::string name;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_loginState != "signedIn")
+            return Result::error(MAKINE_E_DENIED, "Oyun havuzları için önce Makine hesabınla giriş yap.");
+        if (m_maintenance)
+            return Result::error(MAKINE_E_FAILED, "Makine Live şu an bakımda; havuzlar bakım bitince yenilenir.");
+        if (method == "pools.download") {
+            const std::string slug = str(params, "slug");
+            if (slug.empty()) return Result::error(MAKINE_E_INVALID_ARGUMENT, "Hangi oyunun havuzu? (slug gerekli)");
+            const auto entries = poolEntriesLocked();
+            const auto it = std::find_if(entries.begin(), entries.end(), [&](const pools::Entry& e) { return e.slug == slug; });
+            if (it == entries.end()) return Result::error(MAKINE_E_NOT_FOUND, "Bu oyunun havuzu listede yok.");
+            name = it->name.empty() ? slug : it->name;
+            if (queued(slug)) return okMessage(name + " havuzu zaten indiriliyor.");
+            slugs.push_back(slug);
+        } else if (method == "pools.downloadAll") {
+            std::vector<pools::Entry> entries = poolEntriesLocked();
+            pools::sort(entries);
+            for (pools::Entry e : entries) {
+                e.error.clear();   // a failed one is tried again
+                if (pools::wanted(e) && !queued(e.slug)) slugs.push_back(e.slug);
+            }
+            if (slugs.empty()) return okMessage("İndirilecek havuz yok; hepsi güncel.");
+        }
+    }
+    if (method == "pools.refresh")
+        return startPoolsRefresh(false) ? okMessage("Havuzlar yenileniyor.") : okMessage("Havuzlar zaten yenileniyor.");
+    queuePoolDownloads(slugs);
+    if (method == "pools.download") return okMessage(name + " havuzu indiriliyor.");
+    return okMessage(std::to_string(slugs.size()) + " havuz sırayla indiriliyor.");
 }
 
 Result Engine::startReading()
@@ -1655,6 +2129,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
     }
     m_netCv.notify_all();   // a job waiting for the same line
     if (fresh) publish();
+    maybeSyncPool();   // reading: new approvals for this game every kPoolSyncS, on a job of its own
 }
 
 std::pair<std::string, std::string> Engine::translatePart(int line, const std::string& textUtf8, const std::string& bare,
@@ -1986,6 +2461,7 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         const console::Box all = console::clientRegion(hwnd, {0, 0, 1, 1});   // the finder reads the whole video area
         m_finderHwnd = hwnd;
         m_finderArea = CaptureRegion{all.x, all.y, all.w, all.h};
+        const console::Frac picked = frac;   // the box stays over this one: growth widens only what is read
         if (grow != std::array<double, 4>{}) {   // grown past a cut line, inside the video
             const double w = frac.w, h = frac.h;
             const double x0 = std::max(0.0, frac.x - w * grow[0]), y0 = std::max(0.0, frac.y - h * grow[2]);
@@ -1999,7 +2475,7 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
             std::lock_guard lock(m_mutex);
             m_bandArea = video;
         }
-        overlay = console::regionToScreen(video, frac);
+        overlay = console::regionToScreen(video, picked);
         m_videoFrame = console::Box{video.l, video.t, video.r - video.l, video.b - video.t};
         return {};
     }
@@ -2108,7 +2584,9 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         box = {x0, y0, x1 - x0, y1 - y0};
     }
     region = {box.x, box.y, box.w, box.h};
-    overlay = box;
+    // The box sits over the picked region, not the grown one: a region grown up past a cut line would lift
+    // every following line's box higher (10 % a time, up to 30 %)
+    overlay = base;
     return {};
 }
 
@@ -2339,6 +2817,10 @@ void Engine::runFinder()
                        || (before && after && (apart(before->x0, after->x0) || apart(before->y0, after->y0)
                                                || apart(before->x1, after->x1) || apart(before->y1, after->y1)));
     if (moved) {   // another region: the line read so far is gone, nothing half read is sent
+        {
+            std::lock_guard lock(m_mutex);
+            m_regionPromptDismissed = false;   // a new band: ask again
+        }
         handleEvents(m_tracker.reset());
         m_tempGrow.clear();
         m_lastHash = 0;

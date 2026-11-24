@@ -275,6 +275,7 @@ json GamePool::toJson() const
     json items = json::array();
     for (const auto& [id, it] : m_items) items.push_back({id, text::toUtf8(it.key), it.source, it.translation});
     json out = {{"game", slug}, {"name", name}, {"rev", rev}, {"synced_at", syncedAt}, {"items", items}};
+    if (serverCount >= 0) out["count"] = serverCount;
     if (m_withVariants) {
         json variants = json::array(), relations = json::array();
         for (const auto& [id, bySignal] : m_variants)
@@ -303,9 +304,15 @@ std::wstring LocalPool::file(const std::string& slug) const
     return m_dir + L"\\" + win::utf8ToWide(safe) + L".json";
 }
 
-void LocalPool::writeGames(const json& games) const
+void LocalPool::writeGames() const
 {
-    win::writeFileAtomic(m_dir + L"\\games.json", dump(games));
+    std::lock_guard write(m_writeMutex);
+    std::string data;
+    {
+        std::lock_guard lock(m_mutex);
+        data = dump(m_games);
+    }
+    win::writeFileAtomic(m_dir + L"\\games.json", data);
 }
 
 bool LocalPool::isConfirmed(const std::string& slug) const
@@ -316,25 +323,21 @@ bool LocalPool::isConfirmed(const std::string& slug) const
 
 void LocalPool::confirm(const std::string& slug, const std::string& name)
 {
-    json copy;
     {
         std::lock_guard lock(m_mutex);
         m_games["confirmed"][slug] = {{"name", name}, {"t", nowSeconds()}};
-        copy = m_games;
     }
-    writeGames(copy);
+    writeGames();
 }
 
 void LocalPool::forget(const std::string& slug)
 {
-    json copy;
     {
         std::lock_guard lock(m_mutex);
         m_games["confirmed"].erase(slug);
         m_pools.erase(slug);
-        copy = m_games;
     }
-    writeGames(copy);
+    writeGames();
     DeleteFileW(file(slug).c_str());
 }
 
@@ -350,8 +353,74 @@ std::shared_ptr<GamePool> LocalPool::get(const std::string& slug)
     auto p = std::make_shared<GamePool>(slug, str(d.value("name", json())), str(d.value("rev", json())),
                                         d.value("items", json()), num(d.value("synced_at", json())),
                                         d.value("variants", json()), d.value("relations", json()));
+    if (d.contains("count") && d["count"].is_number()) p->serverCount = d["count"].get<int>();
     std::lock_guard lock(m_mutex);
+    // an "unchanged" sync since the file was written keeps the newer count in games.json only
+    const json& confirmed = m_games["confirmed"];
+    if (const auto g = confirmed.find(slug); g != confirmed.end() && g->is_object() && g->contains("count")
+                                             && (*g)["count"].is_number()
+                                             && str(g->value("rev", json())) == (p->hasVariants() ? p->rev : ""))
+        p->serverCount = (*g)["count"].get<int>();
     return m_pools.emplace(slug, std::move(p)).first->second;
+}
+
+bool LocalPool::noteSummaryLocked(const std::string& slug, const GamePool& pool)
+{
+    json& games = m_games["confirmed"];
+    if (!games.contains(slug) || !games[slug].is_object()) return false;
+    json& g = games[slug];
+    const json before = g;
+    g["rev"] = pool.hasVariants() ? pool.rev : std::string();
+    g["n"] = static_cast<int>(pool.size());
+    g["count"] = pool.serverCount;
+    if (g.value("name", std::string()).empty() && !pool.name.empty()) g["name"] = pool.name;
+    return g != before;
+}
+
+std::vector<PoolSummary> LocalPool::summaries()
+{
+    std::vector<PoolSummary> out;
+    std::vector<size_t> unread;   // pools saved before the summary was kept in games.json
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& [slug, g] : m_games["confirmed"].items()) {
+            PoolSummary s;
+            s.slug = slug;
+            s.name = g.is_object() ? str(g.value("name", json())) : std::string();
+            if (const auto it = m_pools.find(slug); it != m_pools.end()) {
+                const GamePool& p = *it->second;
+                s.rev = p.hasVariants() ? p.rev : std::string();
+                s.local = static_cast<int>(p.size());
+                s.serverCount = p.serverCount;
+                if (s.name.empty()) s.name = p.name;
+            } else if (g.is_object() && g.contains("n") && g["n"].is_number()) {
+                s.rev = str(g.value("rev", json()));
+                s.local = g["n"].get<int>();
+                s.serverCount = g.contains("count") && g["count"].is_number() ? g["count"].get<int>() : -1;
+            } else {
+                unread.push_back(out.size());
+            }
+            out.push_back(std::move(s));
+        }
+    }
+    bool write = false;
+    for (const size_t i : unread) {
+        PoolSummary& s = out[i];
+        const json d = readJson(file(s.slug));
+        if (!d.is_object()) continue;   // confirmed, nothing downloaded yet
+        // read for its summary only, never kept: the lines of a game not being played stay on disk
+        GamePool p(s.slug, str(d.value("name", json())), str(d.value("rev", json())), d.value("items", json()),
+                   num(d.value("synced_at", json())), d.value("variants", json()), d.value("relations", json()));
+        if (d.contains("count") && d["count"].is_number()) p.serverCount = d["count"].get<int>();
+        s.rev = p.hasVariants() ? p.rev : std::string();
+        s.local = static_cast<int>(p.size());
+        s.serverCount = p.serverCount;
+        if (s.name.empty()) s.name = p.name;
+        std::lock_guard lock(m_mutex);
+        write = noteSummaryLocked(s.slug, p) || write;
+    }
+    if (write) writeGames();
+    return out;
 }
 
 std::string LocalPool::rev(const std::string& slug)
@@ -365,10 +434,18 @@ SyncStats LocalPool::applySync(const std::string& slug, const json& resp)
 {
     const auto old = get(slug);
     SyncStats st;
+    const json count = resp.is_object() ? resp.value("count", json()) : json();
     if (resp.is_object() && truthy(resp.value("unchanged", json())) && old) {
         old->syncedAt = nowSeconds();
+        if (count.is_number()) old->serverCount = count.get<int>();
         st.total = static_cast<int>(old->size());
         st.unchanged = true;
+        bool changed = false;
+        {
+            std::lock_guard lock(m_mutex);
+            changed = noteSummaryLocked(slug, *old);
+        }
+        if (changed) writeGames();
         return st;
     }
     if (!resp.is_object()) return st;
@@ -384,13 +461,17 @@ SyncStats LocalPool::applySync(const std::string& slug, const json& resp)
     if (old)
         for (const auto& [id, item] : old->m_items)
             if (!fresh->m_items.count(id)) ++st.removed;
+    if (count.is_number()) fresh->serverCount = count.get<int>();
     st.total = static_cast<int>(fresh->size());
     const std::string data = dump(fresh->toJson());
+    bool changed = false;
     {
         std::lock_guard lock(m_mutex);
+        changed = noteSummaryLocked(slug, *fresh);
         m_pools[slug] = std::move(fresh);
     }
     win::writeFileAtomic(file(slug), data);
+    if (changed) writeGames();
     return st;
 }
 
