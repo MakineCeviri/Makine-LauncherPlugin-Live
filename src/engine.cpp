@@ -337,7 +337,7 @@ void Engine::setStatus(const std::string& text)
     publish();
 }
 
-void Engine::notifyError(const std::string& message)
+void Engine::notifyError(const std::string& message, const char* reason, const char* level)
 {
     {
         std::lock_guard lock(m_mutex);
@@ -345,8 +345,26 @@ void Engine::notifyError(const std::string& message)
         if (message == m_lastError) return;
         m_lastError = message;
     }
+    report(reason, level, message);
     logLine(MAKINE_LOG_ERROR, message);
     m_host.emitEvent("ui.notify", dump({{"title", "Makine Live"}, {"message", message}, {"kind", "error"}}));
+}
+
+// Defects go to Sentry through the launcher (one SDK, its consent and gate; the portal reads them there).
+// Only with the usage report on. The launcher drops repeats of a reason for a day.
+void Engine::report(const char* reason, const char* level, const std::string& message)
+{
+    if (!reason) return;
+    json tags;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_usageReport) return;
+        const bool console = m_mode == "console";
+        tags = {{"mode", console ? "konsol" : "pc"},
+                {"game", console ? std::string(console::kGameSlug) : m_gameSlug}};
+    }
+    m_host.emitEvent("telemetry.capture",
+                     dump({{"reason", reason}, {"level", level}, {"message", message.substr(0, 300)}, {"tags", tags}}));
 }
 
 void Engine::saveSettings()   // under m_mutex
@@ -1008,7 +1026,7 @@ Result Engine::pickRegion()
                     std::lock_guard lock(m_mutex);
                     m_picking = false;
                 }
-                notifyError(reason);
+                notifyError(reason, nullptr);   // the player's setup, not a defect: no Sentry event
                 return publish();
             }
             video = console::videoRect(console::clientRect(src->hwnd));
@@ -1026,7 +1044,7 @@ Result Engine::pickRegion()
             }
             if (box) saveSettings();
         }
-        if (!box && r.status != MAKINE_E_DENIED) notifyError("Bölge seçilemedi.");
+        if (!box && r.status != MAKINE_E_DENIED) notifyError("Bölge seçilemedi.", nullptr);
         m_captureCv.notify_all();
         publish();
     });
@@ -1635,11 +1653,12 @@ void Engine::runCapture()
                     if (m_active) stopTracking();   // the mode changed under a running session
                     activeMode = mode;
                     m_active = true;
+                    m_host.emitEvent("telemetry.breadcrumb", dump({{"message", "reading started: " + mode}}));
                     std::lock_guard guard(m_mutex);
                     m_lastError.clear();
                 }
                 if (!ensureOcr(error)) {
-                    notifyError(error);
+                    notifyError(error, "ocr_init");
                     {
                         std::lock_guard guard(m_mutex);
                         m_running = false;
@@ -1727,10 +1746,10 @@ void Engine::runCapture()
                 }
             }
         } catch (const std::exception& e) {
-            notifyError(std::string("Beklenmeyen hata: ") + e.what());
+            notifyError(std::string("Beklenmeyen hata: ") + e.what(), "loop_exception");
             wait = kBlockedPollS;
         } catch (...) {
-            notifyError("Beklenmeyen hata");
+            notifyError("Beklenmeyen hata", "loop_unknown");
             wait = kBlockedPollS;
         }
 

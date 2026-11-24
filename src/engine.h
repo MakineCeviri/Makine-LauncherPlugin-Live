@@ -117,7 +117,10 @@ private:
     nlohmann::json stateLocked() const;
     void publish();
     void setStatus(const std::string& text);
-    void notifyError(const std::string& message);
+    // `reason`: a stable code naming the defect in Sentry (host API telemetry.capture); nullptr for the player's own
+    // setup (no console app, cancelled pick), which is no defect and must not cost quota in a GTA VI surge.
+    void notifyError(const std::string& message, const char* reason, const char* level = "error");
+    void report(const char* reason, const char* level, const std::string& message);
     void maybeAutoStart();
     void logLine(int32_t level, const std::string& message);   // to the host log and the support log ring
 
