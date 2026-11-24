@@ -72,9 +72,11 @@ class LinkServer(private val prefs: Prefs, private val listener: Listener) {
     /** Satır [id] ekrana çizildi: bağlı PC'ye drawn{id} (G-TV-HOP / uçtan uca gecikme ölçümü). */
     fun drawn(id: Int) {
         if (id < 0) return
-        writer.execute {
-            val sock = synchronized(lock) { current } ?: return@execute
-            runCatching { write(sock.getOutputStream(), JSONObject().put("t", "drawn").put("id", id)) }
+        runCatching {   // after stop() the writer is shut down: execute would throw inside onDraw
+            writer.execute {
+                val sock = synchronized(lock) { current } ?: return@execute
+                runCatching { write(sock.getOutputStream(), JSONObject().put("t", "drawn").put("id", id)) }
+            }
         }
     }
 

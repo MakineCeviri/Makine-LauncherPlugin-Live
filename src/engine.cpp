@@ -126,8 +126,9 @@ std::optional<console::Source> pickSource(const std::string& key, unsigned long 
     // A custom window (a media player…) only when the player picked it in this session (pid above)
     for (const auto& s : found)
         if (!key.empty() && s.app.key == key && s.app.key != "custom") return s;
+    // Streaming / cloud apps can show any PC game: read only when picked (console.select), like custom
     for (const auto& s : found)
-        if (s.app.key != "custom") return s;
+        if (s.app.key != "custom" && s.app.console != "stream" && s.app.console != "cloud") return s;
     return std::nullopt;
 }
 
@@ -1397,6 +1398,10 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
         if (code) *code = "region_missing";
         return "Önce okunacak bölgeyi seç.";
     }
+    if (needGame && gameName.empty()) {
+        if (code) *code = "game_missing";
+        return "Oyun algılanmadı · oyunu Makine'den başlat ya da konsol modunu kullan.";
+    }
     if (needGame) {
         // Read only while the game is in front (the harness's target lock): text of another
         // window over the region (Discord, a browser) must never reach the pool
@@ -1436,8 +1441,6 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
             return "Oyun önde değil · oyuna dönünce okuma sürer.";
         }
     }
-    if (needGame && gameName.empty() && code) *code = "game_missing";
-    if (needGame && gameName.empty()) return "Oyun algılanmadı · oyunu Makine'den başlat ya da konsol modunu kullan.";
     region = {pc->x, pc->y, pc->w, pc->h};
     overlay = *pc;
     return {};
@@ -1496,10 +1499,10 @@ void Engine::showOverlay(const Display& d, const console::Box& rect)
     const std::string text = text::toUtf8(d.text);
     json line = {{"text", text}};
     const bool showSource = style.contains("showSource") && style["showSource"].is_boolean() && style["showSource"].get<bool>();
-    if (showSource && m_lineSource.count(d.id)) {
-        line["sourceText"] = m_lineSource[d.id];
-        m_shownKeys.push_back(text::compactPoolKey(text::fromUtf8(m_lineSource[d.id])));
-    }
+    // The source is not added to m_shownKeys: it is the game's own line, which OCR also reads under the
+    // overlay (the launcher excludes the overlay from capture); filtering it would end the line early
+    // and never read a repeat of it. Read off our overlay instead, it is the same line, so no new line.
+    if (showSource && m_lineSource.count(d.id)) line["sourceText"] = m_lineSource[d.id];
     json payload = {{"text", text}, {"lines", json::array({line})}, {"x", rect.x}, {"y", rect.y},
                     {"width", rect.w}, {"height", rect.h}, {"kind", d.kind}};
     if (!style.empty()) payload["style"] = style;
@@ -1600,6 +1603,8 @@ void Engine::runCapture()
                 job();
             } catch (const std::exception& e) {
                 logLine(MAKINE_LOG_ERROR, std::string("Okuma: ") + e.what());
+            } catch (...) {
+                logLine(MAKINE_LOG_ERROR, "Okuma: beklenmeyen hata");
             }
             lock.lock();
             continue;
@@ -1723,6 +1728,9 @@ void Engine::runCapture()
             }
         } catch (const std::exception& e) {
             notifyError(std::string("Beklenmeyen hata: ") + e.what());
+            wait = kBlockedPollS;
+        } catch (...) {
+            notifyError("Beklenmeyen hata");
             wait = kBlockedPollS;
         }
 

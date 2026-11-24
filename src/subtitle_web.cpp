@@ -158,7 +158,12 @@ void SubtitleWeb::acceptLoop(uintptr_t listener, uint64_t generation)
             continue;
         }
         ++m_connections;
-        std::thread([self = shared_from_this(), c, generation] { self->serve(c, generation); }).detach();
+        try {
+            std::thread([self = shared_from_this(), c, generation] { self->serve(c, generation); }).detach();
+        } catch (...) {   // no thread to be had: refuse this one, keep listening
+            closesocket(c);
+            --m_connections;
+        }
     }
 }
 
