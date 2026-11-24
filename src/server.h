@@ -44,6 +44,9 @@ public:
     ApiResult poolSync(const std::string& game, const std::string& rev, bool head);
     ApiResult poolHits(const std::string& game, const nlohmann::json& hits);
     ApiResult status();
+    /// K13: a cheap request that leaves a warm keep-alive connection for the translation that follows.
+    void ping();
+    double idleSeconds() const;
     /// Usage report (makine_live/net/telemetry.py): → {beat_s, log_request}; payload.bye on the way out.
     ApiResult beat(const nlohmann::json& payload, int timeoutMs = 6000);
     /// The log the team asked for (beat → log_request), gzip.
@@ -67,6 +70,7 @@ private:
     std::string m_token;
     void* m_session = nullptr;   // HINTERNET
     std::atomic<bool> m_cancelled{false};
+    std::atomic<int64_t> m_lastRequestMs{0};
 };
 
 /// Per-user device id for this plugin: 32 hex characters, kept in <dataDir>\device_id.

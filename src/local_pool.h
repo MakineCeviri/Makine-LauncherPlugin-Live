@@ -36,6 +36,8 @@ public:
     GamePool(std::string slug, std::string name, std::string rev, const nlohmann::json& items, double syncedAt);
 
     std::optional<PoolHit> lookup(const std::string& text) const;
+    /// Exact pool key only (K12): safe on a line's very first reading, no similar-line guess.
+    std::optional<PoolHit> lookupExact(const std::string& text) const;
     nlohmann::json toJson() const;
     size_t size() const { return m_items.size(); }
 
@@ -73,6 +75,7 @@ public:
     std::string rev(const std::string& slug);
     SyncStats applySync(const std::string& slug, const nlohmann::json& resp);
     std::optional<PoolHit> lookup(const std::string& slug, const std::string& text);
+    std::optional<PoolHit> lookupExact(const std::string& slug, const std::string& text);   // no hit counted
     std::map<int64_t, int> takeHits(const std::string& slug);
     void returnHits(const std::string& slug, const std::map<int64_t, int>& hits);
 

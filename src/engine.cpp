@@ -35,6 +35,7 @@ namespace {
 
 constexpr double kPollS = 0.10;           // a reading every 100 ms (an unchanged frame costs ~1 ms)
 constexpr double kBlockedPollS = 0.20;
+constexpr double kMaskMaxSkipS = 2.5;      // K3: at most this long on the mask's word (G-RATE ≤ 0.5/s)
 constexpr double kStaleJobS = 2.0;        // a line whose source left this long ago is not translated any more
 constexpr double kCacheTtlS = 900;        // unapproved translations are reused this long in a session
 constexpr double kPoolSyncS = 180;        // local pool vs server while reading
@@ -1275,7 +1276,19 @@ bool Engine::readRegion(void* hwnd, const CaptureRegion& region, std::string& te
         textOut = m_lastOcr;
         return true;
     }
+    const bool forced = m_lastHash == 0;   // a new region, mode or settings: read for sure
     m_lastHash = hash;
+    if (hwnd) {
+        // K3, console mode: a stream never repeats a frame, the subtitle does. Same text mask as at the
+        // last OCR → the same text; the OCR runs again at least every few seconds whatever the mask says
+        TextMask mask = TextMask::of(m_frame.pixels.data(), m_frame.width, m_frame.height);
+        if (!forced && mask.sameText(m_lastMask) && now() - m_lastOcrAt < kMaskMaxSkipS) {
+            textOut = m_lastOcr;
+            return true;
+        }
+        m_lastMask = std::move(mask);
+    }
+    m_lastOcrAt = now();
     std::string text;
     const auto ocrStart = Clock::now();
     std::string ocrError;
@@ -1363,13 +1376,26 @@ std::string Engine::resolveTarget(void*& hwnd, CaptureRegion& region, console::B
     return {};
 }
 
-void Engine::handleEvents(const std::vector<LineEvent>& events)
+void Engine::handleEvents(const std::vector<LineEvent>& events, const std::u32string& reading)
 {
     for (const LineEvent& e : events) {
         if (e.kind == LineEvent::New) {
             m_scheduler.sourceNew(e.id, e.t);
-            std::lock_guard lock(m_mutex);
-            ++m_lines;
+            std::string slug;
+            bool warm = false;
+            {
+                std::lock_guard lock(m_mutex);
+                ++m_lines;
+                slug = currentSlug() == m_poolSlug ? m_poolSlug : std::string();
+                warm = m_loginState == "signedIn";
+            }
+            // K12: an approved line found by its exact key on the very first reading shows at once;
+            // the dispatch after the two-read rule still runs (and counts the hit) as before
+            if (!slug.empty() && !reading.empty())
+                if (const auto hit = m_pool.lookupExact(slug, text::toUtf8(reading)))
+                    m_scheduler.translationReady(e.id, text::fromUtf8(hit->translation), "verified", e.t);
+            // K13: the line settles in ~200 ms; open the connection now if it went idle
+            if (warm && m_server.idleSeconds() > 15) post([this] { m_server.ping(); });
         } else if (e.kind == LineEvent::Gone) {
             m_scheduler.sourceGone(e.id, e.t);
             std::lock_guard lock(m_mutex);
@@ -1579,7 +1605,8 @@ void Engine::runCapture()
                     }
                     if (codeChanged) publish();
                     const double t = now();
-                    handleEvents(read ? m_tracker.update(text::fromUtf8(filtered), t) : m_tracker.reset());
+                    const std::u32string reading = text::fromUtf8(filtered);
+                    handleEvents(read ? m_tracker.update(reading, t) : m_tracker.reset(), reading);
 
                     std::deque<Translated> results;
                     {

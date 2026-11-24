@@ -178,6 +178,15 @@ std::optional<PoolHit> GamePool::lookup(const std::string& textUtf8) const
     return PoolHit{*best, m_items.at(*best).translation, false};
 }
 
+std::optional<PoolHit> GamePool::lookupExact(const std::string& textUtf8) const
+{
+    const std::u32string key = text::compactPoolKey(text::fromUtf8(textUtf8));
+    if (key.empty()) return std::nullopt;
+    const auto it = m_byKey.find(key);
+    if (it == m_byKey.end()) return std::nullopt;
+    return PoolHit{it->second, m_items.at(it->second).translation, true};
+}
+
 json GamePool::toJson() const
 {
     json items = json::array();
@@ -300,6 +309,12 @@ std::optional<PoolHit> LocalPool::lookup(const std::string& slug, const std::str
         ++m_hits[slug][hit->id];
     }
     return hit;
+}
+
+std::optional<PoolHit> LocalPool::lookupExact(const std::string& slug, const std::string& text)
+{
+    const auto p = get(slug);
+    return p ? p->lookupExact(text) : std::nullopt;
 }
 
 std::map<int64_t, int> LocalPool::takeHits(const std::string& slug)

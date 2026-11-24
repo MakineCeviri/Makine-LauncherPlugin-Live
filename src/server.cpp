@@ -120,6 +120,7 @@ ApiResult ServerClient::call(const wchar_t* method, const std::string& pathAndQu
         r.error = "bağlantı kapalı";
         return r;
     }
+    m_lastRequestMs = static_cast<int64_t>(GetTickCount64());
     const HINTERNET connect = WinHttpConnect(static_cast<HINTERNET>(m_session), m_host.c_str(),
                                              static_cast<INTERNET_PORT>(m_port), 0);
     if (!connect) {
@@ -238,6 +239,16 @@ ApiResult ServerClient::poolHits(const std::string& game, const json& hits)
 {
     const json body = {{"game", game}, {"hits", hits}};
     return call(L"POST", "/api/live/pool?action=hits", &body, 5000);
+}
+
+void ServerClient::ping()
+{
+    call(L"GET", "/api/live/ping", nullptr, 3000);
+}
+
+double ServerClient::idleSeconds() const
+{
+    return (static_cast<int64_t>(GetTickCount64()) - m_lastRequestMs) / 1000.0;
 }
 
 ApiResult ServerClient::status()

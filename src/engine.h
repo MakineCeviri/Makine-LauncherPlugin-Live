@@ -26,6 +26,7 @@
 #include "subtitle_web.h"
 #include "tv_link.h"
 #include "text_fix.h"
+#include "text_mask.h"
 
 #include <makine/plugin/sdk.hpp>
 #include <nlohmann/json.hpp>
@@ -106,7 +107,7 @@ private:
     bool readRegion(void* hwnd, const CaptureRegion& region, std::string& text, std::string& error);
     std::string resolveTarget(void*& hwnd, CaptureRegion& region, console::Box& overlay, bool needGame,
                               std::string* code = nullptr);
-    void handleEvents(const std::vector<LineEvent>& events);
+    void handleEvents(const std::vector<LineEvent>& events, const std::u32string& reading = {});
     void showOverlay(const Display& d, const console::Box& rect);
     void hideOverlay();
     std::string withoutOwnOverlay(const std::string& raw) const;
@@ -222,6 +223,8 @@ private:
     CapturedFrame m_frame;
     uint64_t m_lastHash = 0;
     std::string m_lastOcr, m_lastRaw, m_lastFiltered;
+    TextMask m_lastMask;     // K3: the text mask of the last OCR'd frame (console mode)
+    double m_lastOcrAt = -1e9;
     LineTracker m_tracker;
     SubtitleScheduler m_scheduler;
     bool m_active = false, m_overlayShown = false;

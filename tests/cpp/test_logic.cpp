@@ -556,6 +556,8 @@ void testLocalPool()
     h = p.lookup("Is anybody there? Plaese help me.");
     check(h && h->id == 1 && !h->exact, "OCR letter error: similar line");
     check(!p.lookup("Go to floor 4."), "different digit: no match");
+    check(p.lookupExact("Is anybody there?Please help me") && !p.lookupExact("Is anybody there? Plaese help me."),
+          "exact lookup (K12): punctuation yes, a similar line no");
     check(!p.lookup("Something never seen before in this game"), "unknown line: none");
     {
         json rows = json::array();

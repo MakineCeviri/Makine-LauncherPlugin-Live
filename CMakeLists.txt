@@ -52,6 +52,7 @@ add_library(live-logic STATIC
     src/tv_link.cpp
     src/adb.cpp
     src/gzip_store.cpp
+    src/text_mask.cpp
 )
 target_include_directories(live-logic PUBLIC src)
 target_compile_definitions(live-logic PUBLIC ${LIVE_DEFINES})
@@ -176,3 +177,13 @@ if(EXISTS "${LIVE_OCR_BENCH_DIR}/results/ort_v3ch_det.tsv")
 else()
     message(STATUS "OCR gate skipped: no benchmark results in ${LIVE_OCR_BENCH_DIR}")
 endif()
+
+# K3 gate: the console-mode text mask on D-C (python tools/make_dc_frames.py --bench <ocrbench>)
+set(LIVE_OCR_DC_DIR "${CMAKE_BINARY_DIR}/ocr_dc" CACHE PATH "D-C frames (tools/make_dc_frames.py)")
+add_executable(live_mask_gate tests/cpp/mask_gate.cpp)
+target_link_libraries(live_mask_gate PRIVATE live-logic windowscodecs ole32)
+live_warnings(live_mask_gate)
+if(MINGW)
+    target_link_options(live_mask_gate PRIVATE -static)
+endif()
+add_test(NAME mask_gate COMMAND live_mask_gate "${LIVE_OCR_DC_DIR}")
