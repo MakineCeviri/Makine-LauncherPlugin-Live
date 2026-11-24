@@ -228,7 +228,9 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `announcement.read` | `{id}` (sayı ya da rakamlardan oluşan metin): duyuruyu kapatır (sunucuya `ann_read`) |
 | `status.refresh` | bakım / sürüm / duyuruları hemen yeniden sorar (bakım sürerken kendiliğinden 30 sn'de bir, yoksa 300 sn) |
 | `sample` | örnek bir replik (`resources/sample_quotes.json`) açık her çıktıya (kutu, TV, telefon / OBS) 4 sn gider |
-| `region.keepGrown` | kesik satır yüzünden bu oturumda büyüyen bölgeyi (`regionGrow`) kalıcı kaydeder |
+| `region.keepGrown` | kesik satır yüzünden bu oturumda büyüyen bölgeyi (`regionGrow`) kalıcı kaydeder (bulunan bantta da) |
+| `autoRegion.accept` | önerilen altyazı bandını (`autoRegion.state: found`) bu oyun için kilitler ve saklar |
+| `autoRegion.reset` | bandı ve oyuncunun kendi bölgesini unutur, altyazıyı yeniden arar |
 | `support.dismiss` | "kayıt gönderildi" kartını kapatır |
 | `donate` / `donate.dismiss` | bağış sayfasını (`makineceviri.org/destek`) `ui.openUrl` ile açar / ilk açılış kartını kapatır |
 
@@ -251,6 +253,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "style": { ... }, "game": {"name", "slug"}
   "autoStart": false, "usageReport": true, "consoleConsent": false, "everStarted": false,
   "reason": {"code", "text", "action"} | null,   // en engelleyici tek neden (aşağıda)
+  "autoRegion": {"state": "off|searching|found|locked|manual", "rect": {"x", "y", "width", "height"} | null, "confidence"},   // rect: oyun penceresine / konsol video alanına oran
   "output": "pc|tv|phone", "obs": false,
   "web": {"running", "lan", "port", "clients", "obsUrl", "phoneUrl", "error", "firewallNote", "firewallHeadsUp"},
   "tv": {"state": "idle|connecting|connected|bad_code|offline", "detail", "paired": {...} | null, "found": [{"id", "name", "host", "port"}], "searching", "hopP50", "hopP95"},
@@ -262,6 +265,10 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
   "donate": {"url", "seen"}
 }
 ```
+
+**Altyazıyı kendi bulur** (`subtitle_finder.*`): bölge seçilmemişse (PC) ya da konsolda oyuncu kendi bölgesini çizmemişse okuma başlar başlamaz 2 sn'de bir oyunun penceresi (konsolda video alanı; dışı asla okunmaz) 640 px'e küçültülüp yalnız dedektörden geçer; ortalı, alt üçte birde ya da üstte, açık dolgu + koyu konturlu, kelime olan ve diyalogla gelip giden, metni değişen, tabanı sabit satırlar kanıt biriktirir (HUD yazısı hep durur ya da hiç değişmez). ~8 sn'de `found` (bant okunur), ~18 sn yüksek güvenle ya da `autoRegion.accept` ile `locked`: oyun başına saklanır, dedektör durur. Ararken pencerenin alt ortası okunur. Bulucunun okuduğu metin havuza gitmez; bant değişince yarım satır gönderilmez. Kenara dayanan uzun satır bölgeyi o yöne geçici büyütür (adım %15, yan başına en çok %30, oyun penceresi içinde), 4 sn o kenarda yazı yoksa geri küçülür. Kapı: `tools/make_scene_frames.py` + `live_finder_gate`.
+
+**Uzun çeviri** (`fit.*`): `overlay.show` isteğe bağlı `fit: {maxLines, minFontScale: 0.8, maxWidthFrac: 0.9, chunk, chunks}` taşır. Çizen taraf satırı `maxLines`'a sarar, yazıyı en çok `minFontScale`'e küçültür, bandı karenin `maxWidthFrac`'ına genişletir; bu üçüyle de sığmayacak satırı eklenti cümle / yan cümle / kelime sınırından parçalara böler ve sırayla gönderir (`text` / `lines` o parçayı taşır, `chunk` 0'dan sayar; her parça okuma süresince, ~17 harf/sn, en az `minShowMs`). TV ve telefon / OBS satırları da `fit: {chunk, chunks}` alır (yalnız birden çok parçada). Eski Makine'ler parçayı düz satır gibi gösterir.
 
 Çeviri `overlay.show` ile gider: `text` (eski Makine'ler için), `lines: [{text, sourceText?}]` (konuşmacı başına bir satır), bölge (`x, y, width,
 height`; konsolda video alanındaki bölgenin ekran karşılığı) ve kayıtlı `style`; konsolda "Bu ekranda" çıktısında `frame: {x, y, width, height}` (fiziksel px), yayın penceresindeki
