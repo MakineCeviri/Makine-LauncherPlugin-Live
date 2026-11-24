@@ -96,7 +96,11 @@ private:
     void refreshStatus();
     void statusLoop();
     void syncPool(bool force);
-    void translateJob(int line, std::string text, int seq, std::string slug, std::string gameName);
+    // ocrUs: wall-clock start/end (µs) of the OCR run that read the line, for a sampled span; {0, 0} when unknown.
+    void translateJob(int line, std::string text, int seq, std::string slug, std::string gameName,
+                      std::pair<uint64_t, uint64_t> ocrUs = {});
+    void traceLine(std::pair<uint64_t, uint64_t> ocrUs, uint64_t requestStartUs, uint64_t requestEndUs,
+                   const std::string& kind);
     void signedOut(const std::string& message);
     void signedIn(const nlohmann::json& profile);
     void handleAuthFailure(const ApiResult& r);
@@ -199,6 +203,10 @@ private:
     // usage report (port of net/telemetry.py + app._beat_payload)
     int m_beatGen = 0;
     double m_beatS = 300;
+    // Sampled lines as Sentry spans (host API telemetry.transaction): the server sets the session's budget
+    // (beat reply trace_n; 0 = off, nothing before the first reply); the first two lines, then one in 20.
+    int m_traceBudget = 0, m_traceSent = 0, m_traceSeen = 0;
+    std::pair<uint64_t, uint64_t> m_lastOcrUs{};   // capture thread only
     int64_t m_startedAt = 0;
     double m_runAcc = 0;
     int m_linesTotal = 0, m_linesSent = 0, m_sessionLines = 0, m_errors = 0, m_poolCount = 0, m_apiCount = 0;

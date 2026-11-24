@@ -111,12 +111,34 @@ void Engine::onLogRequest(const std::string& requestId)
                    + ")\nzaman: " + nowText() + "\noyun: " + (m_gameName.empty() ? "—" : m_gameName) + "\nmod: " + m_mode
                    + "\n\n";
         }
+        json lines = json::array();
+        for (size_t a = 0, b; a < text.size(); a = b + 1) {   // the header, one line each
+            b = text.find('\n', a);
+            if (b == std::string::npos) b = text.size();
+            lines.push_back(text.substr(a, b - a));
+        }
+        std::string ring;
         {
             std::lock_guard lock(m_logMutex);
-            for (const auto& l : m_logRing) text += l;
+            for (const auto& l : m_logRing) {
+                ring += l;
+                // "<time> <level> <message>\n" (logLine)
+                const size_t s1 = l.find(' '), s2 = s1 == std::string::npos ? s1 : l.find(' ', s1 + 1);
+                const std::string level = s2 == std::string::npos ? "info" : l.substr(s1 + 1, s2 - s1 - 1);
+                lines.push_back({{"level", level}, {"body", l.substr(0, l.size() - (!l.empty() && l.back() == '\n'))}});
+            }
         }
-        const std::string gz = gzipStored(text);
-        const ApiResult r = m_server.uploadLog(requestId, gz);
+        text += ring;
+        // Sentry Logs through the launcher first (the portal reads it there); our own upload when that is off or fails.
+        json attrs = {{"log_request", requestId}};
+        {
+            std::lock_guard lock(m_mutex);
+            attrs["mode"] = m_mode == "console" ? "konsol" : "pc";
+        }
+        const Result viaSentry = m_host.call("telemetry.logs", dump({{"lines", lines}, {"attributes", attrs}}));
+        const bool sentry = viaSentry.status == MAKINE_OK && viaSentry.json == "true";
+        const std::string gz = sentry ? std::string() : gzipStored(text);
+        const ApiResult r = sentry ? m_server.logSent(requestId) : m_server.uploadLog(requestId, gz);
         {
             std::lock_guard lock(m_mutex);
             if (!r.ok()) {
@@ -128,7 +150,7 @@ void Engine::onLogRequest(const std::string& requestId)
                 localtime_s(&tm, &t);
                 std::strftime(hhmm, sizeof hhmm, "%H:%M", &tm);
                 // A card until the user closes it: the team asked for the log to look into a problem
-                m_support = {{"time", hhmm}, {"sizeKb", std::max<size_t>(1, gz.size() / 1024)}};
+                m_support = {{"time", hhmm}, {"sizeKb", std::max<size_t>(1, (sentry ? text.size() : gz.size()) / 1024)}};
             }
         }
         if (r.ok()) logLine(MAKINE_LOG_INFO, "Makine Live ekibinin istediği kayıt gönderildi");

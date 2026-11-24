@@ -48,6 +48,12 @@ constexpr const char* kTargetLang = "tr";
 
 std::string dump(const json& j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
 
+uint64_t wallUs()   // span timestamps: microseconds since the epoch (the steady Clock has no epoch)
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
 Result okMessage(std::string_view text) { return Result::ok(dump({{"message", text}})); }
 
 std::string str(const json& j, const char* key, std::string def = {})
@@ -516,6 +522,7 @@ void Engine::beatLoop(int gen)
         std::lock_guard lock(m_mutex);
         if (gen != m_beatGen) return;
         if (r.ok()) m_beatS = std::clamp(num(r.data, "beat_s", 300), 60.0, 1800.0);
+        if (r.ok()) m_traceBudget = static_cast<int>(std::clamp(num(r.data, "trace_n", 0), 0.0, 50.0));
         next = m_beatS;
     }
     if (r.ok()) onLogRequest(str(r.data, "log_request"));   // the team asked for this session's log
@@ -1129,7 +1136,8 @@ void Engine::runNet()
 
 // Port of app.py _translate_job: local pool first, then this session's cache, then one
 // /api/live/translate request (retried once on network / 502 / 504 errors).
-void Engine::translateJob(int line, std::string textUtf8, int seq, std::string slug, std::string gameName)
+void Engine::translateJob(int line, std::string textUtf8, int seq, std::string slug, std::string gameName,
+                          std::pair<uint64_t, uint64_t> ocrUs)
 {
     const auto finish = [&](std::string translated, std::string kind) {
         std::lock_guard lock(m_mutex);
@@ -1205,6 +1213,7 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
     ApiResult res;
     std::string notice, noticeCode;
     double requestMs = 0;
+    const uint64_t requestStartUs = wallUs();
     for (int attempt = 1; attempt <= 2; ++attempt) {
         const auto sent = Clock::now();
         res = m_server.translate(slug, gameName, textUtf8, kSourceLang, kTargetLang);
@@ -1279,7 +1288,35 @@ void Engine::translateJob(int line, std::string textUtf8, int seq, std::string s
         m_results.push_back({line, translated, kind});
     }
     m_netCv.notify_all();   // a job waiting for the same line
+    if (!translated.empty()) traceLine(ocrUs, requestStartUs, wallUs(), kind);
     publish();
+}
+
+// A sampled line as a Sentry transaction: ocr → translate.pool|api. Tokens only, no text of the line.
+void Engine::traceLine(std::pair<uint64_t, uint64_t> ocrUs, uint64_t requestStartUs, uint64_t requestEndUs,
+                       const std::string& kind)
+{
+    json tags;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_usageReport || m_traceSent >= m_traceBudget) return;
+        if (m_traceSent >= 2 && ++m_traceSeen % 20 != 0) return;
+        ++m_traceSent;
+        const bool console = m_mode == "console";
+        tags = {{"mode", console ? "konsol" : "pc"},
+                {"game", console ? std::string(console::kGameSlug) : m_gameSlug}};
+    }
+    // The OCR run counts when it ended shortly before the request (an unchanged frame reuses an old read).
+    const bool ocr = ocrUs.second && ocrUs.first <= ocrUs.second && ocrUs.second <= requestStartUs
+                     && requestStartUs - ocrUs.second < 2'000'000;
+    const uint64_t start = ocr ? ocrUs.first : requestStartUs;
+    json spans = json::array();
+    if (ocr) spans.push_back({{"op", "ocr"}, {"start_us", ocrUs.first}, {"end_us", ocrUs.second}});
+    spans.push_back({{"op", kind == "api" ? "translate.api" : "translate.pool"},
+                     {"start_us", requestStartUs}, {"end_us", requestEndUs}});
+    m_host.emitEvent("telemetry.transaction",
+                     dump({{"name", "live.line"}, {"op", "live.line"}, {"start_us", start}, {"end_us", requestEndUs},
+                           {"tags", tags}, {"spans", spans}}));
 }
 
 // ── capture thread ──────────────────────────────────────────────────────────
@@ -1358,11 +1395,13 @@ bool Engine::readRegion(void* hwnd, const CaptureRegion& region, std::string& te
     m_lastOcrAt = now();
     std::string text;
     const auto ocrStart = Clock::now();
+    const uint64_t ocrStartUs = wallUs();
     std::string ocrError;
     const auto lines = m_ocr->run(m_frame.pixels.data(), m_frame.width, m_frame.height, ocrError);
     if (!ocrError.empty()) logLine(MAKINE_LOG_WARN, ocrError);
     const double ocrMs = std::chrono::duration<double, std::milli>(Clock::now() - ocrStart).count();
     if (ocrMs > 40) {   // as the harness: only real OCR runs, not unchanged frames
+        m_lastOcrUs = {ocrStartUs, wallUs()};
         std::lock_guard lock(m_mutex);
         m_ocrMs.push_back(ocrMs);
         if (m_ocrMs.size() > 50) m_ocrMs.pop_front();
@@ -1502,7 +1541,8 @@ void Engine::handleEvents(const std::vector<LineEvent>& events, const std::u32st
                 slug = consentMissingLocked() ? std::string() : currentSlug();   // never to the GTA VI pool unasked
                 name = m_mode == "console" ? std::string(console::kGameName) : m_gameName;
             }
-            if (!slug.empty()) post([this, id = e.id, text, seq, slug, name] { translateJob(id, text, seq, slug, name); });
+            if (!slug.empty())
+                post([this, id = e.id, text, seq, slug, name, ocr = m_lastOcrUs] { translateJob(id, text, seq, slug, name, ocr); });
         }
     }
 }

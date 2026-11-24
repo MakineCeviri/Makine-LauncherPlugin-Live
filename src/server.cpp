@@ -275,6 +275,11 @@ ApiResult ServerClient::uploadLog(const std::string& requestId, const std::strin
     return call(L"POST", "/api/live/app?action=log_upload&id=" + urlEncode(requestId), nullptr, 30000, &gzip);
 }
 
+ApiResult ServerClient::logSent(const std::string& requestId)
+{
+    return call(L"POST", "/api/live/app?action=log_sent&id=" + urlEncode(requestId), nullptr, 10000);
+}
+
 ApiResult ServerClient::announcementRead(int64_t id)
 {
     const json body = {{"id", id}};

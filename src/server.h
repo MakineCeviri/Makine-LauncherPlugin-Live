@@ -53,6 +53,8 @@ public:
     ApiResult beat(const nlohmann::json& payload, int timeoutMs = 6000);
     /// The log the team asked for (beat → log_request), gzip.
     ApiResult uploadLog(const std::string& requestId, const std::string& gzip);
+    /// The log went to Sentry Logs (host API telemetry.logs) instead: the request is answered.
+    ApiResult logSent(const std::string& requestId);
     ApiResult announcementRead(int64_t id);
 
     /// Aborts requests in flight and refuses new ones (shutdown).
