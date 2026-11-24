@@ -209,6 +209,18 @@ void testSubtitle()
         const auto iv = shown(run(s, 0.9, 6.0), 1);
         check(iv && iv->second - iv->first >= readingMin(text) - 0.06, "reading minimum for a short flash");
     }
+    {   // "En kısa gösterim" (style minShowMs → minBase): a one-word flash stays the chosen time
+        for (const double minShow : {0.6, 3.0}) {
+            SubtitleScheduler s;
+            s.minBase = minShow;
+            s.sourceNew(1, 0.0);
+            s.sourceGone(1, 0.1);
+            s.translationReady(1, U("Evet."), "api", 0.2);
+            const auto iv = shown(run(s, 0.2, 8.0), 1);
+            check(iv && iv->second - iv->first >= minShow - 0.06 && (minShow > 1 || iv->second - iv->first < 1.2),
+                  "minShowMs " + std::to_string(static_cast<int>(minShow * 1000)) + " ms holds a short line that long");
+        }
+    }
     {   // stays while the source is visible
         SubtitleScheduler s;
         s.sourceNew(1, 0.0);

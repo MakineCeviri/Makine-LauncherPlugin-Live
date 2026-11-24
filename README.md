@@ -215,7 +215,7 @@ Makine'nin Makine Live ekranı `PluginManager.invoke(id, method, params)` ile ç
 | `box.move` | `{on?}` (yoksa tersine çevirir): altyazı kutusunu sürüklenebilir yapar / kilitler. Makine'nin isteğe bağlı `overlay.setMovable {on}` yöntemini çağırır; `on:false` yanıtı `{x, y}` (kutu merkezi, ekrana oran) getirirse `style.boxX/boxY` olarak saklanır. Makine bu yöntemi bilmiyorsa `E_UNSUPPORTED` ve `boxMove.supported: false`. Sürüklemeden sonra Makine `overlay.moved {x, y, width, height}` (fiziksel px) olayını da gönderir; aynı yere çevrilip saklanır (manifestte bildirilmez: Makine bu olayı yalnız taşıyan eklentiye yollar) |
 | `readOnce` | → `{text, filtered, region, window}`: bölgeyi bir kez okur, çevirmez |
 | `autoStart.set` / `usageReport.set` | `{enabled}` → Makine'nin ayar deposuna `settings.set` ile yazılır (manifest ayarları; Makine `autoStart`'ı eklenti kapalıyken de okur) |
-| `style.set` | `{preset, font, sizePx, …}` (Makine'nin `overlay.show.style` anahtarları; `null` siler) → `{style}` |
+| `style.set` | `{preset, font, sizePx, …}` (Makine'nin `overlay.show.style` anahtarları; `null` siler) → `{style}`. `minShowMs` (600–3000, varsayılan 1200; 0.3.2'deki "En kısa gösterim"): bir satırın en az ekranda kalma süresi, her çıktıda (kutu, TV, telefon / OBS) |
 | `output.set` | `{output: "pc" \| "tv" \| "phone"}`: konsol modunda altyazı nerede (Remote Play penceresinin üstü / Makine TV / telefon-tablet sayfası) |
 | `obs.set` | `{enabled}` → `{obsUrl}`: OBS tarayıcı kaynağı (`http://127.0.0.1:47712/obs`, yalnız bu bilgisayar) |
 | `tv.discover` | ev ağında Makine TV arar (~1,6 sn); sonuç `ui.state.tv.found` |

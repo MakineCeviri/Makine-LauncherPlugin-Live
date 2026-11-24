@@ -1994,6 +1994,8 @@ void Engine::runCapture()
         const bool running = m_running;
         const std::string mode = m_mode;
         const int styleVersion = m_styleVersion;
+        // "En kısa gösterim" (0.3.2 min_show_ms): the shortest time a line stays up, on every output
+        m_scheduler.minBase = std::clamp(num(m_style, "minShowMs", 1200), 600.0, 3000.0) / 1000.0;
         lock.unlock();
 
         double wait = kPollS;
